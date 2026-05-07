@@ -1,6 +1,8 @@
 import { Link } from "wouter";
 import { useApi, fmtAge, fmtMs } from "../hooks/useApi";
+import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
+import { BarChart, Bar, ResponsiveContainer, Tooltip, Cell } from "recharts";
 
 function StatusDot({ status }: { status: string }) {
   const cls = status === "active" ? "active" : status === "failed" ? "failed" : status === "inactive" ? "inactive" : "unknown";
@@ -19,18 +21,31 @@ function WCard({ href, children, className = "" }: { href?: string; children: Re
 }
 
 function SparkBars({ values }: { values: number[] }) {
-  const max = Math.max(...values, 1);
+  const data = values.map((v, i) => ({ i, v }));
   return (
-    <div className="sparkbar-row">
-      {values.map((v, i) => (
-        <div key={i} className="sparkbar" style={{ height: `${Math.max(2, Math.round((v / max) * 28))}px` }} />
-      ))}
-    </div>
+    <ResponsiveContainer width="100%" height={32}>
+      <BarChart data={data} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
+        <Tooltip
+          contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 10 }}
+          itemStyle={{ color: "#4ade80" }}
+          formatter={(val: number) => [val, "articles"]}
+          labelFormatter={() => ""}
+        />
+        <Bar dataKey="v" radius={[2, 2, 0, 0]}>
+          {data.map((d) => (
+            <Cell key={d.i} fill={d.v > 0 ? "#4ade80" : "#222"} opacity={d.v > 0 ? 0.75 : 1} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
   );
 }
 
 export function DashHome() {
-  const { data, loading, error } = useApi<HomeData>("/api/home", 20_000);
+  const { data: streamData, connected } = useStream<HomeData>("/api/stream");
+  // Fallback poll for initial load if SSE hasn't fired yet
+  const { data: pollData, loading, error } = useApi<HomeData>("/api/home", 60_000);
+  const data = streamData ?? pollData;
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>failed to load: {error}</div>;
@@ -59,7 +74,10 @@ export function DashHome() {
       <div className="dash-section">
         <div className="dash-section-title">stack health</div>
         <WCard href="/infra" className="full">
-          <div className="w-label">services</div>
+          <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            services
+            <span className={`sse-dot${connected ? "" : " disconnected"}`} title={connected ? "live" : "polling"} />
+          </div>
           <div className="service-strip">
             {d.services.map((s) => (
               <span key={s.name} className={`svc-pill ${s.status}`}>
@@ -347,7 +365,7 @@ export function DashHome() {
             <div className="w-caption" style={{ marginTop: 6 }}>existing session UI</div>
           </WCard>
 
-          <WCard>
+          <WCard href="/incidents">
             <div className="w-label">active incidents</div>
             <div className="w-headline sm">{d.incidents.activeCount}</div>
             {d.incidents.recentAlerts.length > 0 && (

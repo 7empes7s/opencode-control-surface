@@ -6,6 +6,7 @@ import { DoctorPage } from "./routes/DoctorPage";
 import { ModelsPage } from "./routes/ModelsPage";
 import { NewsBitesPage } from "./routes/NewsBitesPage";
 import { InfraPage } from "./routes/InfraPage";
+import { IncidentsPage } from "./routes/IncidentsPage";
 import { OpenCodeRoute } from "./routes/OpenCodeRoute";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
@@ -46,6 +47,9 @@ export function App() {
         </Route>
         <Route path="/infra">
           <DashLayout><InfraPage /></DashLayout>
+        </Route>
+        <Route path="/incidents">
+          <DashLayout><IncidentsPage /></DashLayout>
         </Route>
 
         <Route>

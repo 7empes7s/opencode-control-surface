@@ -1,5 +1,11 @@
-import { useApi, fmtAge, fmtMs } from "../hooks/useApi";
+import { useState } from "react";
+import { useApi, fmtMs } from "../hooks/useApi";
+import { useAction } from "../hooks/useAction";
+import { ConfirmModal } from "../components/ConfirmModal";
 import type { AutopipelineDetail } from "../../server/api/types";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+} from "recharts";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -27,8 +33,18 @@ function StageDurationTable({ durations }: { durations: AutopipelineDetail["stag
   );
 }
 
+type Modal =
+  | { type: "pause" }
+  | { type: "resume" }
+  | { type: "inject" }
+  | { type: "rush"; id: string; slug?: string }
+  | { type: "kill"; id: string; slug?: string }
+  | { type: "publish"; id: string; slug?: string };
+
 export function AutopipelinePage() {
-  const { data, loading, error } = useApi<AutopipelineDetail>("/api/autopipeline", 10_000);
+  const { data, loading, error, refresh } = useApi<AutopipelineDetail>("/api/autopipeline", 10_000);
+  const [modal, setModal] = useState<Modal | null>(null);
+  const cmd = useAction("/api/autopipeline/command");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
@@ -54,7 +70,66 @@ export function AutopipelinePage() {
             {d.pauseReason && <div className="stat-lbl">{d.pauseReason}</div>}
           </div>
         </div>
+        <div className="action-bar" style={{ marginTop: 12 }}>
+          <button
+            className={`btn ${d.paused ? "btn-primary" : "btn-amber"}`}
+            onClick={() => setModal(d.paused ? { type: "resume" } : { type: "pause" })}
+          >
+            {d.paused ? "Resume" : "Pause"}
+          </button>
+          <button className="btn btn-ghost" onClick={() => setModal({ type: "inject" })}>
+            + Inject topic
+          </button>
+          {cmd.success && <span className="action-feedback ok">{cmd.success}</span>}
+          {cmd.error && <span className="action-feedback err">{cmd.error}</span>}
+        </div>
       </div>
+
+      {modal && (
+        <ConfirmModal
+          title={
+            modal.type === "pause" ? "Pause autopipeline?" :
+            modal.type === "resume" ? "Resume autopipeline?" :
+            modal.type === "inject" ? "Inject topic" :
+            modal.type === "rush" ? `Rush story` :
+            modal.type === "kill" ? `Kill story` :
+            "Publish story"
+          }
+          message={
+            modal.type === "pause" ? "The pipeline will stop processing new stories after the current stage completes." :
+            modal.type === "resume" ? "The pipeline will resume processing stories from the queue." :
+            modal.type === "rush" ? `Raise priority for: ${modal.slug ?? modal.id}` :
+            modal.type === "kill" ? `Remove from queue: ${modal.slug ?? modal.id}` :
+            modal.type === "publish" ? `Publish immediately: ${modal.slug ?? modal.id}` :
+            undefined
+          }
+          inputLabel={modal.type === "inject" ? "topic" : undefined}
+          inputPlaceholder="e.g. UK inflation March 2026"
+          confirmLabel={
+            modal.type === "pause" ? "Pause" :
+            modal.type === "resume" ? "Resume" :
+            modal.type === "inject" ? "Inject" :
+            modal.type === "rush" ? "Rush" :
+            modal.type === "kill" ? "Kill" :
+            "Publish"
+          }
+          danger={modal.type === "kill"}
+          loading={cmd.loading}
+          error={cmd.error}
+          onCancel={() => { setModal(null); cmd.reset(); }}
+          onConfirm={async (val) => {
+            let body: unknown;
+            if (modal.type === "pause") body = { cmd: "pause" };
+            else if (modal.type === "resume") body = { cmd: "resume" };
+            else if (modal.type === "inject") body = { cmd: "add", topic: val, vertical: "ai" };
+            else if (modal.type === "rush") body = { cmd: "rush", storyId: modal.id };
+            else if (modal.type === "kill") body = { cmd: "kill", storyId: modal.id };
+            else if (modal.type === "publish") body = { cmd: "publish", storyId: modal.id };
+            const ok = await cmd.run(body);
+            if (ok) { setModal(null); refresh(); }
+          }}
+        />
+      )}
 
       {/* Current story */}
       {d.current && (
@@ -85,16 +160,25 @@ export function AutopipelinePage() {
           ) : (
             <table className="data-table">
               <thead><tr>
-                <th>slug / id</th><th>stage</th><th>priority</th><th>elapsed</th><th>flags</th>
+                <th>slug / id</th><th>stage</th><th></th><th className="queue-col-priority">priority</th><th className="queue-col-elapsed">elapsed</th><th className="queue-col-flags">flags</th>
               </tr></thead>
               <tbody>
                 {d.queue.map((item) => (
                   <tr key={item.id}>
                     <td className="mono trunc">{item.slug ?? item.id}</td>
                     <td className="mono">{item.stage}</td>
-                    <td className="dim">{item.priority}</td>
-                    <td className="dim">{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
-                    <td>
+                    <td><div style={{ display: "flex", gap: 4 }}>
+                        {item.stage === "publish" && item.waitingApproval && (
+                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>
+                        )}
+                        {!item.running && (
+                          <button className="btn btn-sm btn-ghost" onClick={() => setModal({ type: "rush", id: item.id, slug: item.slug })}>rush</button>
+                        )}
+                        <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "kill", id: item.id, slug: item.slug })}>kill</button>
+                      </div></td>
+                    <td className="dim queue-col-priority">{item.priority}</td>
+                    <td className="dim queue-col-elapsed">{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
+                    <td className="queue-col-flags">
                       {item.running && <Pill color="amber">running</Pill>}
                       {item.waitingApproval && <Pill color="red">approval</Pill>}
                     </td>
@@ -123,6 +207,48 @@ export function AutopipelinePage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Stage breakdown chart */}
+      {Object.keys(d.stats.stageBreakdown).length > 0 && (
+        <div className="section-card" id="stages">
+          <div className="section-card-header"><span className="title">queue by stage</span></div>
+          <div className="section-card-body" style={{ padding: "10px 14px" }}>
+            {(() => {
+              const stageOrder = ["scout", "research", "validate-research", "write", "validate-write", "verify", "publish-prep", "init", "fetch-image", "publish"];
+              const data = stageOrder
+                .filter((s) => d.stats.stageBreakdown[s] != null)
+                .map((s) => ({ stage: s, count: d.stats.stageBreakdown[s] }));
+              const APPROVAL_STAGES = new Set(["publish"]);
+              return (
+                <ResponsiveContainer width="100%" height={Math.max(60, data.length * 26)}>
+                  <BarChart layout="vertical" data={data} margin={{ top: 0, right: 36, bottom: 0, left: 0 }}>
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category" dataKey="stage" width={140}
+                      tick={{ fontFamily: "var(--mono)", fontSize: 10, fill: "#666" }}
+                      axisLine={false} tickLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
+                      itemStyle={{ color: "#4ade80" }}
+                      formatter={(v: number) => [v, "stories"]}
+                    />
+                    <Bar dataKey="count" radius={[0, 2, 2, 0]} maxBarSize={16}>
+                      {data.map((entry) => (
+                        <Cell
+                          key={entry.stage}
+                          fill={APPROVAL_STAGES.has(entry.stage) ? "#f59e0b" : "#4ade80"}
+                          opacity={0.7}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              );
+            })()}
           </div>
         </div>
       )}

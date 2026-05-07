@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { useApi, fmtAge } from "../hooks/useApi";
+import { useAction } from "../hooks/useAction";
+import { ConfirmModal } from "../components/ConfirmModal";
 import type { InfraDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -17,8 +20,15 @@ function PctBar({ pct, warn = 80, crit = 95 }: { pct: number; warn?: number; cri
   );
 }
 
+type Modal =
+  | { type: "service-restart"; service: string }
+  | { type: "run-timer"; timer: string };
+
 export function InfraPage() {
-  const { data, loading, error } = useApi<InfraDetail>("/api/infra", 30_000);
+  const { data, loading, error, refresh } = useApi<InfraDetail>("/api/infra", 30_000);
+  const [modal, setModal] = useState<Modal | null>(null);
+  const svcAction = useAction("/api/infra/service-restart");
+  const timerAction = useAction("/api/infra/run-timer");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
@@ -34,6 +44,33 @@ export function InfraPage() {
       <div className="page-header">
         <div className="page-title">Infrastructure</div>
       </div>
+
+      {modal && (
+        <ConfirmModal
+          title={
+            modal.type === "service-restart" ? `Restart ${modal.service}?` : `Run ${modal.timer} now?`
+          }
+          message={
+            modal.type === "service-restart"
+              ? `This will restart the ${modal.service} service. Brief downtime expected.`
+              : `This will immediately trigger the ${modal.timer} timer service.`
+          }
+          confirmLabel={modal.type === "service-restart" ? "Restart" : "Run now"}
+          danger={modal.type === "service-restart"}
+          loading={svcAction.loading || timerAction.loading}
+          error={svcAction.error ?? timerAction.error}
+          onCancel={() => { setModal(null); svcAction.reset(); timerAction.reset(); }}
+          onConfirm={async () => {
+            let ok = false;
+            if (modal.type === "service-restart") {
+              ok = await svcAction.run({ service: modal.service });
+            } else {
+              ok = await timerAction.run({ timer: modal.timer });
+            }
+            if (ok) { setModal(null); refresh(); }
+          }}
+        />
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginBottom: 16 }}>
 
@@ -131,12 +168,20 @@ export function InfraPage() {
       <div className="section-card" id="services" style={{ marginBottom: 12 }}>
         <div className="section-card-header"><span className="title">services</span></div>
         <div className="section-card-body" style={{ padding: "12px 14px" }}>
-          <div className="service-strip">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {d.services.map((s) => (
-              <span key={s.name} className={`svc-pill ${s.status}`}>
-                <span className="dot" />
-                {s.name}
-              </span>
+              <div key={s.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span className={`svc-pill ${s.status}`}>
+                  <span className="dot" />
+                  {s.name}
+                </span>
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => setModal({ type: "service-restart", service: s.name })}
+                >
+                  restart
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -148,7 +193,7 @@ export function InfraPage() {
         <div className="section-card-body table-wrap">
           <table className="data-table">
             <thead><tr>
-              <th>timer</th><th>state</th><th>last trigger</th><th>next elapse</th><th>last result</th>
+              <th>timer</th><th>state</th><th>last trigger</th><th>next elapse</th><th>last result</th><th></th>
             </tr></thead>
             <tbody>
               {d.timers.map((t) => (
@@ -161,6 +206,16 @@ export function InfraPage() {
                     {t.lastResult ? (
                       <Pill color={t.lastResult === "success" ? "green" : "amber"}>{t.lastResult}</Pill>
                     ) : "—"}
+                  </td>
+                  <td>
+                    {(t.name === "model-health-check" || t.name === "mimule-backup") && (
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => setModal({ type: "run-timer", timer: t.name })}
+                      >
+                        run now
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

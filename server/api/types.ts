@@ -212,6 +212,23 @@ export interface NewsBitesDetail {
   };
 }
 
+export interface IncidentsDetail {
+  entries: {
+    ts: number;
+    type: "pipeline-failed" | "doctor-abandoned";
+    slug: string;
+    stage: string;
+    errorType: string;
+    severity: "error" | "warning";
+  }[];
+  stats: {
+    total: number;
+    last24h: number;
+    byErrorType: { type: string; count: number }[];
+    byStage: { stage: string; count: number }[];
+  };
+}
+
 export interface InfraDetail {
   hetzner: {
     load1: number; load5: number; load15: number;

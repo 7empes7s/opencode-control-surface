@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { useApi, fmtAge } from "../hooks/useApi";
+import { useAction } from "../hooks/useAction";
+import { ConfirmModal } from "../components/ConfirmModal";
 import type { ModelsDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -12,8 +15,15 @@ function qualityColor(s: string): string {
   return "gray";
 }
 
+type Modal =
+  | { type: "block"; model: string }
+  | { type: "unblock"; model: string }
+  | { type: "run-check" };
+
 export function ModelsPage() {
-  const { data, loading, error } = useApi<ModelsDetail>("/api/models", 30_000);
+  const { data, loading, error, refresh } = useApi<ModelsDetail>("/api/models", 30_000);
+  const [modal, setModal] = useState<Modal | null>(null);
+  const action = useAction("/api/models/action");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
@@ -50,6 +60,36 @@ export function ModelsPage() {
         </div>
       </div>
 
+      {modal && (
+        <ConfirmModal
+          title={
+            modal.type === "block" ? `Block ${modal.model}?` :
+            modal.type === "unblock" ? `Unblock ${modal.model}?` :
+            "Run model health check?"
+          }
+          message={
+            modal.type === "block"
+              ? `${modal.model} will be marked blocked and excluded from fallback chains.`
+              : modal.type === "unblock"
+              ? `${modal.model} will be restored to healthy status.`
+              : "Triggers the model-health-check.service immediately."
+          }
+          confirmLabel={modal.type === "block" ? "Block" : modal.type === "unblock" ? "Unblock" : "Run"}
+          danger={modal.type === "block"}
+          loading={action.loading}
+          error={action.error}
+          onCancel={() => { setModal(null); action.reset(); }}
+          onConfirm={async () => {
+            let body: unknown;
+            if (modal.type === "block") body = { action: "block", model: modal.model };
+            else if (modal.type === "unblock") body = { action: "unblock", model: modal.model };
+            else body = { action: "run-quick-check" };
+            const ok = await action.run(body);
+            if (ok) { setModal(null); refresh(); }
+          }}
+        />
+      )}
+
       {/* Quality summary */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
         <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
@@ -61,26 +101,39 @@ export function ModelsPage() {
         {s.newModelsAdded.length > 0 && <Pill color="green">+{s.newModelsAdded.length} new</Pill>}
       </div>
 
+      <div className="action-bar" style={{ marginBottom: 16 }}>
+        <button className="btn btn-ghost" onClick={() => setModal({ type: "run-check" })}>
+          Run health check
+        </button>
+        {action.success && <span className="action-feedback ok">{action.success}</span>}
+        {action.error && <span className="action-feedback err">{action.error}</span>}
+      </div>
+
       {/* All models table */}
       <div className="section-card" id="current">
         <div className="section-card-header"><span className="title">all models</span><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.models.length} total</span></div>
         <div className="section-card-body table-wrap">
           <table className="data-table">
             <thead><tr>
-              <th>logical name</th><th>provider</th><th>capability</th><th>available</th><th>latency</th><th>json ok</th><th>quality</th><th>failures</th><th>garbage streak</th>
+              <th>logical name</th><th>cap</th><th>quality</th><th></th><th className="models-col-provider">provider</th><th className="models-col-latency">latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
             </tr></thead>
             <tbody>
               {d.models.map((m) => (
                 <tr key={m.logicalName}>
                   <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
-                  <td className="dim mono">{m.provider}</td>
                   <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
-                  <td><Pill color={m.available ? "green" : "red"}>{m.available ? "yes" : "no"}</Pill></td>
-                  <td className="mono dim">{m.latency != null ? `${m.latency}ms` : "—"}</td>
-                  <td><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
                   <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                  <td className="mono dim">{m.recentFailures}</td>
-                  <td className="mono dim">{m.consecutiveGarbage > 0 ? m.consecutiveGarbage : "—"}</td>
+                  <td>
+                    {m.qualityStatus === "blocked" ? (
+                      <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
+                    ) : (
+                      <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                    )}
+                  </td>
+                  <td className="dim mono models-col-provider">{m.provider}</td>
+                  <td className="mono dim models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
+                  <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
+                  <td className="mono dim models-col-failures">{m.recentFailures}</td>
                 </tr>
               ))}
             </tbody>

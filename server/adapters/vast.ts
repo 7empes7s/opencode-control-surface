@@ -78,38 +78,21 @@ export async function getVastInstance(): Promise<VastInstance | null> {
   }
 }
 
-// vastai show user currently returns a 400 error — fall back to gpu-health.json
-// which tracks balance indirectly via the watchdog.
+// vastai show user returns 400 with newer CLI — use the REST API directly
 export async function getVastAccount(): Promise<VastAccount | null> {
   try {
-    const { stdout } = await execAsync("vastai show user", { timeout: 6000 });
-    let balance = 0, credit = 0, email = "", userId = "";
-
-    for (const line of stdout.split("\n")) {
-      if (line.includes("Balance")) {
-        const m = line.match(/([\d.]+)/);
-        if (m) balance = parseFloat(m[1]);
-      }
-      if (line.includes("Credit")) {
-        const parts = line.trim().split(/\s+/);
-        for (let i = 0; i < parts.length; i++) {
-          if (parts[i] === "Credit" && /^\d/.test(parts[i + 1] ?? "")) {
-            credit = parseFloat(parts[i + 1]);
-          }
-        }
-      }
-      if (line.includes("@")) {
-        const m = line.match(/[\w.+%-]+@[\w.-]+/);
-        if (m) email = m[0];
-      }
-      if (line.includes("vast.ai/admin")) {
-        const m = line.match(/user\/(\d+)/);
-        if (m) userId = m[1];
-      }
-    }
-
-    if (balance === 0 && credit === 0 && !email) return null;
-    return { balance, credit, email, userId };
+    const apiKey = readFileSync("/root/.config/vastai/vast_api_key", "utf8").trim();
+    const res = await fetch(
+      `https://console.vast.ai/api/v0/users/current/?api_key=${apiKey}`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as {
+      balance?: number; credit?: number; username?: string; id?: number;
+    };
+    const balance = json.balance ?? 0;
+    const credit = json.credit ?? 0;
+    return { balance, credit, email: json.username ?? "", userId: String(json.id ?? "") };
   } catch {
     return null;
   }

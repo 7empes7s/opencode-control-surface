@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useApi } from "../hooks/useApi";
 import type { DoctorDetail } from "../../server/api/types";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend,
+} from "recharts";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -64,18 +68,32 @@ export function DoctorPage() {
         </div>
       </div>
 
-      {/* Stats summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8, marginBottom: 16 }}>
+      {/* Stats charts */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, marginBottom: 16 }}>
         <div className="section-card" id="errors">
-          <div className="section-card-header"><span className="title">error classes</span></div>
+          <div className="section-card-header"><span className="title">error classes (24h)</span></div>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.errorClasses.length === 0 ? <div className="loading-dim">none</div> : (
-              d.stats.errorClasses.map((e) => (
-                <div key={e.type} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{e.type}</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)" }}>{e.count}</span>
-                </div>
-              ))
+              <ResponsiveContainer width="100%" height={Math.max(60, d.stats.errorClasses.length * 22)}>
+                <BarChart
+                  layout="vertical"
+                  data={d.stats.errorClasses}
+                  margin={{ top: 0, right: 30, bottom: 0, left: 0 }}
+                >
+                  <XAxis type="number" hide />
+                  <YAxis
+                    type="category" dataKey="type" width={130}
+                    tick={{ fontFamily: "var(--mono)", fontSize: 10, fill: "#666" }}
+                    axisLine={false} tickLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
+                    itemStyle={{ color: "#f87171" }}
+                    formatter={(v: number) => [v, "events"]}
+                  />
+                  <Bar dataKey="count" fill="#f87171" opacity={0.7} radius={[0, 2, 2, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
             )}
           </div>
         </div>
@@ -97,14 +115,34 @@ export function DoctorPage() {
         <div className="section-card" id="verdicts">
           <div className="section-card-header"><span className="title">verdict mix</span></div>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.verdictMix.length === 0 ? <div className="loading-dim">none</div> : (
-              d.stats.verdictMix.map((v) => (
-                <div key={v.action} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                  <Pill color={verdictColor(v.action)}>{v.action}</Pill>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)" }}>{v.count}</span>
-                </div>
-              ))
-            )}
+            {d.stats.verdictMix.length === 0 ? <div className="loading-dim">none</div> : (() => {
+              const COLORS: Record<string, string> = {
+                retry: "#4ade80", requeued: "#4ade80",
+                "dead-content": "#f87171", kill: "#f87171",
+                cooldown: "#f59e0b", no_action: "#555",
+              };
+              return (
+                <ResponsiveContainer width="100%" height={120}>
+                  <PieChart>
+                    <Pie
+                      data={d.stats.verdictMix} dataKey="count" nameKey="action"
+                      cx="50%" cy="50%" outerRadius={48} innerRadius={24}
+                    >
+                      {d.stats.verdictMix.map((v) => (
+                        <Cell key={v.action} fill={COLORS[v.action] ?? "#555"} opacity={0.8} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
+                    />
+                    <Legend
+                      iconType="circle" iconSize={7}
+                      formatter={(value: string) => <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#888" }}>{value}</span>}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              );
+            })()}
           </div>
         </div>
       </div>
