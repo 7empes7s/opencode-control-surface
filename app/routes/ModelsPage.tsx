@@ -18,6 +18,7 @@ function qualityColor(s: string): string {
 type Modal =
   | { type: "block"; model: string }
   | { type: "unblock"; model: string }
+  | { type: "probation-clear"; model: string }
   | { type: "run-check" };
 
 export function ModelsPage() {
@@ -26,7 +27,7 @@ export function ModelsPage() {
   const action = useAction("/api/models/action");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
 
   const d = data;
@@ -65,6 +66,7 @@ export function ModelsPage() {
           title={
             modal.type === "block" ? `Block ${modal.model}?` :
             modal.type === "unblock" ? `Unblock ${modal.model}?` :
+            modal.type === "probation-clear" ? `Clear probation for ${modal.model}?` :
             "Run model health check?"
           }
           message={
@@ -72,9 +74,16 @@ export function ModelsPage() {
               ? `${modal.model} will be marked blocked and excluded from fallback chains.`
               : modal.type === "unblock"
               ? `${modal.model} will be restored to healthy status.`
+              : modal.type === "probation-clear"
+              ? `${modal.model} will be cleared from probation and restored to healthy status.`
               : "Triggers the model-health-check.service immediately."
           }
-          confirmLabel={modal.type === "block" ? "Block" : modal.type === "unblock" ? "Unblock" : "Run"}
+          confirmLabel={
+            modal.type === "block" ? "Block" :
+            modal.type === "unblock" ? "Unblock" :
+            modal.type === "probation-clear" ? "Clear" :
+            "Run"
+          }
           danger={modal.type === "block"}
           loading={action.loading}
           error={action.error}
@@ -83,6 +92,7 @@ export function ModelsPage() {
             let body: unknown;
             if (modal.type === "block") body = { action: "block", model: modal.model };
             else if (modal.type === "unblock") body = { action: "unblock", model: modal.model };
+            else if (modal.type === "probation-clear") body = { action: "probation-clear", model: modal.model };
             else body = { action: "run-quick-check" };
             const ok = await action.run(body);
             if (ok) { setModal(null); refresh(); }
@@ -123,9 +133,14 @@ export function ModelsPage() {
                   <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
                   <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
                   <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                  <td>
+                  <td style={{ display: "flex", gap: 4 }}>
                     {m.qualityStatus === "blocked" ? (
                       <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
+                    ) : m.qualityStatus === "probation" ? (
+                      <>
+                        <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                      </>
                     ) : (
                       <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
                     )}
