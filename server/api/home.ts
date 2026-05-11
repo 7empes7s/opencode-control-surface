@@ -5,6 +5,7 @@ import { getModelHealth } from "../adapters/models.ts";
 import { getDoctorStats } from "../adapters/doctor.ts";
 import { getArticles, buildNewsBitesWidget, isSiteReachable } from "../adapters/newsbites.ts";
 import { getVastInstance, getVastAccount } from "../adapters/vast.ts";
+import { runHomeSampler } from "../db/sampler.ts";
 import { ok, type ApiEnvelope, type HomeData, type SourceStatus } from "./types.ts";
 
 function readJson<T>(path: string): T | null {
@@ -18,6 +19,16 @@ async function settled<T>(fn: () => Promise<T> | T): Promise<{ ok: true; value: 
 }
 
 export async function homeHandler(): Promise<Response> {
+  const { data, sources } = await buildHomeData();
+  try { runHomeSampler(data); } catch (e) { console.error("[home] sampler failed", e); }
+
+  const envelope: ApiEnvelope<HomeData> = ok(data, sources);
+  return new Response(JSON.stringify(envelope), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export async function buildHomeData(): Promise<{ data: HomeData; sources: Record<string, SourceStatus> }> {
   const sources: Record<string, SourceStatus> = {};
 
   // ── Parallel fetch all sources ──────────────────────────────────────────
@@ -171,8 +182,5 @@ export async function homeHandler(): Promise<Response> {
     },
   };
 
-  const envelope: ApiEnvelope<HomeData> = ok(data, sources);
-  return new Response(JSON.stringify(envelope), {
-    headers: { "Content-Type": "application/json" },
-  });
+  return { data, sources };
 }

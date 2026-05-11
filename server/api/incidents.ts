@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { ok, type ApiEnvelope } from "./types.ts";
-import { getFullLog } from "../adapters/doctor.ts";
+import { getDoctorEntryErrorType, getFullLog } from "../adapters/doctor.ts";
 
 const ALERTS_PATH = "/var/lib/mimule/pipeline-alerts.json";
 
@@ -56,17 +56,21 @@ function readDoctorAbandons(): IncidentEntry[] {
       type: "doctor-abandoned" as const,
       slug: e.slug ?? "",
       stage: e.stage ?? "",
-      errorType: e.errorType ?? "unknown",
+      errorType: getDoctorEntryErrorType(e),
       severity: "error" as const,
     }))
     .filter((e) => e.ts > 0);
 }
 
-export async function incidentsHandler(): Promise<Response> {
+export function getIncidentEntries(): IncidentEntry[] {
   const alerts = readAlerts();
   const abandons = readDoctorAbandons();
 
-  const all = [...alerts, ...abandons].sort((a, b) => b.ts - a.ts).slice(0, 500);
+  return [...alerts, ...abandons].sort((a, b) => b.ts - a.ts).slice(0, 500);
+}
+
+export function buildIncidentsDetail(): IncidentsDetail {
+  const all = getIncidentEntries();
 
   const now = Date.now();
   const window24h = 24 * 60 * 60 * 1000;
@@ -90,11 +94,14 @@ export async function incidentsHandler(): Promise<Response> {
     .sort((a, b) => b[1] - a[1])
     .map(([stage, count]) => ({ stage, count }));
 
-  const data: IncidentsDetail = {
+  return {
     entries: all,
     stats: { total: all.length, last24h, byErrorType, byStage },
   };
+}
 
+export async function incidentsHandler(): Promise<Response> {
+  const data = buildIncidentsDetail();
   const envelope: ApiEnvelope<IncidentsDetail> = ok(data);
   return new Response(JSON.stringify(envelope), { headers: { "Content-Type": "application/json" } });
 }

@@ -1,18 +1,5 @@
 import { useState, useCallback } from "react";
-
-let cachedToken: string | null = null;
-
-async function getToken(): Promise<string> {
-  if (cachedToken !== null) return cachedToken;
-  try {
-    const res = await fetch("/api/config");
-    const json = await res.json() as { operatorToken: string };
-    cachedToken = json.operatorToken ?? "";
-  } catch {
-    cachedToken = "";
-  }
-  return cachedToken;
-}
+import { authFetch } from "../lib/authFetch";
 
 interface ActionState {
   loading: boolean;
@@ -36,13 +23,9 @@ export function useAction(path: string): ActionHandle {
     async (body?: unknown): Promise<boolean> => {
       setState({ loading: true, error: null, success: null });
       try {
-        const token = await getToken();
-        const res = await fetch(path, {
+        const res = await authFetch(path, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Operator-Token": token,
-          },
+          headers: { "Content-Type": "application/json" },
           body: body !== undefined ? JSON.stringify(body) : undefined,
         });
         const json = await res.json() as { ok?: boolean; message?: string; error?: string };

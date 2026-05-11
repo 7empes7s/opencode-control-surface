@@ -1,24 +1,20 @@
 import { useEffect } from "react";
 import { useStore } from "../lib/store";
-import { Sidebar } from "../components/Sidebar";
-import { ChatArea } from "../components/ChatArea";
+import { OpenCodeView } from "../components/OpenCodeView";
 
 export function OpenCodeRoute() {
-  const { init, ready } = useStore();
-  useEffect(() => { init(); }, [init]);
+  const { init, ready, error } = useStore();
+  useEffect(() => { init().catch(() => {}); }, [init]);
 
   if (!ready) {
     return (
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>connecting…</span>
+      <div className="oc-connecting">
+        <span className="oc-connecting-text">
+          {error ? `OpenCode unavailable: ${error}` : "Connecting to OpenCode…"}
+        </span>
       </div>
     );
   }
 
-  return (
-    <>
-      <Sidebar />
-      <ChatArea />
-    </>
-  );
+  return <OpenCodeView />;
 }

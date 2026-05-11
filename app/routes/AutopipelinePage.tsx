@@ -47,7 +47,7 @@ export function AutopipelinePage() {
   const cmd = useAction("/api/autopipeline/command");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
 
   const d = data;

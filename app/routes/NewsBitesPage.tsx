@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useApi } from "../hooks/useApi";
+import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
 import type { NewsBitesDetail } from "../../server/api/types";
 import {
@@ -40,7 +41,7 @@ export function NewsBitesPage() {
   }, [jobId, jobStatus?.status]);
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
 
   const d = data;
@@ -101,10 +102,9 @@ export function NewsBitesPage() {
             setDeploying(true);
             setDeployError(null);
             try {
-              const cfg = await fetch("/api/config").then((r) => r.json()) as { operatorToken: string };
-              const res = await fetch("/api/newsbites/deploy", {
+              const res = await authFetch("/api/newsbites/deploy", {
                 method: "POST",
-                headers: { "Content-Type": "application/json", "X-Operator-Token": cfg.operatorToken },
+                headers: { "Content-Type": "application/json" },
               });
               const json = await res.json() as { jobId?: string; error?: string };
               if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
