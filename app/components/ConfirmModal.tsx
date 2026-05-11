@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 interface Props {
   title: string;
@@ -39,7 +40,7 @@ export function ConfirmModal({
     onConfirm(inputLabel ? inputValue.trim() : undefined);
   };
 
-  return (
+  const modal = (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">{title}</div>
@@ -74,4 +75,6 @@ export function ConfirmModal({
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }
