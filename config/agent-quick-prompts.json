@@ -1,0 +1,114 @@
+{
+  "prompts": [
+    {
+      "id": "global-status",
+      "name": "status",
+      "description": "Inspect the current workspace and summarize what is active, dirty, or blocked.",
+      "insertText": "Check status in {workspace}. Summarize what matters first and cite evidence.",
+      "targetRoots": [],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "low",
+      "priority": 10
+    },
+    {
+      "id": "global-plan",
+      "name": "plan",
+      "description": "Read the relevant plan/docs, then propose the next implementation slice with risks.",
+      "insertText": "Read the relevant plan/docs in {workspace}, then propose the next implementation slice with risks and verification.",
+      "targetRoots": [],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "low",
+      "priority": 9
+    },
+    {
+      "id": "global-review",
+      "name": "review",
+      "description": "Review the current changes for bugs, regressions, missing tests, and operational risk.",
+      "insertText": "Review the current changes in {workspace}. Prioritize bugs, regressions, missing tests, and operational risk.",
+      "targetRoots": [],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "low",
+      "priority": 8
+    },
+    {
+      "id": "global-vault-log",
+      "name": "vault-log",
+      "description": "Draft an AI Vault and master-plan progress entry for the current session.",
+      "insertText": "Draft an AI Vault daily note and master-plan progress entry for this session. Ask before writing.",
+      "targetRoots": [],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "medium",
+      "priority": 7
+    },
+    {
+      "id": "dashboard-next-agent",
+      "name": "dashboard-next",
+      "description": "Continue Dashboard V4 from the plan and verify the running control surface.",
+      "insertText": "Continue Dashboard V4 in {workspace}. Read /root/DASHBOARD_V4_PLAN.md and /root/DASHBOARD_V4_AGENT_PAGES_PLAN.md, implement the next narrow slice, run bun run check, verify control-surface.service, and update AI Vault plus the master plan.",
+      "targetRoots": ["/opt/opencode-control-surface", "/root"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "high",
+      "priority": 30
+    },
+    {
+      "id": "newsbites-dev",
+      "name": "newsbites-dev",
+      "description": "Continue NewsBites development using the local plan and deploy workflow.",
+      "insertText": "Continue NewsBites development in {workspace}. Read the current NewsBites plan/context, make the next focused change, run the relevant checks, and do not manually set article status to published.",
+      "targetRoots": ["/opt/newsbites"],
+      "agents": ["claude", "codex"],
+      "risk": "high",
+      "priority": 30
+    },
+    {
+      "id": "newsbites-debug",
+      "name": "newsbites-debug",
+      "description": "Debug the live NewsBites app and produce verified fixes.",
+      "insertText": "Debug the NewsBites issue in {workspace}. Reproduce with local commands or browser checks, identify the smallest fix, run lint/build as appropriate, and summarize evidence.",
+      "targetRoots": ["/opt/newsbites"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "medium",
+      "priority": 28
+    },
+    {
+      "id": "mimule-ops",
+      "name": "mimule-ops",
+      "description": "Inspect Mimule/OpenClaw gateway, Telegram behavior, and stack runbooks.",
+      "insertText": "Work on Mimule/OpenClaw operations in {workspace}. Read the local SOUL/AGENTS/MEMORY context before edits, verify service/container state, and end with exact evidence plus next steps.",
+      "targetRoots": ["/opt/mimoun"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "high",
+      "priority": 30
+    },
+    {
+      "id": "pipeline-status",
+      "name": "pipeline-status",
+      "description": "Check editorial pipeline queue, current story, blocked stages, and model routing.",
+      "insertText": "Check the editorial pipeline from {workspace}. Inspect the queue, current story, waiting approvals, recent errors, and model/GPU health. Report facts separately from inference.",
+      "targetRoots": ["/opt/mimoun", "/opt/paperclip", "/root"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "low",
+      "priority": 25
+    },
+    {
+      "id": "paperclip-agents",
+      "name": "paperclip-agents",
+      "description": "Inspect Paperclip agent health, logs, and orchestration state.",
+      "insertText": "Inspect Paperclip in {workspace}. Check docker compose state, recent logs, agent definitions, and any blocked editorial actions. Avoid credential output.",
+      "targetRoots": ["/opt/paperclip"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "medium",
+      "priority": 30
+    },
+    {
+      "id": "root-stack-status",
+      "name": "stack-status",
+      "description": "Check the whole MIMULE/TechInsiderBytes stack from root plans and live services.",
+      "insertText": "Check stack status from {workspace}. Use /root/CLAUDE.md and /home/agent/MIMULE_MASTER_PLAN_V3.md as context, inspect live service health, and return a prioritized operator summary.",
+      "targetRoots": ["/root"],
+      "agents": ["claude", "codex", "opencode"],
+      "risk": "low",
+      "priority": 30
+    }
+  ]
+}

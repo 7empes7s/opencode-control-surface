@@ -48,7 +48,13 @@ Copy `.env.example` to `.env` and configure:
 OPENCODE_SERVER_URL=http://localhost:4096
 OPENCODE_SERVER_USERNAME=opencode
 OPENCODE_SERVER_PASSWORD=your-password
+OPERATOR_TOKEN=generate-a-long-random-token
 ```
+
+Mutating dashboard actions require an authenticated operator session. The server never vends
+`OPERATOR_TOKEN` to browser JavaScript; the browser establishes an HttpOnly same-site session
+through `/api/auth/session` when a protected action is first attempted. If `OPERATOR_TOKEN` is
+unset, mutations are allowed only for localhost development requests outside production mode.
 
 ## Features (Phase 1)
 

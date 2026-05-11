@@ -12,6 +12,57 @@ export function ok<T>(data: T, sources: Record<string, SourceStatus> = {}): ApiE
 
 // ── Shared primitives ─────────────────────────────────────────────────────
 
+export interface EvidenceRef {
+  label: string;
+  kind: "file" | "api" | "command" | "log" | "git" | "url" | "db";
+  ref: string;
+  redacted?: boolean;
+}
+
+export interface ActionDescriptor {
+  id: string;
+  label: string;
+  kind:
+    | "navigate"
+    | "refresh"
+    | "run-command"
+    | "start-job"
+    | "mutate-policy"
+    | "open-shell"
+    | "open-workspace"
+    | "open-source"
+    | "create-agent-task"
+    | "acknowledge"
+    | "resolve"
+    | "mute"
+    | "external-link"
+    | "copy-command"
+    | "export"
+    | "preview";
+  targetType: string;
+  targetId: string;
+  risk: "low" | "medium" | "high" | "destructive";
+  confirm: boolean;
+  reasonRequired: boolean;
+  disabled?: boolean;
+  disabledReason?: string;
+  evidenceRefs: EvidenceRef[];
+  impactPreview?: string;
+  rollbackHint?: string;
+  expectedDurationMs?: number;
+  jobKind?: string;
+  sourceRoute?: string;
+  requiresOnline?: boolean;
+}
+
+export interface ActionableEntity<T> {
+  entity: T;
+  health: "ok" | "warn" | "critical" | "unknown";
+  freshness: "fresh" | "stale" | "missing";
+  evidence: EvidenceRef[];
+  actions: ActionDescriptor[];
+}
+
 export interface ServicePill {
   name: string;
   status: "active" | "inactive" | "failed" | "unknown";

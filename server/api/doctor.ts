@@ -1,4 +1,11 @@
-import { getFullLog, getDoctorStats, type FullLogOpts } from "../adapters/doctor.ts";
+import {
+  getDoctorEntryErrorType,
+  getDoctorEntryFailedModel,
+  getDoctorEntryReason,
+  getFullLog,
+  getDoctorStats,
+  type FullLogOpts,
+} from "../adapters/doctor.ts";
 import { ok, type ApiEnvelope, type DoctorDetail } from "./types.ts";
 
 export function doctorHandler(url: URL): Response {
@@ -18,9 +25,9 @@ export function doctorHandler(url: URL): Response {
       slug: e.slug ?? "",
       stage: e.stage ?? "",
       action: e.action ?? "",
-      reason: e.reason ?? "",
-      errorType: e.errorType ?? "",
-      failedModel: e.failedModel ?? "",
+      reason: getDoctorEntryReason(e),
+      errorType: getDoctorEntryErrorType(e),
+      failedModel: getDoctorEntryFailedModel(e),
       nextStage: e.nextStage,
       cooldownMs: e.cooldownMs,
     })),

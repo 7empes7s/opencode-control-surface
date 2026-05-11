@@ -1,6 +1,14 @@
 import { useState } from "react";
 import { useApi } from "../hooks/useApi";
-import type { IncidentsDetail } from "../../server/api/types";
+import type { ActionDescriptor, EvidenceRef, IncidentsDetail } from "../../server/api/types";
+
+type IncidentEntry = IncidentsDetail["entries"][number];
+
+interface ActionCatalogData {
+  actions: ActionDescriptor[];
+  degraded: boolean;
+  sources: Record<string, "ok" | "error">;
+}
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -24,15 +32,49 @@ function errorColor(t: string): string {
   return "red";
 }
 
+function riskColor(risk: ActionDescriptor["risk"]): string {
+  if (risk === "high" || risk === "destructive") return "red";
+  if (risk === "medium") return "amber";
+  return "green";
+}
+
+function incidentTargetId(e: IncidentEntry): string {
+  return `${e.type}:${e.slug}:${e.stage}:${e.errorType}`;
+}
+
+function uniqEvidence(actions: ActionDescriptor[], selected: IncidentEntry | null): EvidenceRef[] {
+  const refs = actions.flatMap((action) => action.evidenceRefs);
+  if (refs.length === 0 && selected) {
+    return [
+      {
+        label: selected.type === "doctor-abandoned" ? "Doctor log" : "Pipeline alerts",
+        kind: "file",
+        ref: selected.type === "doctor-abandoned" ? "/var/lib/mimule/doctor-log.jsonl" : "/var/lib/mimule/pipeline-alerts.json",
+      },
+      { label: "Incidents detail", kind: "api", ref: "/api/incidents" },
+    ];
+  }
+
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.kind}:${ref.label}:${ref.ref}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function IncidentsPage() {
   const { data, loading, error } = useApi<IncidentsDetail>("/api/incidents", 30_000);
+  const { data: catalog } = useApi<ActionCatalogData>("/api/actions/catalog?targetType=incident", 60_000);
   const [filterType, setFilterType] = useState("");
   const [filterError, setFilterError] = useState("");
   const [filterStage, setFilterStage] = useState("");
+  const [selected, setSelected] = useState<IncidentEntry | null>(null);
   const window24h = 24 * 60 * 60 * 1000;
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
 
   const d = data;
@@ -43,9 +85,80 @@ export function IncidentsPage() {
     if (filterStage && e.stage !== filterStage) return false;
     return true;
   });
+  const selectedActions = selected
+    ? (catalog?.actions ?? []).filter((action) => action.targetId === incidentTargetId(selected))
+    : [];
+  const selectedEvidence = uniqEvidence(selectedActions, selected);
 
   return (
     <div className="dash-page">
+      {selected && (
+        <div className="evidence-drawer-overlay" onClick={() => setSelected(null)}>
+          <aside className="evidence-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="evidence-drawer-head">
+              <div>
+                <div className="evidence-drawer-kicker">incident evidence</div>
+                <div className="evidence-drawer-title">{selected.slug || "unknown story"}</div>
+              </div>
+              <button className="drawer-close" onClick={() => setSelected(null)} aria-label="Close evidence drawer">×</button>
+            </div>
+
+            <div className="evidence-drawer-summary">
+              <Pill color={selected.type === "doctor-abandoned" ? "red" : "amber"}>
+                {selected.type === "doctor-abandoned" ? "abandoned" : "failed"}
+              </Pill>
+              <Pill color="gray">{selected.stage || "unknown stage"}</Pill>
+              <Pill color={errorColor(selected.errorType)}>{selected.errorType}</Pill>
+              <span className="mono dim" title={fmtTs(selected.ts)}>{relTime(selected.ts)}</span>
+            </div>
+
+            <div className="evidence-block">
+              <div className="evidence-block-title">Actions</div>
+              {selectedActions.length === 0 ? (
+                <div className="evidence-empty">
+                  No catalog actions matched this incident yet. Evidence is still shown below for inspection.
+                </div>
+              ) : (
+                <div className="evidence-action-list">
+                  {selectedActions.map((action) => (
+                    <div key={action.id} className={`evidence-action ${action.disabled ? "disabled" : ""}`}>
+                      <div className="evidence-action-main">
+                        <div className="evidence-action-label">{action.label}</div>
+                        <div className="evidence-action-meta">
+                          <Pill color={riskColor(action.risk)}>{action.risk}</Pill>
+                          {action.reasonRequired && <Pill color="gray">reason</Pill>}
+                          {action.confirm && <Pill color="gray">confirm</Pill>}
+                        </div>
+                      </div>
+                      {action.impactPreview && <div className="evidence-copy">{action.impactPreview}</div>}
+                      {action.rollbackHint && <div className="evidence-muted">Rollback: {action.rollbackHint}</div>}
+                      {action.disabled && action.disabledReason && (
+                        <div className="evidence-disabled">{action.disabledReason}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="evidence-block">
+              <div className="evidence-block-title">Evidence</div>
+              <div className="evidence-ref-list">
+                {selectedEvidence.map((ref) => (
+                  <div key={`${ref.kind}:${ref.label}:${ref.ref}`} className="evidence-ref">
+                    <span className="pill gray">{ref.kind}</span>
+                    <div>
+                      <div className="evidence-ref-label">{ref.label}</div>
+                      <div className="evidence-ref-path">{ref.ref}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       <div className="page-header">
         <div className="page-title">Incidents</div>
         <div className="stat-row">
@@ -127,11 +240,14 @@ export function IncidentsPage() {
           ) : (
             <table className="data-table">
               <thead><tr>
-                <th>when</th><th>type</th><th>slug</th><th>stage</th><th>error</th>
+                <th>when</th><th>type</th><th>slug</th><th>stage</th><th>error</th><th></th>
               </tr></thead>
               <tbody>
                 {filtered.map((e, i) => (
-                  <tr key={i} style={{ opacity: Date.now() - e.ts > window24h ? 0.6 : 1 }}>
+                  <tr
+                    key={`${e.type}:${e.ts}:${e.slug}:${e.stage}:${e.errorType}:${i}`}
+                    style={{ opacity: Date.now() - e.ts > window24h ? 0.6 : 1 }}
+                  >
                     <td className="mono dim" style={{ fontSize: 10, whiteSpace: "nowrap" }}>
                       <span title={fmtTs(e.ts)}>{relTime(e.ts)}</span>
                     </td>
@@ -144,6 +260,11 @@ export function IncidentsPage() {
                     <td className="mono dim">{e.stage}</td>
                     <td>
                       <Pill color={errorColor(e.errorType)}>{e.errorType}</Pill>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <button className="btn btn-sm btn-ghost" onClick={() => setSelected(e)}>
+                        evidence
+                      </button>
                     </td>
                   </tr>
                 ))}

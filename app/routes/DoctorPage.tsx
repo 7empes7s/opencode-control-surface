@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useApi } from "../hooks/useApi";
+import { useAction } from "../hooks/useAction";
 import type { DoctorDetail } from "../../server/api/types";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -18,13 +19,14 @@ function verdictColor(action: string): string {
 }
 
 export function DoctorPage() {
-  const { data, loading, error } = useApi<DoctorDetail>("/api/doctor", 15_000);
+  const { data, loading, error, refresh } = useApi<DoctorDetail>("/api/doctor", 15_000);
+  const scan = useAction("/api/doctor/scan");
   const [filterStage, setFilterStage] = useState("");
   const [filterError, setFilterError] = useState("");
   const [filterModel, setFilterModel] = useState("");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim" style={{ color: "var(--red)" }}>error: {error}</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
 
   const d = data;
@@ -65,6 +67,20 @@ export function DoctorPage() {
               </div>
             </div>
           )}
+        </div>
+        <div className="action-bar" style={{ marginTop: 12 }}>
+          <button
+            className="btn btn-ghost"
+            disabled={scan.loading}
+            onClick={async () => {
+              const ok = await scan.run();
+              if (ok) refresh();
+            }}
+          >
+            {scan.loading ? "Running scan..." : "Run doctor scan"}
+          </button>
+          {scan.success && <span className="action-feedback ok">{scan.success}</span>}
+          {scan.error && <span className="action-feedback err">{scan.error}</span>}
         </div>
       </div>
 

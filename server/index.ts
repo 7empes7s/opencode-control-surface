@@ -1,4 +1,8 @@
 import { handleApi } from "./api/router.ts";
+import { checkToken } from "./api/actions.ts";
+import { normalizeWorkspace } from "./api/workspaces.ts";
+import { initDashboardDb } from "./db/dashboard.ts";
+import { startIngestor } from "./db/ingestor.ts";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const PORT = parseInt(process.env.PORT || "3000");
@@ -44,23 +48,56 @@ async function serveStatic(pathname: string): Promise<Response> {
 }
 
 async function proxyOpenCode(req: Request, pathname: string, search: string): Promise<Response> {
-  const targetPath = pathname.replace(/^\/opencode/, "") || "/";
+  const targetPath = pathname.replace(/^\/opencode-api/, "") || "/";
   const targetUrl = `${OPENCODE_URL}${targetPath}${search}`;
 
   const proxyHeaders = new Headers(req.headers);
   proxyHeaders.delete("host");
+  proxyHeaders.delete("content-length");
+
+  let body: BodyInit | undefined =
+    req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined;
+
+  if (req.method === "POST" && targetPath === "/session") {
+    let payload: Record<string, unknown>;
+    try {
+      payload = await req.json() as Record<string, unknown>;
+    } catch {
+      return new Response(JSON.stringify({ error: "invalid json" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const workspace = normalizeWorkspace(typeof payload.directory === "string" ? payload.directory : undefined);
+    if (workspace.ok === false) {
+      return new Response(JSON.stringify({ error: workspace.error }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    payload.directory = workspace.path;
+    body = JSON.stringify(payload);
+    proxyHeaders.set("content-type", "application/json");
+  }
 
   try {
     const resp = await fetch(targetUrl, {
       method: req.method,
       headers: proxyHeaders,
-      body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+      body,
     } as RequestInit);
+
+    const headers = new Headers(resp.headers);
+    // Bun fetch transparently decodes compressed upstream responses. Forwarding
+    // the original encoding headers makes browsers try to decode the body again.
+    headers.delete("content-encoding");
+    headers.delete("content-length");
+    headers.delete("transfer-encoding");
 
     // Stream the response body through unchanged
     return new Response(resp.body, {
       status: resp.status,
-      headers: resp.headers,
+      headers,
     });
   } catch {
     return new Response(JSON.stringify({ error: "OpenCode server unavailable" }), {
@@ -70,9 +107,26 @@ async function proxyOpenCode(req: Request, pathname: string, search: string): Pr
   }
 }
 
+const dashboardDb = initDashboardDb();
+if (process.env.DASHBOARD_DB === "1" && !dashboardDb) {
+  console.error("[control-surface] DASHBOARD_DB=1 but dashboard SQLite is unavailable; continuing without durable history");
+}
+
+const ingestor = startIngestor();
+if (ingestor) {
+  console.log("[control-surface] dashboard ingestor started");
+  const shutdown = () => {
+    ingestor.stop();
+    process.exit(0);
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "0.0.0.0",
+  idleTimeout: 0, // SSE and Claude streaming need no idle cutoff
 
   async fetch(req) {
     const url = new URL(req.url);
@@ -88,7 +142,13 @@ const server = Bun.serve({
       return handleApi(req, url);
     }
 
-    if (pathname.startsWith("/opencode")) {
+    if (pathname.startsWith("/opencode-api")) {
+      if (!checkToken(req)) {
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return proxyOpenCode(req, pathname, search);
     }
 
