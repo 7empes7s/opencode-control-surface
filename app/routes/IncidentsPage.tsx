@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useApi } from "../hooks/useApi";
 import type { ActionDescriptor, EvidenceRef, IncidentsDetail } from "../../server/api/types";
+import { AnimatedNumber, IncidentHeatmap } from "../components/AnimatedCharts";
 
 type IncidentEntry = IncidentsDetail["entries"][number];
 
@@ -62,6 +63,32 @@ function uniqEvidence(actions: ActionDescriptor[], selected: IncidentEntry | nul
     seen.add(key);
     return true;
   });
+}
+
+function IncidentTimeline({ entries }: { entries: IncidentsDetail["entries"] }) {
+  const buckets = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const e of entries) {
+      const d = new Date(e.ts);
+      const day = d.toISOString().slice(0, 10);
+      const hour = d.getUTCHours();
+      const key = `${day}:${hour}`;
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return Array.from(map.entries()).map(([k, count]) => {
+      const [day, hour] = k.split(":");
+      return { day, hour: Number(hour), count };
+    });
+  }, [entries]);
+
+  return (
+    <div className="section-card" style={{ marginBottom: 16 }}>
+      <div className="section-card-header"><span className="title">7-day error heatmap</span></div>
+      <div className="section-card-body" style={{ padding: "10px 14px" }}>
+        <IncidentHeatmap buckets={buckets} />
+      </div>
+    </div>
+  );
 }
 
 export function IncidentsPage() {
@@ -163,15 +190,17 @@ export function IncidentsPage() {
         <div className="page-title">Incidents</div>
         <div className="stat-row">
           <div className="stat-item">
-            <div className="stat-val">{d.stats.total}</div>
+            <div className="stat-val"><AnimatedNumber value={d.stats.total} /></div>
             <div className="stat-lbl">total</div>
           </div>
           <div className="stat-item">
-            <div className="stat-val">{d.stats.last24h}</div>
+            <div className="stat-val"><AnimatedNumber value={d.stats.last24h} /></div>
             <div className="stat-lbl">last 24h</div>
           </div>
         </div>
       </div>
+
+      {d.entries.length > 0 && <IncidentTimeline entries={d.entries} />}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
         {/* Error type breakdown */}

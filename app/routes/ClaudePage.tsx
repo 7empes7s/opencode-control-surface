@@ -360,7 +360,7 @@ export function ClaudePage() {
       {drawerOpen && <div className="oc-drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
 
       <main className="oc-main">
-        <AgentDiscoveryStrip agent="claude" />
+        <AgentDiscoveryStrip agent="claude" onInsert={(t) => setInput((prev) => prev + t)} />
         {!active ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />

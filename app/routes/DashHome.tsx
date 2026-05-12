@@ -3,6 +3,7 @@ import { useApi, fmtAge, fmtMs } from "../hooks/useApi";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
 import { BarChart, Bar, ResponsiveContainer, Tooltip, Cell } from "recharts";
+import { AnimatedNumber, AreaSparkline, Gauge, LiveTick, PipelineFlowBar } from "../components/AnimatedCharts";
 
 interface MissionControlData {
   nowCard: {
@@ -154,23 +155,8 @@ function WCard({ href, children, className = "" }: { href?: string; children: Re
 }
 
 function SparkBars({ values }: { values: number[] }) {
-  const data = values.map((v, i) => ({ i, v }));
   return (
-    <ResponsiveContainer width="100%" height={32}>
-      <BarChart data={data} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-        <Tooltip
-          contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 10 }}
-          itemStyle={{ color: "#4ade80" }}
-          formatter={(val: number) => [val, "articles"]}
-          labelFormatter={() => ""}
-        />
-        <Bar dataKey="v" radius={[2, 2, 0, 0]}>
-          {data.map((d) => (
-            <Cell key={d.i} fill={d.v > 0 ? "#4ade80" : "#222"} opacity={d.v > 0 ? 0.75 : 1} />
-          ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+    <AreaSparkline values={values} height={40} gradientId="sparkline-home" />
   );
 }
 
@@ -226,11 +212,14 @@ export function DashHome() {
 
         <div className="widget-grid" style={{ marginTop: 8 }}>
           <WCard href="/infra#gpu">
-            <div className="w-label">gpu</div>
-            <div className="w-row">
-              <Pill color={gpuColor}>{d.gpu.status}</Pill>
-              {d.gpu.gpuUtil !== null && <span className="w-caption">{d.gpu.gpuUtil}% util</span>}
+            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              gpu <Pill color={gpuColor}>{d.gpu.status}</Pill>
             </div>
+            {d.gpu.gpuUtil !== null ? (
+              <Gauge pct={d.gpu.gpuUtil} label="utilization" />
+            ) : (
+              <div className="w-caption" style={{ marginTop: 6 }}>util not available</div>
+            )}
             {d.gpu.loadedModels.length > 0 && (
               <div className="w-caption" style={{ marginTop: 4 }}>
                 {d.gpu.loadedModels.join(", ")}
@@ -271,8 +260,10 @@ export function DashHome() {
         <div className="dash-section-title">newsbites</div>
         <div className="widget-grid">
           <WCard href="/newsbites">
-            <div className="w-label">total published</div>
-            <div className="w-headline">{d.newsbites.totalPublished}</div>
+            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              total published <LiveTick live={connected ?? false} />
+            </div>
+            <div className="w-headline"><AnimatedNumber value={d.newsbites.totalPublished} /></div>
             <div className="w-caption">+{d.newsbites.publishedToday} today</div>
           </WCard>
 
@@ -313,12 +304,14 @@ export function DashHome() {
         <div className="widget-grid">
           <WCard href="/autopipeline#queue">
             <div className="w-label">queue depth</div>
-            <div className="w-headline">{d.autopipeline.queueDepth}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
-              {Object.entries(d.autopipeline.stageBreakdown).map(([stage, count]) => (
-                <span key={stage} className="pill gray">{stage} {count}</span>
-              ))}
-            </div>
+            <div className="w-headline"><AnimatedNumber value={d.autopipeline.queueDepth} /></div>
+            <PipelineFlowBar stages={[
+              { name: "scout",    count: d.autopipeline.stageBreakdown["scout"]    ?? 0 },
+              { name: "research", count: d.autopipeline.stageBreakdown["research"] ?? 0, hot: (d.autopipeline.stageBreakdown["research"] ?? 0) > 0 },
+              { name: "write",    count: d.autopipeline.stageBreakdown["write"]    ?? 0, hot: (d.autopipeline.stageBreakdown["write"]    ?? 0) > 0 },
+              { name: "verify",   count: d.autopipeline.stageBreakdown["verify"]   ?? 0 },
+              { name: "publish",  count: d.autopipeline.stageBreakdown["publish"]  ?? 0, warn: (d.autopipeline.stageBreakdown["publish"]  ?? 0) > 0 },
+            ]} />
           </WCard>
 
           <WCard href="/autopipeline#current">

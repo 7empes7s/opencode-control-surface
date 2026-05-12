@@ -6,6 +6,7 @@ import type { AutopipelineDetail } from "../../server/api/types";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
+import { AnimatedNumber } from "../components/AnimatedCharts";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -68,11 +69,11 @@ export function AutopipelinePage() {
         <div className="page-title">Autopipeline</div>
         <div className="stat-row">
           <div className="stat-item">
-            <div className="stat-val">{d.stats.queueDepth}</div>
+            <div className="stat-val"><AnimatedNumber value={d.stats.queueDepth} /></div>
             <div className="stat-lbl">queued</div>
           </div>
           <div className="stat-item">
-            <div className="stat-val">{d.stats.approvalsWaiting}</div>
+            <div className="stat-val"><AnimatedNumber value={d.stats.approvalsWaiting} /></div>
             <div className="stat-lbl">waiting approval</div>
           </div>
           <div className="stat-item" style={{ display: "flex", alignItems: "flex-start", flexDirection: "column", gap: 2 }}>

@@ -361,7 +361,7 @@ export function CodexPage() {
       {drawerOpen && <div className="oc-drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
 
       <main className="oc-main">
-        <AgentDiscoveryStrip agent="codex" />
+        <AgentDiscoveryStrip agent="codex" onInsert={(t) => setInput((prev) => prev + t)} />
         {!active ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />

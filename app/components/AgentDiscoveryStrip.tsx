@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Boxes, PlugZap, TerminalSquare } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Boxes, ChevronRight, PlugZap, Search, TerminalSquare, X } from "lucide-react";
 
 type AgentId = "claude" | "codex" | "opencode";
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
@@ -47,9 +48,139 @@ function versionText(agent: AgentId, data: DiscoveryData | null): string {
   return raw.split(/\r?\n/)[0].slice(0, 42);
 }
 
-export function AgentDiscoveryStrip({ agent }: { agent: AgentId }) {
+function SkillsBrowser({
+  agent,
+  data,
+  onInsert,
+  onClose,
+}: {
+  agent: AgentId;
+  data: DiscoveryData;
+  onInsert?: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const skills = useMemo(() => {
+    const all = (data.skills ?? []).filter((s) => s.agents.includes(agent));
+    if (!query.trim()) return all;
+    const q = query.toLowerCase();
+    return all.filter((s) =>
+      s.name.toLowerCase().includes(q) ||
+      s.description.toLowerCase().includes(q) ||
+      s.source.toLowerCase().includes(q),
+    );
+  }, [data, agent, query]);
+
+  const commands = useMemo(() => {
+    const all = (data.commands ?? []).filter((c) => c.agents.includes(agent));
+    if (!query.trim()) return all;
+    const q = query.toLowerCase();
+    return all.filter((c) =>
+      c.name.toLowerCase().includes(q) ||
+      c.description.toLowerCase().includes(q),
+    );
+  }, [data, agent, query]);
+
+  const modal = (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="skills-browser" onClick={(e) => e.stopPropagation()}>
+        <div className="skills-browser-head">
+          <Search size={13} className="skills-browser-search-icon" />
+          <input
+            ref={inputRef}
+            className="skills-browser-input"
+            placeholder="Search skills and commands…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button className="oc-icon-btn" style={{ flexShrink: 0 }} onClick={onClose} aria-label="Close">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="skills-browser-body">
+          {skills.length > 0 && (
+            <div className="skills-browser-section">
+              <div className="skills-browser-section-label">skills ({skills.length})</div>
+              {skills.map((s) => (
+                <button
+                  key={`${s.source}:${s.name}`}
+                  type="button"
+                  className="skills-browser-item"
+                  onClick={() => {
+                    onInsert?.(`/${s.name} `);
+                    onClose();
+                  }}
+                >
+                  <span className="skills-browser-item-name">/{s.name}</span>
+                  <span className="skills-browser-item-desc">{s.description}</span>
+                  <span className="skills-browser-item-source">{s.source}</span>
+                  {onInsert && <ChevronRight size={11} className="skills-browser-item-arrow" />}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {commands.length > 0 && (
+            <div className="skills-browser-section">
+              <div className="skills-browser-section-label">commands ({commands.length})</div>
+              {commands.map((c) => (
+                <button
+                  key={`${c.source}:${c.name}`}
+                  type="button"
+                  className="skills-browser-item"
+                  onClick={() => {
+                    onInsert?.(`/${c.name} `);
+                    onClose();
+                  }}
+                >
+                  <span className="skills-browser-item-name">/{c.name}</span>
+                  <span className="skills-browser-item-desc">{c.description}</span>
+                  <span className="skills-browser-item-source">{c.source}</span>
+                  {onInsert && <ChevronRight size={11} className="skills-browser-item-arrow" />}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {skills.length === 0 && commands.length === 0 && (
+            <div className="skills-browser-empty">
+              {query ? `No matches for "${query}"` : "No skills or commands found for this agent."}
+            </div>
+          )}
+        </div>
+
+        {!onInsert && (
+          <div className="skills-browser-hint">
+            Type <code>/skill-name</code> in the composer to invoke a skill.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return createPortal(modal, document.body);
+}
+
+export function AgentDiscoveryStrip({
+  agent,
+  onInsert,
+}: {
+  agent: AgentId;
+  onInsert?: (text: string) => void;
+}) {
   const [data, setData] = useState<DiscoveryData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [browserOpen, setBrowserOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,39 +222,56 @@ export function AgentDiscoveryStrip({ agent }: { agent: AgentId }) {
   }
 
   return (
-    <div className="agent-discovery-strip">
-      <div className="agent-discovery-group">
-        <span className={`agent-status-dot ${statusClass(cliStatus)}`} />
-        <TerminalSquare size={13} />
-        <span className="agent-discovery-label">{versionText(agent, data)}</span>
-      </div>
-      <div className="agent-discovery-group">
-        <Boxes size={13} />
-        <span>{data ? counts.skills : "..."}</span>
-        <span className="agent-discovery-muted">skills</span>
-      </div>
-      <div className="agent-discovery-group">
-        <span>{data ? counts.commands : "..."}</span>
-        <span className="agent-discovery-muted">commands</span>
-      </div>
-      <div className="agent-discovery-group">
-        <span>{data ? counts.sessions : "..."}</span>
-        <span className="agent-discovery-muted">sessions</span>
-      </div>
-      <div className="agent-discovery-group">
-        <span className={`agent-status-dot ${statusClass(mcpStatus)}`} />
-        <PlugZap size={13} />
-        <span className="agent-discovery-muted">mcp</span>
-      </div>
-      {agent === "opencode" && data && (
-        <div className="agent-discovery-group wide">
-          <span>{data.runtime.opencodeAgents.count}</span>
-          <span className="agent-discovery-muted">agents</span>
-          {data.runtime.opencodeAgents.names.slice(0, 3).map((name) => (
-            <span key={name} className="agent-mini-chip">{name}</span>
-          ))}
+    <>
+      <div className="agent-discovery-strip">
+        <div className="agent-discovery-group">
+          <span className={`agent-status-dot ${statusClass(cliStatus)}`} />
+          <TerminalSquare size={13} />
+          <span className="agent-discovery-label">{versionText(agent, data)}</span>
         </div>
+        <button
+          type="button"
+          className={`agent-discovery-group agent-discovery-skills-btn${browserOpen ? " active" : ""}`}
+          onClick={() => setBrowserOpen(true)}
+          title="Browse skills"
+          disabled={!data}
+        >
+          <Boxes size={13} />
+          <span>{data ? counts.skills : "..."}</span>
+          <span className="agent-discovery-muted">skills</span>
+        </button>
+        <div className="agent-discovery-group">
+          <span>{data ? counts.commands : "..."}</span>
+          <span className="agent-discovery-muted">commands</span>
+        </div>
+        <div className="agent-discovery-group">
+          <span>{data ? counts.sessions : "..."}</span>
+          <span className="agent-discovery-muted">sessions</span>
+        </div>
+        <div className="agent-discovery-group">
+          <span className={`agent-status-dot ${statusClass(mcpStatus)}`} />
+          <PlugZap size={13} />
+          <span className="agent-discovery-muted">mcp</span>
+        </div>
+        {agent === "opencode" && data && (
+          <div className="agent-discovery-group wide">
+            <span>{data.runtime.opencodeAgents.count}</span>
+            <span className="agent-discovery-muted">agents</span>
+            {data.runtime.opencodeAgents.names.slice(0, 3).map((name) => (
+              <span key={name} className="agent-mini-chip">{name}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {browserOpen && data && (
+        <SkillsBrowser
+          agent={agent}
+          data={data}
+          onInsert={onInsert}
+          onClose={() => setBrowserOpen(false)}
+        />
       )}
-    </div>
+    </>
   );
 }

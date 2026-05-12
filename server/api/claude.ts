@@ -201,7 +201,7 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
 
   const args = [
     "-p", text,
-    "--permission-mode", "dontAsk",
+    "--dangerously-skip-permissions",
     "--output-format", "stream-json",
     "--verbose",
     isFirstTurn ? "--session-id" : "--resume",

@@ -324,7 +324,6 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--json",
-        "--color", "never",
         "-C", session.directory,
         text,
       ];

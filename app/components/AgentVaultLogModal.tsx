@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, BookOpen, CheckCircle2, Loader2 } from "lucide-react";
 
 export type VaultLogDraft = {
@@ -62,7 +63,7 @@ export function AgentVaultLogModal({
 
   const noTarget = !draft.includeVault && !draft.includeProject && !draft.includeMasterPlan;
 
-  return (
+  const modal = (
     <div className="modal-overlay" onClick={() => !busy && onDismiss("dismiss")}>
       <div className="modal-box oc-vault-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">{heading}</div>
@@ -124,6 +125,8 @@ export function AgentVaultLogModal({
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }
 
 function VaultField({

@@ -419,7 +419,7 @@ export function OpenCodeView() {
 
       {/* Chat area */}
       <main className="oc-main">
-        <AgentDiscoveryStrip agent="opencode" />
+        <AgentDiscoveryStrip agent="opencode" onInsert={(t) => setInput((prev) => prev + t)} />
         {!activeSession ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />
