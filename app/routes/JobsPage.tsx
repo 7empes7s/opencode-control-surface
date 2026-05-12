@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
+import { SectionCard } from "../components/SectionCard";
 import type { JobRow } from "../../server/db/writer";
 
 interface JobsData {
@@ -157,11 +158,11 @@ export function JobsPage() {
         </select>
       </div>
 
-      <div className="section-card">
-        <div className="section-card-header">
-          <span className="title">recent jobs</span>
-          <span className="mono dim">{jobs.length} rows</span>
-        </div>
+      <SectionCard
+        title="recent jobs"
+        defaultOpen={true}
+        right={<span className="mono dim">{jobs.length} rows</span>}
+      >
         <div className="section-card-body table-wrap">
           {jobs.length === 0 ? (
             <div className="loading-dim">no jobs</div>
@@ -186,7 +187,7 @@ export function JobsPage() {
             </table>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

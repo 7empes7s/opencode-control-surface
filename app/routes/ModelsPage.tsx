@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { SectionCard } from "../components/SectionCard";
 import type { ModelsDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -120,8 +121,12 @@ export function ModelsPage() {
       </div>
 
       {/* All models table */}
-      <div className="section-card" id="current">
-        <div className="section-card-header"><span className="title">all models</span><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.models.length} total</span></div>
+      <SectionCard
+        title="all models"
+        id="current"
+        defaultOpen={true}
+        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.models.length} total</span>}
+      >
         <div className="section-card-body table-wrap">
           <table className="data-table">
             <thead><tr>
@@ -154,11 +159,10 @@ export function ModelsPage() {
             </tbody>
           </table>
         </div>
-      </div>
+      </SectionCard>
 
       {/* Fallback chains */}
-      <div className="section-card">
-        <div className="section-card-header"><span className="title">fallback chains</span></div>
+      <SectionCard title="fallback chains" defaultOpen={false}>
         <div className="section-card-body" style={{ padding: "12px 14px" }}>
           <div className="chain-list">
             {Object.entries(d.fallbacks).map(([chain, models]) => (
@@ -174,11 +178,15 @@ export function ModelsPage() {
             {Object.keys(d.fallbacks).length === 0 && <div className="loading-dim">no fallback chains in health file</div>}
           </div>
         </div>
-      </div>
+      </SectionCard>
 
       {/* Cooldowns */}
-      <div className="section-card" id="cooldowns">
-        <div className="section-card-header"><span className="title">active cooldowns</span><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.cooldowns.length}</span></div>
+      <SectionCard
+        title="active cooldowns"
+        id="cooldowns"
+        defaultOpen={false}
+        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.cooldowns.length}</span>}
+      >
         <div className="section-card-body table-wrap">
           {d.cooldowns.length === 0 ? (
             <div className="loading-dim">no active cooldowns</div>
@@ -197,11 +205,10 @@ export function ModelsPage() {
             </table>
           )}
         </div>
-      </div>
+      </SectionCard>
 
       {/* Discovery log */}
-      <div className="section-card" id="new">
-        <div className="section-card-header"><span className="title">discovery log</span></div>
+      <SectionCard title="discovery log" id="new" defaultOpen={false}>
         <div className="section-card-body table-wrap">
           {d.discoveryLog.length === 0 ? (
             <div className="loading-dim">discovery log not yet created — will appear after next full model-health-check run</div>
@@ -224,7 +231,7 @@ export function ModelsPage() {
             </table>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

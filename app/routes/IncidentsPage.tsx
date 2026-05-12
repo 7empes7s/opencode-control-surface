@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useApi } from "../hooks/useApi";
 import type { ActionDescriptor, EvidenceRef, IncidentsDetail } from "../../server/api/types";
 import { AnimatedNumber, IncidentHeatmap } from "../components/AnimatedCharts";
+import { SectionCard } from "../components/SectionCard";
 
 type IncidentEntry = IncidentsDetail["entries"][number];
 
@@ -82,12 +83,11 @@ function IncidentTimeline({ entries }: { entries: IncidentsDetail["entries"] }) 
   }, [entries]);
 
   return (
-    <div className="section-card" style={{ marginBottom: 16 }}>
-      <div className="section-card-header"><span className="title">7-day error heatmap</span></div>
+    <SectionCard title="7-day error heatmap" defaultOpen={false} style={{ marginBottom: 16 }}>
       <div className="section-card-body" style={{ padding: "10px 14px" }}>
         <IncidentHeatmap buckets={buckets} />
       </div>
-    </div>
+    </SectionCard>
   );
 }
 
@@ -203,9 +203,7 @@ export function IncidentsPage() {
       {d.entries.length > 0 && <IncidentTimeline entries={d.entries} />}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
-        {/* Error type breakdown */}
-        <div className="section-card">
-          <div className="section-card-header"><span className="title">by error type</span></div>
+        <SectionCard title="by error type" defaultOpen={false}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.byErrorType.map((e) => (
               <div
@@ -219,11 +217,9 @@ export function IncidentsPage() {
               </div>
             ))}
           </div>
-        </div>
+        </SectionCard>
 
-        {/* Stage breakdown */}
-        <div className="section-card">
-          <div className="section-card-header"><span className="title">by stage</span></div>
+        <SectionCard title="by stage" defaultOpen={false}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.byStage.map((s) => (
               <div
@@ -237,7 +233,7 @@ export function IncidentsPage() {
               </div>
             ))}
           </div>
-        </div>
+        </SectionCard>
       </div>
 
       {/* Active filters */}
@@ -258,11 +254,11 @@ export function IncidentsPage() {
       )}
 
       {/* Timeline */}
-      <div className="section-card">
-        <div className="section-card-header">
-          <span className="title">timeline</span>
-          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{filtered.length} events</span>
-        </div>
+      <SectionCard
+        title="timeline"
+        defaultOpen={true}
+        right={<span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{filtered.length} events</span>}
+      >
         <div className="section-card-body table-wrap">
           {filtered.length === 0 ? (
             <div className="loading-dim">no incidents match filters</div>
@@ -301,7 +297,7 @@ export function IncidentsPage() {
             </table>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

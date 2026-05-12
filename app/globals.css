@@ -1040,6 +1040,16 @@ body {
 .section-card-header .title { color: var(--text); font-weight: 600; }
 .section-card-body { padding: 0; }
 
+/* ── Collapsible section card ───────────────────────────────────────────── */
+.sc-header { cursor: pointer; user-select: none; }
+.sc-header:hover { background: var(--bg-hover); }
+.sc-right {
+  display: flex; align-items: center; gap: 8px;
+  flex-shrink: 0;
+}
+.sc-chevron { color: var(--text-dim); transition: transform 0.18s ease; flex-shrink: 0; }
+.sc-chevron-closed { transform: rotate(-90deg); }
+
 /* ── Evidence drawer ──────────────────────────────────────────────────── */
 
 .evidence-drawer-overlay {

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useApi } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import type { DoctorDetail } from "../../server/api/types";
+import { SectionCard } from "../components/SectionCard";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -86,8 +87,7 @@ export function DoctorPage() {
 
       {/* Stats charts */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, marginBottom: 16 }}>
-        <div className="section-card" id="errors">
-          <div className="section-card-header"><span className="title">error classes (24h)</span></div>
+        <SectionCard title="error classes (24h)" id="errors" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.errorClasses.length === 0 ? <div className="loading-dim">none</div> : (
               <ResponsiveContainer width="100%" height={Math.max(60, d.stats.errorClasses.length * 22)}>
@@ -112,10 +112,9 @@ export function DoctorPage() {
               </ResponsiveContainer>
             )}
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="section-card" id="models">
-          <div className="section-card-header"><span className="title">top failing models</span></div>
+        <SectionCard title="top failing models" id="models" defaultOpen={false}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.topFailingModels.length === 0 ? <div className="loading-dim">none</div> : (
               d.stats.topFailingModels.map((m) => (
@@ -126,10 +125,9 @@ export function DoctorPage() {
               ))
             )}
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="section-card" id="verdicts">
-          <div className="section-card-header"><span className="title">verdict mix</span></div>
+        <SectionCard title="verdict mix" id="verdicts" defaultOpen={false}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {d.stats.verdictMix.length === 0 ? <div className="loading-dim">none</div> : (() => {
               const COLORS: Record<string, string> = {
@@ -160,15 +158,15 @@ export function DoctorPage() {
               );
             })()}
           </div>
-        </div>
+        </SectionCard>
       </div>
 
       {/* Full log */}
-      <div className="section-card">
-        <div className="section-card-header">
-          <span className="title">decision log</span>
-          <span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.entries.length} entries (last 2MB)</span>
-        </div>
+      <SectionCard
+        title="decision log"
+        defaultOpen={false}
+        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.entries.length} entries</span>}
+      >
         <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)}
             style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "3px 8px", borderRadius: 3 }}>
@@ -215,7 +213,7 @@ export function DoctorPage() {
             <div className="loading-dim">showing 200 of {filtered.length} entries</div>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

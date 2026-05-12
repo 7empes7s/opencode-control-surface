@@ -7,6 +7,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { AnimatedNumber } from "../components/AnimatedCharts";
+import { SectionCard } from "../components/SectionCard";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -144,27 +145,29 @@ export function AutopipelinePage() {
 
       {/* Current story */}
       {d.current && (
-        <div className="section-card" id="current">
-          <div className="section-card-header"><span className="title">current story</span></div>
+        <SectionCard title="current story" id="current" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "12px 14px" }}>
             <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-bright)", marginBottom: 6 }}>
               {d.current.slug ?? d.current.id}
             </div>
             <Pill color="amber">{d.current.stage}</Pill>
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* Queue */}
-      <div className="section-card" id="queue">
-        <div className="section-card-header">
-          <span className="title">queue</span>
+      <SectionCard
+        title="queue"
+        id="queue"
+        defaultOpen={true}
+        right={
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Object.entries(d.stats.stageBreakdown).map(([stage, count]) => (
               <Pill key={stage} color="gray">{stage} {count}</Pill>
             ))}
           </div>
-        </div>
+        }
+      >
         <div className="section-card-body table-wrap">
           {d.queue.length === 0 ? (
             <div className="loading-dim">queue empty</div>
@@ -206,12 +209,11 @@ export function AutopipelinePage() {
             </div>
           )}
         </div>
-      </div>
+      </SectionCard>
 
       {/* Approvals */}
       {d.stats.approvalsWaiting > 0 && (
-        <div className="section-card" id="approvals">
-          <div className="section-card-header"><span className="title">approvals waiting</span></div>
+        <SectionCard title="approvals waiting" id="approvals" defaultOpen={true}>
           <div className="section-card-body table-wrap">
             <table className="data-table">
               <thead><tr><th>slug / id</th><th>stage</th><th>age</th></tr></thead>
@@ -233,13 +235,12 @@ export function AutopipelinePage() {
               </div>
             )}
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* Stage breakdown chart */}
       {Object.keys(d.stats.stageBreakdown).length > 0 && (
-        <div className="section-card" id="stages">
-          <div className="section-card-header"><span className="title">queue by stage</span></div>
+        <SectionCard title="queue by stage" id="stages" defaultOpen={false}>
           <div className="section-card-body" style={{ padding: "10px 14px" }}>
             {(() => {
               const stageOrder = ["scout", "research", "validate-research", "write", "validate-write", "verify", "publish-prep", "init", "fetch-image", "publish"];
@@ -275,12 +276,11 @@ export function AutopipelinePage() {
               );
             })()}
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* Stage durations */}
-      <div className="section-card" id="throughput">
-        <div className="section-card-header"><span className="title">stage durations (from dossier timestamps)</span></div>
+      <SectionCard title="stage durations" id="throughput" defaultOpen={false}>
         <div className="section-card-body table-wrap">
           <StageDurationTable durations={durationRowsVisible} />
           {durationRows.length > MAX_BODY_ROWS && (
@@ -291,7 +291,7 @@ export function AutopipelinePage() {
             </div>
           )}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

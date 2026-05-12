@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { SectionCard } from "../components/SectionCard";
 import type { NewsBitesDetail } from "../../server/api/types";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -143,8 +144,7 @@ export function NewsBitesPage() {
       )}
 
       {/* Vertical mix */}
-      <div className="section-card" id="by-vertical" style={{ marginBottom: 16 }}>
-        <div className="section-card-header"><span className="title">vertical mix (published)</span></div>
+      <SectionCard title="vertical mix (published)" id="by-vertical" defaultOpen={false}>
         <div className="section-card-body" style={{ padding: "10px 14px", display: "flex", flexWrap: "wrap", gap: 6 }}>
           {s.verticalMix.map((v) => (
             <span key={v.vertical} className="pill gray" style={{ cursor: "pointer" }}
@@ -153,14 +153,15 @@ export function NewsBitesPage() {
             </span>
           ))}
         </div>
-      </div>
+      </SectionCard>
 
       {/* Publish rate last 30d */}
-      <div className="section-card" id="publish-rate" style={{ marginBottom: 16 }}>
-        <div className="section-card-header">
-          <span className="title">publish rate · last 30 days</span>
-          <span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{last30dTotal} articles</span>
-        </div>
+      <SectionCard
+        title="publish rate · last 30 days"
+        id="publish-rate"
+        defaultOpen={false}
+        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{last30dTotal} articles</span>}
+      >
         <div className="section-card-body" style={{ padding: "10px 14px" }}>
           <ResponsiveContainer width="100%" height={80}>
             <BarChart data={s.publishedLast30d} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
@@ -188,12 +189,13 @@ export function NewsBitesPage() {
             {s.publishedLast30d[0]?.date} → {s.publishedLast30d[s.publishedLast30d.length - 1]?.date}
           </div>
         </div>
-      </div>
+      </SectionCard>
 
       {/* Articles table */}
-      <div className="section-card">
-        <div className="section-card-header">
-          <span className="title">articles</span>
+      <SectionCard
+        title="articles"
+        defaultOpen={true}
+        right={
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="search…"
               style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "3px 8px", borderRadius: 3, width: 140 }} />
@@ -210,7 +212,8 @@ export function NewsBitesPage() {
               {verticals.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </div>
-        </div>
+        }
+      >
         <div className="section-card-body table-wrap">
           <table className="data-table">
             <thead><tr>
@@ -238,7 +241,7 @@ export function NewsBitesPage() {
           </table>
           {filtered.length > 200 && <div className="loading-dim">showing 200 of {filtered.length}</div>}
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

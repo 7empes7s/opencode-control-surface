@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { SectionCard } from "../components/SectionCard";
 import type { InfraDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -75,8 +76,7 @@ export function InfraPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginBottom: 16 }}>
 
         {/* Hetzner */}
-        <div className="section-card" id="hetzner">
-          <div className="section-card-header"><span className="title">hetzner CX32</span></div>
+        <SectionCard title="hetzner CX32" id="hetzner" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "12px 14px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div>
@@ -95,11 +95,10 @@ export function InfraPage() {
               </div>
             </div>
           </div>
-        </div>
+        </SectionCard>
 
         {/* GPU / vast */}
-        <div className="section-card" id="gpu">
-          <div className="section-card-header"><span className="title">gpu tunnel</span></div>
+        <SectionCard title="gpu tunnel" id="gpu" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "12px 14px" }}>
             <div className="w-row" style={{ marginBottom: 8 }}>
               <Pill color={d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : "amber"}>{d.gpu.status}</Pill>
@@ -114,11 +113,10 @@ export function InfraPage() {
               checked {d.gpu.checkedAgo >= 0 ? fmtAge(d.gpu.checkedAgo) : "—"}
             </div>
           </div>
-        </div>
+        </SectionCard>
 
         {/* Vast instance */}
-        <div className="section-card" id="vast">
-          <div className="section-card-header"><span className="title">vast.ai instance</span></div>
+        <SectionCard title="vast.ai instance" id="vast" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "12px 14px" }}>
             {d.vastInstance ? (
               <div>
@@ -161,12 +159,11 @@ export function InfraPage() {
               </div>
             )}
           </div>
-        </div>
+        </SectionCard>
       </div>
 
       {/* Services */}
-      <div className="section-card" id="services" style={{ marginBottom: 12 }}>
-        <div className="section-card-header"><span className="title">services</span></div>
+      <SectionCard title="services" id="services" defaultOpen={true}>
         <div className="section-card-body" style={{ padding: "12px 14px" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {d.services.map((s) => (
@@ -185,11 +182,10 @@ export function InfraPage() {
             ))}
           </div>
         </div>
-      </div>
+      </SectionCard>
 
       {/* Timers */}
-      <div className="section-card">
-        <div className="section-card-header"><span className="title">timers</span></div>
+      <SectionCard title="timers" defaultOpen={false}>
         <div className="section-card-body table-wrap">
           <table className="data-table">
             <thead><tr>
@@ -222,7 +218,7 @@ export function InfraPage() {
             </tbody>
           </table>
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

@@ -21,8 +21,10 @@ function DashLayout({ children }: { children: React.ReactNode }) {
     <div className="dash-shell">
       <DashSidebar />
       <main className="dash-main">
-        <DashHeader />
-        <div className="dash-content">{children}</div>
+        <div className="dash-content">
+          <DashHeader />
+          {children}
+        </div>
       </main>
     </div>
   );
