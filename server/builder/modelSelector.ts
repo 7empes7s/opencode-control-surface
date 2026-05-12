@@ -72,15 +72,18 @@ function tryFallback(
     };
   }
 
-  const availableModels = Array.from(modelMap.values()).filter(isModelUsable);
-  if (availableModels.length > 0) {
-    const best = availableModels.reduce((a, b) =>
+  const usableModels = Array.from(modelMap.values()).filter(isModelUsable);
+  if (usableModels.length > 0) {
+    const healthyModels = usableModels.filter(isModelHealthy);
+    const pool = healthyModels.length > 0 ? healthyModels : usableModels;
+    const best = pool.reduce((a, b) =>
       (a.latency ?? Infinity) < (b.latency ?? Infinity) ? a : b
     );
+    const healthNote = healthyModels.length === 0 ? " degraded-or-unknown" : "";
     return {
       model: best.logicalName,
       provider: agent,
-      reason: `emergency-fallback:${priorReason}->${best.logicalName}`,
+      reason: `emergency-fallback:${priorReason}->${best.logicalName}${healthNote}`,
       role,
       capability: best.capability || null,
       qualityStatus: best.qualityStatus,
