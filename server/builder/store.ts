@@ -19,7 +19,15 @@ export type BuilderWorkflowConfig = {
     fallbackTargets: string[];
   };
   validationProfile: {
-    commands: string[];
+    commands: string[]; // deprecated: use internal instead
+    internal: string[];
+    runtime: string[];
+    public: string[];
+    playwright?: {
+      enabled: boolean;
+      config?: string;
+      targets?: string[];
+    };
     internalUrl?: string | null;
     publicUrl?: string | null;
   };
@@ -174,7 +182,9 @@ function validateWorkflowInput(input: BuilderWorkflowInput): void {
   if (!DRAFT_STATUSES.includes(input.status)) throw new Error("invalid draft workflow status");
   if (!getAllowedProject(input.projectRoot)) throw new Error("project root is not allowlisted");
   if (!input.planFile || !existsSync(input.planFile)) throw new Error("PLAN_FILE_NOT_FOUND");
-  if (!input.config.validationProfile.commands.length) throw new Error("at least one validation command required");
+  const hasCommands = input.config.validationProfile.commands.length > 0;
+  const hasInternal = input.config.validationProfile.internal.length > 0;
+  if (!hasCommands && !hasInternal) throw new Error("at least one validation command required (internal or commands field)");
 }
 
 function upsertBuilderProject(project: BuilderProject): string {
@@ -219,7 +229,7 @@ function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
     projectRoot: "",
     agentOrder: [],
     modelPolicy: { fallbackTargets: [] },
-    validationProfile: { commands: [] },
+    validationProfile: { commands: [], internal: [], runtime: [], public: [] },
     gitPolicy: { commit: "manual", push: "never" },
     backupPolicy: { enabled: false, beforeRun: false },
     riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },

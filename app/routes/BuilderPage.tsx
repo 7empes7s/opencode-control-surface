@@ -90,6 +90,10 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
       },
       validationProfile: {
         commands: data.validation.commands,
+        internal: data.validation.commands,
+        runtime: [],
+        public: [],
+        playwright: { enabled: false },
         internalUrl: data.urls.internal,
         publicUrl: data.urls.public,
       },
@@ -118,7 +122,10 @@ function WorkflowModal({
   const [draft, setDraft] = useState<BuilderWorkflowInput>(() => workflowDefaults(data, selectedRoot));
   const [agentOrder, setAgentOrder] = useState(draft.config.agentOrder.join(", "));
   const [fallbackTargets, setFallbackTargets] = useState(draft.config.modelPolicy.fallbackTargets.join(", "));
-  const [commands, setCommands] = useState(draft.config.validationProfile.commands.join("\n"));
+  const [internalCommands, setInternalCommands] = useState(draft.config.validationProfile.internal.join("\n"));
+  const [runtimeCommands, setRuntimeCommands] = useState(draft.config.validationProfile.runtime.join("\n"));
+  const [publicCommands, setPublicCommands] = useState(draft.config.validationProfile.public.join("\n"));
+  const [playwrightEnabled, setPlaywrightEnabled] = useState(draft.config.validationProfile.playwright?.enabled ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -137,7 +144,11 @@ function WorkflowModal({
         },
         validationProfile: {
           ...draft.config.validationProfile,
-          commands: commands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          commands: internalCommands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          internal: internalCommands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          runtime: runtimeCommands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          public: publicCommands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          playwright: { enabled: playwrightEnabled },
         },
       },
     };
@@ -239,8 +250,39 @@ function WorkflowModal({
             />
           </label>
           <label className="modal-input-row builder-form-wide">
-            <span className="modal-input-label">Validation</span>
-            <textarea className="modal-input builder-textarea" value={commands} onChange={(event) => setCommands(event.target.value)} />
+            <span className="modal-input-label">internal</span>
+            <textarea
+              className="modal-input builder-textarea"
+              value={internalCommands}
+              onChange={(event) => setInternalCommands(event.target.value)}
+              placeholder="bun run typecheck&#10;bun run build&#10;bun test server/db/"
+            />
+          </label>
+          <label className="modal-input-row builder-form-wide">
+            <span className="modal-input-label">runtime</span>
+            <textarea
+              className="modal-input builder-textarea"
+              value={runtimeCommands}
+              onChange={(event) => setRuntimeCommands(event.target.value)}
+              placeholder="ephemeral DB smoke, targeted API checks"
+            />
+          </label>
+          <label className="modal-input-row builder-form-wide">
+            <span className="modal-input-label">public</span>
+            <textarea
+              className="modal-input builder-textarea"
+              value={publicCommands}
+              onChange={(event) => setPublicCommands(event.target.value)}
+              placeholder="Playwright desktop/tablet/iPhone checks"
+            />
+          </label>
+          <label className="builder-checkbox builder-form-wide">
+            <input
+              type="checkbox"
+              checked={playwrightEnabled}
+              onChange={(event) => setPlaywrightEnabled(event.target.checked)}
+            />
+            playwright
           </label>
           <label className="modal-input-row">
             <span className="modal-input-label">Commit</span>

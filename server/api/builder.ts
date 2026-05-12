@@ -114,7 +114,15 @@ function errorMessage(error: unknown): string {
 
 async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
   const body = await req.json() as Partial<BuilderWorkflowInput>;
-  const validationProfile = body.config?.validationProfile ?? { commands: [] };
+  const validationProfile = (body.config?.validationProfile ?? { commands: [], internal: [], runtime: [], public: [] }) as {
+    commands?: string[];
+    internal?: string[];
+    runtime?: string[];
+    public?: string[];
+    playwright?: unknown;
+    internalUrl?: string | null;
+    publicUrl?: string | null;
+  };
   return {
     name: String(body.name ?? ""),
     projectRoot: String(body.projectRoot ?? body.config?.projectRoot ?? ""),
@@ -136,6 +144,10 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
       },
       validationProfile: {
         commands: Array.isArray(validationProfile.commands) ? validationProfile.commands : [],
+        internal: Array.isArray((validationProfile as { internal?: string[] }).internal) ? (validationProfile as { internal: string[] }).internal : [],
+        runtime: Array.isArray((validationProfile as { runtime?: string[] }).runtime) ? (validationProfile as { runtime: string[] }).runtime : [],
+        public: Array.isArray((validationProfile as { public?: string[] }).public) ? (validationProfile as { public: string[] }).public : [],
+        playwright: (validationProfile as { playwright?: BuilderWorkflowInput["config"]["validationProfile"]["playwright"] }).playwright,
         internalUrl: validationProfile.internalUrl ?? null,
         publicUrl: validationProfile.publicUrl ?? null,
       },

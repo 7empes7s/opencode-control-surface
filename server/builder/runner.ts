@@ -591,10 +591,26 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     }
   }
 
-  const runStatus = exitCode === 0 && validationIds.every((vid) => {
+  // Validation gate: a pass with validation commands configured must have evidence
+  const profile = workflow?.config.validationProfile;
+  const hasValidationConfig = Boolean(
+    profile &&
+    (
+      (profile.internal?.length ?? 0) > 0 ||
+      (profile.runtime?.length ?? 0) > 0 ||
+      (profile.public?.length ?? 0) > 0 ||
+      (profile.commands?.length ?? 0) > 0
+    )
+  );
+  const allValidationsPassed = validationIds.length > 0 && validationIds.every((vid) => {
     const vs = readBuilderValidations(runId).find((v) => v.id === vid);
     return vs && vs.status === "success";
-  }) ? "success" : exitCode === 0 ? "success" : "failed";
+  });
+
+  let runStatus: "success" | "failed" = "failed";
+  if (exitCode === 0) {
+    runStatus = !hasValidationConfig || allValidationsPassed ? "success" : "failed";
+  }
 
   updateBuilderRun(runId, {
     status: runStatus,
@@ -691,11 +707,30 @@ async function runValidationCommands(
   passId: string,
   projectRoot: string,
 ): Promise<string[]> {
-  const commands = workflow.config.validationProfile.commands;
-  const internalUrl = workflow.config.validationProfile.internalUrl;
-  const publicUrl = workflow.config.validationProfile.publicUrl;
+  const profile = workflow.config.validationProfile;
+  const internalCmds = profile.internal.length > 0 ? profile.internal : profile.commands;
   const validationIds: string[] = [];
-  const ts = Date.now();
+
+  const phase1 = await runInternalValidation(workflow, run, passId, projectRoot, internalCmds);
+  validationIds.push(...phase1);
+
+  const phase2 = await runRuntimeValidation(workflow, run, passId, projectRoot, profile.runtime, profile.internalUrl);
+  validationIds.push(...phase2);
+
+  const phase3 = await runPublicValidation(workflow, run, passId, projectRoot, profile.public, profile.publicUrl, profile.playwright);
+  validationIds.push(...phase3);
+
+  return validationIds;
+}
+
+async function runInternalValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+  commands: string[],
+): Promise<string[]> {
+  const validationIds: string[] = [];
 
   for (const command of commands) {
     const vStarted = Date.now();
@@ -722,7 +757,7 @@ async function runValidationCommands(
         status = "timeout";
       } else {
         error = `exit code ${result.status}`;
-        status = result.status === 0 ? "success" : "failed";
+        status = "failed";
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -747,27 +782,38 @@ async function runValidationCommands(
     validationIds.push(vid);
   }
 
-  // URL smoke checks
-  const urlTargets = [internalUrl, publicUrl].filter(Boolean) as string[];
-  for (const url of urlTargets) {
+  return validationIds;
+}
+
+async function runRuntimeValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+  runtimeCommands: string[],
+  internalUrl: string | null | undefined,
+): Promise<string[]> {
+  const validationIds: string[] = [];
+
+  for (const command of runtimeCommands) {
     const vStarted = Date.now();
+    let outputTail = "";
     let error: string | null = null;
     let status = "failed";
 
     try {
-      const result = spawnSync("curl", [
-        "--max-time", "10",
-        "--silent", "--show-error",
-        "-o", "/dev/null",
-        "-w", "%{http_code}",
-        url,
-      ], { encoding: "utf8", timeout: 15_000 });
-      const code = (result.stdout ?? "").trim();
-      if (code.startsWith("2")) {
-        status = "success";
-      } else {
-        error = `HTTP ${code}`;
-        status = "failed";
+      const workDir = existsSync(projectRoot) ? projectRoot : "/tmp";
+      const result = spawnSync("/bin/bash", ["-c", command], {
+        encoding: "utf8",
+        timeout: 120_000,
+        cwd: workDir,
+        env: { ...process.env, BUILDER_RUN_ID: run.id },
+      });
+      outputTail = (result.stdout ?? "").slice(-4000);
+      if (result.status === 0) status = "success";
+      else {
+        error = `exit code ${result.status ?? "null"}`;
+        status = result.status === null ? "timeout" : "failed";
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -779,13 +825,247 @@ async function runValidationCommands(
       workflowId: workflow.id,
       runId: run.id,
       passId,
-      kind: "url-smoke",
+      kind: "runtime",
+      status,
+      command,
+      url: null,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: outputTail || null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  if (internalUrl) {
+    const vStarted = Date.now();
+    let error: string | null = null;
+    let status = "failed";
+
+    try {
+      const result = spawnSync("curl", [
+        "--max-time", "10",
+        "--silent", "--show-error",
+        "-o", "/dev/null",
+        "-w", "%{http_code}",
+        internalUrl,
+      ], { encoding: "utf8", timeout: 15_000 });
+      const code = (result.stdout ?? "").trim();
+      if (code.startsWith("2")) status = "success";
+      else { error = `HTTP ${code}`; status = "failed"; }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "internal-smoke",
+      status,
+      command: null,
+      url: internalUrl,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  return validationIds;
+}
+
+async function runPublicValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+  publicCommands: string[],
+  publicUrl: string | null | undefined,
+  playwright: { enabled?: boolean; config?: string; targets?: string[] } | undefined,
+): Promise<string[]> {
+  const validationIds: string[] = [];
+
+  for (const command of publicCommands) {
+    const vStarted = Date.now();
+    let outputTail = "";
+    let error: string | null = null;
+    let status = "failed";
+
+    try {
+      const workDir = existsSync(projectRoot) ? projectRoot : "/tmp";
+      const result = spawnSync("/bin/bash", ["-c", command], {
+        encoding: "utf8",
+        timeout: 120_000,
+        cwd: workDir,
+        env: { ...process.env, BUILDER_RUN_ID: run.id },
+      });
+      outputTail = (result.stdout ?? "").slice(-4000);
+      if (result.status === 0) status = "success";
+      else {
+        error = `exit code ${result.status ?? "null"}`;
+        status = result.status === null ? "timeout" : "failed";
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "public",
+      status,
+      command,
+      url: null,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: outputTail || null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  if (publicUrl) {
+    const vStarted = Date.now();
+    let error: string | null = null;
+    let status = "failed";
+
+    try {
+      const result = spawnSync("curl", [
+        "--max-time", "10",
+        "--silent", "--show-error",
+        "-o", "/dev/null",
+        "-w", "%{http_code}",
+        publicUrl,
+      ], { encoding: "utf8", timeout: 15_000 });
+      const code = (result.stdout ?? "").trim();
+      if (code.startsWith("2")) status = "success";
+      else { error = `HTTP ${code}`; status = "failed"; }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "public-smoke",
+      status,
+      command: null,
+      url: publicUrl,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  if (playwright?.enabled) {
+    const pwIds = await runPlaywrightValidation(workflow, run, passId, projectRoot, playwright);
+    validationIds.push(...pwIds);
+  }
+
+  return validationIds;
+}
+
+async function runPlaywrightValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+  config: { config?: string; targets?: string[] },
+): Promise<string[]> {
+  const validationIds: string[] = [];
+  const runDirPath = `/var/lib/control-surface/builder-runs/${run.id}`;
+  const pwDir = join(runDirPath, "playwright");
+  const traceFile = join(pwDir, "trace.zip");
+  const reportFile = join(pwDir, "report.html");
+
+  try {
+    mkdirSync(pwDir, { recursive: true });
+  } catch {
+    // dir may already exist
+  }
+
+  const targets = config.targets?.length ? config.targets : ["/"];
+  const internalUrl = workflow.config.validationProfile.internalUrl ?? "http://127.0.0.1:3000";
+
+  for (const target of targets) {
+    const vStarted = Date.now();
+    let error: string | null = null;
+    let status = "failed";
+    let outputTail = "";
+
+    const url = target.startsWith("http") ? target : `${internalUrl.replace(/\/$/, "")}${target}`;
+    const pwScript = `
+import { chromium } from 'playwright';
+const browser = await chromium.launch();
+const page = await browser.newPage();
+const errors = [];
+page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+page.on('pageerror', err => errors.push(err.message));
+try {
+  const resp = await page.goto('${url}', { timeout: 15000, waitUntil: 'networkidle' });
+  const title = await page.title();
+  const statusCode = resp?.status() ?? 0;
+  await browser.close();
+  const consoleErr = errors.filter(e => !e.includes('favicon'));
+  console.log(JSON.stringify({ ok: statusCode >= 200 && statusCode < 400, status: statusCode, title, consoleErrors: consoleErr }));
+} catch(e) {
+  await browser.close().catch(() => {});
+  console.log(JSON.stringify({ ok: false, error: e.message }));
+}
+    `.trim();
+
+    const scriptPath = join(pwDir, `pw-${target.replace(/\//g, "_")}.mjs`);
+    writeFileSync(scriptPath, pwScript, { mode: 0o755 });
+
+    try {
+      const result = spawnSync("node", [scriptPath], {
+        encoding: "utf8",
+        timeout: 30_000,
+        cwd: projectRoot,
+      });
+      outputTail = (result.stdout ?? "").slice(-2000);
+      if (result.stderr) outputTail += "\n" + result.stderr.slice(-1000);
+      try {
+        const parsed = JSON.parse(outputTail.trim());
+        if (parsed.ok) status = "success";
+        else error = parsed.error ?? `status ${parsed.status}`;
+      } catch {
+        if (result.status === 0) status = "success";
+        else error = `playwright error: ${result.status}`;
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "playwright",
       status,
       command: null,
       url,
       startedAt: vStarted,
       finishedAt: vFinished,
-      outputTail: null,
+      outputTail: outputTail || null,
       artifactId: null,
       error,
     });
