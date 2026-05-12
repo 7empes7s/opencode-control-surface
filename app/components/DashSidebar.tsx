@@ -14,9 +14,9 @@ import {
   Sparkles,
   Code2,
   X,
-  Menu,
   CalendarDays,
   Settings2,
+  MoreHorizontal,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -45,97 +45,37 @@ const NAV: NavItem[] = [
   { href: "/claude", label: "Claude Code", icon: Sparkles },
 ];
 
-function ServicePulse() {
+// Primary tabs shown in the bottom nav (mobile) and top nav (desktop compact)
+const PRIMARY_NAV: NavItem[] = [
+  NAV[0],  // Home
+  NAV[2],  // Pipeline
+  NAV[3],  // Doctor
+  NAV[5],  // NewsBites
+  NAV[11], // OpenCode
+];
+
+function isActive(item: NavItem, location: string): boolean {
+  return item.match ? item.match(location) : location.startsWith(item.href);
+}
+
+/* ── Compact stack status for top nav ─────────────────────────────────── */
+function StackPill() {
   const { data, connected } = useStream<HomeData>("/api/stream");
-  if (!data) {
-    return (
-      <div className="rail-stack">
-        <div className="rail-stack-title">stack</div>
-        <div className="rail-stack-empty">…</div>
-      </div>
-    );
-  }
+  if (!data) return <span className="topnav-stack-pill checking">…</span>;
 
   const services = data.services ?? [];
   const failed = services.filter((s) => s.status === "failed").length;
   const inactive = services.filter((s) => s.status === "inactive").length;
-  const total = services.length;
-  const healthy = total - failed - inactive;
-
-  let band: "ok" | "warn" | "err" = "ok";
-  if (failed > 0) band = "err";
-  else if (inactive > 0) band = "warn";
-
-  const gpuStatus = data.gpu?.status ?? "unknown";
-  const queue = data.autopipeline?.queueDepth ?? 0;
-  const paused = data.autopipeline?.paused ?? false;
+  const healthy = services.length - failed - inactive;
+  const band = failed > 0 ? "err" : inactive > 0 ? "warn" : "ok";
 
   return (
-    <div className="rail-stack">
-      <div className="rail-stack-title">
-        <span>stack</span>
-        <span className={`live-dot ${connected ? "" : "off"}`} title={connected ? "live" : "polling"} />
-      </div>
-
-      <div className={`rail-band ${band}`}>
-        <div className="rail-band-bar">
-          {services.map((s) => (
-            <span key={s.name} className={`rail-band-tick ${s.status}`} title={`${s.name}: ${s.status}`} />
-          ))}
-        </div>
-        <div className="rail-band-meta">
-          {healthy}/{total} services
-        </div>
-      </div>
-
-      <div className="rail-kv">
-        <span className="rail-kv-key">GPU</span>
-        <span className={`rail-kv-val ${gpuStatus === "up" ? "ok" : gpuStatus === "down" ? "err" : "warn"}`}>
-          {gpuStatus}
-        </span>
-      </div>
-      <div className="rail-kv">
-        <span className="rail-kv-key">Pipeline</span>
-        <span className={`rail-kv-val ${paused ? "warn" : "ok"}`}>
-          {paused ? "paused" : "running"}
-        </span>
-      </div>
-      <div className="rail-kv">
-        <span className="rail-kv-key">Queue</span>
-        <span className="rail-kv-val">{queue}</span>
-      </div>
-      {data.vast?.balance !== null && data.vast?.balance !== undefined && (
-        <div className="rail-kv">
-          <span className="rail-kv-key">Vast</span>
-          <span className="rail-kv-val">
-            ${((data.vast.balance ?? 0) + (data.vast.credit ?? 0)).toFixed(0)}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NavList({ onNavigate }: { onNavigate?: () => void }) {
-  const [location] = useLocation();
-  return (
-    <ul className="rail-nav">
-      {NAV.map(({ href, label, icon: Icon, match }) => {
-        const active = match ? match(location) : location.startsWith(href);
-        return (
-          <li key={href}>
-            <Link
-              href={href}
-              onClick={onNavigate}
-              className={`rail-nav-link${active ? " active" : ""}`}
-            >
-              <Icon size={16} strokeWidth={1.75} />
-              <span>{label}</span>
-            </Link>
-          </li>
-        );
-      })}
-    </ul>
+    <span className={`topnav-stack-pill ${band}`} title={`${healthy}/${services.length} services · GPU ${data.gpu?.status ?? "?"} · Q${data.autopipeline?.queueDepth ?? 0}`}>
+      <span className={`live-dot ${connected ? "" : "off"}`} />
+      <span className="topnav-stack-label">
+        {failed > 0 ? `${failed} failed` : inactive > 0 ? `${inactive} inactive` : "ok"}
+      </span>
+    </span>
   );
 }
 
@@ -143,15 +83,11 @@ export function DashSidebar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [location] = useLocation();
 
-  useEffect(() => {
-    setDrawerOpen(false);
-  }, [location]);
+  useEffect(() => { setDrawerOpen(false); }, [location]);
 
   useEffect(() => {
     if (!drawerOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDrawerOpen(false);
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawerOpen(false); };
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", onKey);
     return () => {
@@ -160,42 +96,59 @@ export function DashSidebar() {
     };
   }, [drawerOpen]);
 
-  const currentLabel =
-    NAV.find((n) => (n.match ? n.match(location) : location.startsWith(n.href)))?.label ??
-    "Home";
+  const moreActive = !PRIMARY_NAV.some((n) => isActive(n, location));
 
   return (
     <>
-      {/* ── Desktop / tablet rail ──────────────────────────── */}
-      <aside className="rail">
-        <div className="rail-brand">
+      {/* ── Top nav (desktop + tablet) ────────────────────── */}
+      <header className="dash-topnav">
+        <div className="topnav-brand">
           <span className="rail-brand-mark" />
           <span className="rail-brand-name">TIB</span>
           <span className="rail-brand-sub">Control</span>
         </div>
-        <NavList />
-        <div className="rail-spacer" />
-        <ServicePulse />
-      </aside>
 
-      {/* ── Mobile top bar ─────────────────────────────────── */}
-      <header className="topbar-mobile">
-        <button
-          type="button"
-          className="topbar-mobile-btn"
-          aria-label="Open navigation"
-          onClick={() => setDrawerOpen(true)}
-        >
-          <Menu size={18} strokeWidth={1.75} />
-        </button>
-        <div className="topbar-mobile-title">
-          <span className="rail-brand-mark" />
-          <span>{currentLabel}</span>
+        <nav className="topnav-links" aria-label="Main navigation">
+          {NAV.map(({ href, label, icon: Icon, match }) => {
+            const active = match ? match(location) : location.startsWith(href);
+            return (
+              <Link key={href} href={href} className={`topnav-link${active ? " active" : ""}`}>
+                <Icon size={13} strokeWidth={1.75} />
+                <span>{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="topnav-right">
+          <StackPill />
         </div>
-        <span className="topbar-mobile-spacer" />
       </header>
 
-      {/* ── Mobile drawer ──────────────────────────────────── */}
+      {/* ── Mobile bottom tab bar ─────────────────────────── */}
+      <nav className="dash-bottomnav" aria-label="Mobile navigation">
+        {PRIMARY_NAV.map((item) => {
+          const active = isActive(item, location);
+          const Icon = item.icon;
+          return (
+            <Link key={item.href} href={item.href} className={`bn-tab${active ? " active" : ""}`}>
+              <Icon size={20} strokeWidth={1.6} />
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        <button
+          type="button"
+          className={`bn-tab${moreActive ? " active" : ""}`}
+          onClick={() => setDrawerOpen(true)}
+          aria-label="More pages"
+        >
+          <MoreHorizontal size={20} strokeWidth={1.6} />
+          <span>More</span>
+        </button>
+      </nav>
+
+      {/* ── Drawer (mobile · all pages) ──────────────────── */}
       {drawerOpen && (
         <div className="drawer-overlay" onClick={() => setDrawerOpen(false)}>
           <aside className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -205,19 +158,23 @@ export function DashSidebar() {
                 <span className="rail-brand-name">TIB</span>
                 <span className="rail-brand-sub">Control</span>
               </div>
-              <button
-                type="button"
-                className="drawer-close"
-                aria-label="Close navigation"
-                onClick={() => setDrawerOpen(false)}
-              >
+              <button type="button" className="drawer-close" aria-label="Close" onClick={() => setDrawerOpen(false)}>
                 <X size={18} strokeWidth={1.75} />
               </button>
             </div>
-            <NavList onNavigate={() => setDrawerOpen(false)} />
-            <div className="drawer-foot">
-              <ServicePulse />
-            </div>
+            <ul className="rail-nav">
+              {NAV.map(({ href, label, icon: Icon, match }) => {
+                const active = match ? match(location) : location.startsWith(href);
+                return (
+                  <li key={href}>
+                    <Link href={href} onClick={() => setDrawerOpen(false)} className={`rail-nav-link${active ? " active" : ""}`}>
+                      <Icon size={16} strokeWidth={1.75} />
+                      <span>{label}</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
           </aside>
         </div>
       )}
