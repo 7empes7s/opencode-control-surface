@@ -9,6 +9,8 @@ import {
   readBuilderRuns,
   readBuilderWorkflow,
   readBuilderValidations,
+  readBuilderPasses,
+  readBuilderArtifacts,
   type BuilderRun,
   type BuilderWorkflow,
 } from "./store.ts";
@@ -25,8 +27,9 @@ function runDir(runId: string): string {
   return join(BUILDER_RUNS_DIR, runId);
 }
 
-function tmuxSessionName(runId: string): string {
-  return `builder-${runId.slice(0, 20)}`;
+function tmuxSessionName(runId: string, passNumber = 1): string {
+  if (passNumber === 1) return `builder-${runId.slice(0, 20)}`;
+  return `builder-${runId.slice(0, 16)}-p${passNumber}`;
 }
 
 function requireDb() {
@@ -65,8 +68,8 @@ function tmuxCapturePane(session: string): string {
 
 // ── Run helpers ────────────────────────────────────────────────────────────
 
-function readExitCode(runId: string): number | null {
-  const path = join(runDir(runId), "exit.code");
+function readExitCode(runId: string, passNumber = 1): number | null {
+  const path = join(runDir(runId), `pass-${passNumber}-exit.code`);
   if (!existsSync(path)) return null;
   try {
     const text = readFileSync(path, "utf8").trim();
@@ -354,6 +357,125 @@ function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string |
   }
 }
 
+// ── Phase 6: Auto-Continue and Context Handoff ─────────────────────────────
+
+function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, nextSequence: number): string {
+  const projectRoot = workflow.projectRoot;
+  const prevPasses = readBuilderPasses(run.id).filter((p) => p.sequence < nextSequence);
+
+  const lines: string[] = [
+    `=== Builder Pipeline: Pass ${nextSequence} Continuation Context ===`,
+    `Workflow: ${workflow.name}`,
+    `Plan: ${workflow.planFile}`,
+    `Project: ${projectRoot}`,
+    `Previous passes: ${prevPasses.length}`,
+    "",
+  ];
+
+  for (const pass of prevPasses.sort((a, b) => a.sequence - b.sequence)) {
+    const artifacts = readBuilderArtifacts(run.id).filter((a) => a.passId === pass.id);
+    const validations = readBuilderValidations(run.id).filter((v) => v.passId === pass.id);
+
+    lines.push(`--- Pass ${pass.sequence} (${pass.agent ?? "?"}, ${pass.status}) ---`);
+    if (pass.summary) {
+      lines.push(`Summary: ${pass.summary.slice(0, 500)}`);
+    }
+    const stdoutArtifact = artifacts.find((a) => a.kind === "stdout");
+    if (stdoutArtifact && existsSync(stdoutArtifact.path)) {
+      try {
+        const content = readFileSync(stdoutArtifact.path, "utf8").slice(-2000);
+        if (content) lines.push(`Last stdout (2KB): ${content.slice(-1500)}`);
+      } catch { /* ignore */ }
+    }
+    const validationResults = validations.map((v) => `${v.kind}:${v.status}`).join(", ");
+    if (validationResults) lines.push(`Validations: ${validationResults}`);
+    lines.push("");
+  }
+
+  lines.push("--- Plan File Reminder ---");
+  if (existsSync(workflow.planFile)) {
+    try {
+      const planContent = readFileSync(workflow.planFile, "utf8");
+      const phaseMatch = planContent.match(/## (Phase \d+[^\n]*)/g);
+      if (phaseMatch) {
+        lines.push(`Plan phases found: ${phaseMatch.join(" | ")}`);
+      }
+      lines.push(`Full plan at: ${workflow.planFile}`);
+    } catch { /* ignore */ }
+  } else {
+    lines.push(`Plan file not found at: ${workflow.planFile}`);
+  }
+
+  lines.push("");
+  lines.push("=== Instructions ===");
+  lines.push("Continue developing the project from where the previous pass left off.");
+  lines.push("Review the plan file and prior pass summaries to understand what remains.");
+  lines.push("Run validation commands after changes.");
+  lines.push("Report: changed files, test results, what was accomplished, what still needs work.");
+
+  return lines.join("\n");
+}
+
+async function startNextPass(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  nextSequence: number,
+): Promise<void> {
+  const agent = workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex";
+  const model = workflow.config.modelPolicy.builder ?? null;
+
+  const passId = createBuilderPass({
+    runId: run.id,
+    workflowId: workflow.id,
+    sequence: nextSequence,
+    phase: "implement",
+    agent,
+    model,
+    provider: agent,
+  });
+
+  updateBuilderRun(run.id, { currentPassId: passId });
+
+  // Pre-pass snapshot for this pass
+  captureSnapshotPatch(workflow, run, passId);
+  if (workflow.config.backupPolicy.enabled && workflow.config.backupPolicy.beforeRun) {
+    runBackup(workflow, run, passId);
+  }
+
+  // Build continuation context
+  const continuationContext = buildContinuationContext(workflow, run, nextSequence);
+  const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext);
+
+  const jobId = `job_${randomUUID()}`;
+  createJob({
+    id: jobId,
+    kind: "builder.agent-pass",
+    status: "running",
+    actor: "builder",
+    reason: `builder workflow ${workflow.name} pass ${nextSequence}`,
+    targetType: "builder-run",
+    targetId: run.id,
+    command: scriptPath,
+    request: { workflowId: workflow.id, runId: run.id, passId, agent, model, continuation: true },
+    evidence: { planFile: workflow.planFile, projectRoot: workflow.projectRoot, passNumber: nextSequence },
+  });
+
+  updateBuilderPass(passId, { jobIds: [jobId] });
+
+  const scriptArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "command-script", path: scriptPath });
+  const stdoutArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stdout", path: join(runDir(run.id), `pass-${nextSequence}-stdout.log`) });
+  const stderrArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stderr", path: join(runDir(run.id), `pass-${nextSequence}-stderr.log`) });
+  updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
+
+  const session = tmuxSessionName(`${run.id}-p${nextSequence}`);
+  const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], { encoding: "utf8" });
+  if (spawnResult.status !== 0) {
+    const error = spawnResult.stderr || `tmux spawn failed (exit ${spawnResult.status})`;
+    updateBuilderPass(passId, { status: "failed", finishedAt: now(), error });
+    throw new Error(error);
+  }
+}
+
 // ── Builder run / pass / artifact writers ──────────────────────────────────
 
 export function createBuilderRun(workflowId: string, trigger: string, actor = "operator"): BuilderRun {
@@ -600,19 +722,31 @@ function releaseProjectLock(projectRoot: string): void {
 
 // ── Command builder ──────────────────────────────────────────────────────────
 
-function buildCodexPrompt(workflow: BuilderWorkflow): string {
+function buildCodexPrompt(workflow: BuilderWorkflow, continuationContext?: string): string {
   const { planFile, projectRoot } = workflow;
-  return `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.`;
+  let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.`;
+  if (continuationContext) {
+    base = `${continuationContext}\n\n${base}`;
+  }
+  return base;
 }
 
-function writePassScript(runId: string, workflow: BuilderWorkflow, agent: string, model: string | null): string {
+function writePassScript(
+  runId: string,
+  workflow: BuilderWorkflow,
+  agent: string,
+  model: string | null,
+  passNumber = 1,
+  continuationContext?: string,
+): string {
   ensureRunsDir();
   const dir = runDir(runId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-  const scriptPath = join(dir, "pass-1.sh");
-  const prompt = buildCodexPrompt(workflow);
+  const scriptPath = join(dir, `pass-${passNumber}.sh`);
+  const prompt = buildCodexPrompt(workflow, continuationContext);
 
+  let stdoutLog = `pass-${passNumber}-stdout.log`;
   let command: string;
   if (agent === "codex") {
     const modelFlag = model ? `--model ${model} ` : "";
@@ -625,18 +759,22 @@ function writePassScript(runId: string, workflow: BuilderWorkflow, agent: string
     command = `echo "Unsupported builder agent: ${agent}"`;
   }
 
+  const continuationBlock = continuationContext
+    ? `\n# Continuation context written to file\nCONTEXT_FILE="${dir}/continuation-${passNumber}.txt"\necho -e "${continuationContext.replace(/"/g, '\\"').replace(/\n/g, '\\n')}" > "$CONTEXT_FILE"\necho "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/${stdoutLog}"\n`
+    : "";
+
   const script = `#!/bin/bash
 set -euo pipefail
 BUILDER_DIR="${dir}"
 RUN_ID="${runId}"
-echo "[builder] Pass 1 starting at $(date -Iseconds)" | tee "$BUILDER_DIR/stdout.log"
-echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/stdout.log"
-echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/stdout.log"
-echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/stdout.log"
-${command} >> "$BUILDER_DIR/stdout.log" 2>> "$BUILDER_DIR/stderr.log"
+echo "[builder] Pass ${passNumber} starting at $(date -Iseconds)" | tee "$BUILDER_DIR/${stdoutLog}"
+echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/${stdoutLog}"
+echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/${stdoutLog}"
+echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/${stdoutLog}"
+${continuationBlock}${command} >> "$BUILDER_DIR/${stdoutLog}" 2>> "$BUILDER_DIR/pass-${passNumber}-stderr.log"
 EXIT_CODE=$?
-echo "$EXIT_CODE" > "$BUILDER_DIR/exit.code"
-echo "[builder] Pass 1 finished with exit code $EXIT_CODE at $(date -Iseconds)" >> "$BUILDER_DIR/stdout.log"
+echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"
+echo "[builder] Pass ${passNumber} finished with exit code $EXIT_CODE at $(date -Iseconds)" >> "$BUILDER_DIR/${stdoutLog}"
 `;
 
   writeFileSync(scriptPath, script, { mode: 0o755 });
@@ -723,19 +861,19 @@ export async function startWorkflowRun(
     runId: run.id,
     passId,
     kind: "stdout",
-    path: join(runDir(run.id), "stdout.log"),
+    path: join(runDir(run.id), "pass-1-stdout.log"),
   });
   const stderrArtifact = createBuilderArtifact({
     workflowId,
     runId: run.id,
     passId,
     kind: "stderr",
-    path: join(runDir(run.id), "stderr.log"),
+    path: join(runDir(run.id), "pass-1-stderr.log"),
   });
   updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
 
   // Spawn tmux
-  const session = tmuxSessionName(run.id);
+  const session = tmuxSessionName(run.id, 1);
   const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], {
     encoding: "utf8",
   });
@@ -760,9 +898,13 @@ export async function stopWorkflowRun(
   const run = readBuilderRun(runId);
   if (!run) throw new Error("run not found");
 
-  const session = tmuxSessionName(runId);
-  if (tmuxExists(session)) {
-    tmuxKill(session);
+  // Kill tmux sessions for all passes (pass 1 and beyond)
+  const passes = readBuilderPasses(runId);
+  for (const pass of passes) {
+    const session = tmuxSessionName(runId, pass.sequence);
+    if (tmuxExists(session)) {
+      tmuxKill(session);
+    }
   }
 
   const ts = now();
@@ -820,9 +962,14 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const run = readBuilderRun(runId);
   if (!run || run.status !== "running") return run;
 
-  const session = tmuxSessionName(runId);
+  // Look up current pass to get its sequence number
+  const passId = run.currentPassId;
+  const allPasses = passId ? readBuilderPasses(runId) : [];
+  const currentPass = allPasses.find((p) => p.id === passId);
+  const passSeq = currentPass?.sequence ?? 1;
+
+  const session = tmuxSessionName(runId, passSeq);
   if (tmuxExists(session)) {
-    // Still running — optionally capture pane output to job tail
     const paneOutput = tmuxCapturePane(session);
     if (paneOutput) {
       updateJobOutputForRun(runId, paneOutput);
@@ -831,13 +978,12 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   }
 
   // Tmux session is gone — process finished
-  const exitCode = readExitCode(runId);
+  const exitCode = readExitCode(runId, passSeq);
   const ts = now();
-  const passId = run.currentPassId;
 
-  // Capture final output
-  const stdout = readLogFile(runId, "stdout.log");
-  const stderr = readLogFile(runId, "stderr.log");
+  // Capture final output using pass-specific filenames
+  const stdout = readLogFile(runId, `pass-${passSeq}-stdout.log`);
+  const stderr = readLogFile(runId, `pass-${passSeq}-stderr.log`);
   const codexOutput = readLogFile(runId, "codex-output.txt");
 
   if (passId) {
@@ -910,13 +1056,24 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     "running",
   );
 
-  // Release lock
+  // Check if we should continue to next pass before releasing lock
+  const AUTO_CONTINUE_MODES = new Set(["auto-continue", "scheduled", "permanent"]);
+  const shouldContinue = Boolean(
+    workflow &&
+    runStatus === "success" &&
+    AUTO_CONTINUE_MODES.has(workflow.mode) &&
+    passSeq < workflow.config.riskPolicy.maxPasses,
+  );
+
+  // Release lock only if we're not continuing to another pass
   if (workflow) {
-    releaseProjectLock(workflow.projectRoot);
-    updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "ready" : "failed");
+    if (!shouldContinue) {
+      releaseProjectLock(workflow.projectRoot);
+      updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "done" : "failed");
+    }
   }
 
-  // Phase 5: commit / push / vault-log (after lock release so git operations are safe)
+  // Phase 5: commit / push / vault-log
   if (workflow) {
     try {
       if (runStatus === "success" && workflow.config.gitPolicy.commit === "after-validation") {
@@ -924,7 +1081,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
         if (commitHash) {
           writeActionAudit({
             actionKind: "builder.commit",
-            actionId: `builder-commit:${run.id}`,
+            actionId: `builder-commit:${run.id}-p${passSeq}`,
             targetType: "builder-run",
             targetId: run.id,
             risk: "medium",
@@ -935,7 +1092,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
           const pushMsg = pushChanges(workflow, run);
           writeActionAudit({
             actionKind: "builder.push",
-            actionId: `builder-push:${run.id}`,
+            actionId: `builder-push:${run.id}-p${passSeq}`,
             targetType: "builder-run",
             targetId: run.id,
             risk: workflow.config.gitPolicy.push === "current-branch" ? "high" : "medium",
@@ -953,6 +1110,19 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
 
     // Always log to vault regardless of run status
     logToVault(workflow, run, passId ?? null, runStatus);
+  }
+
+  // Phase 6: start next pass if conditions are met
+  if (shouldContinue && workflow) {
+    try {
+      await startNextPass(workflow, run, passSeq + 1);
+      console.log(`[builder] started pass ${passSeq + 1} for run ${run.id}`);
+    } catch (e) {
+      console.error(`[builder] startNextPass failed:`, e);
+      // Release lock and mark failed if we can't start the next pass
+      releaseProjectLock(workflow.projectRoot);
+      updateBuilderWorkflowStatus(run.workflowId, "failed");
+    }
   }
 
   return readBuilderRun(runId);
