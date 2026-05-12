@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getModelsDetail } from "../adapters/models.ts";
+import { getCategorizedModels } from "./modelSelector.ts";
 import { WORKSPACE_ROOTS, normalizeWorkspace, type WorkspaceRisk } from "../api/workspaces.ts";
 
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
@@ -77,6 +78,16 @@ export type BuilderDiscovery = {
   missingPrerequisites: string[];
 };
 
+export type BuilderModelEntry = {
+  name: string;
+  provider: string;
+  capability: string;
+  available: boolean;
+  latency: number | null;
+  qualityStatus: string;
+  label: string;
+};
+
 export type BuilderModelsInventory = {
   bestLocal: string | null;
   bestCloudHeavy: string | null;
@@ -85,6 +96,10 @@ export type BuilderModelsInventory = {
   blocked: number;
   fallbackTargets: string[];
   sample: string[];
+  heavy: BuilderModelEntry[];
+  medium: BuilderModelEntry[];
+  light: BuilderModelEntry[];
+  byProvider: Record<string, BuilderModelEntry[]>;
 };
 
 const PROJECT_TARGETS: Record<string, Partial<BuilderProject>> = {
@@ -380,8 +395,25 @@ function discoverAgents(): BuilderDiscovery["agents"] {
 
 export function getBuilderModelsInventory(): BuilderModelsInventory {
   const detail = getModelsDetail();
+  const categorized = getCategorizedModels();
   const fallbackTargets = Object.keys(detail.fallbacks).sort();
   const availableModels = detail.models.filter((model) => model.available);
+
+  function modelEntry(m: { logicalName: string; provider: string; capability: string; available: boolean; latency: number | null; qualityStatus: string }): BuilderModelEntry {
+    const providerTag = m.provider === "local" ? "GPU" : m.provider || "cloud";
+    const capTag = m.capability || "unknown";
+    const healthSuffix = m.qualityStatus !== "healthy" ? ` [${m.qualityStatus}]` : "";
+    return {
+      name: m.logicalName,
+      provider: m.provider,
+      capability: m.capability,
+      available: m.available,
+      latency: m.latency,
+      qualityStatus: m.qualityStatus,
+      label: `${m.logicalName} (${providerTag}/${capTag})${healthSuffix}`,
+    };
+  }
+
   return {
     bestLocal: detail.summary.bestLocal,
     bestCloudHeavy: detail.summary.bestCloudHeavy,
@@ -390,6 +422,12 @@ export function getBuilderModelsInventory(): BuilderModelsInventory {
     blocked: detail.summary.qualitySummary.blocked,
     fallbackTargets,
     sample: availableModels.slice(0, 8).map((model) => model.logicalName),
+    heavy: categorized.heavy.map(modelEntry),
+    medium: categorized.medium.map(modelEntry),
+    light: categorized.light.map(modelEntry),
+    byProvider: Object.fromEntries(
+      Object.entries(categorized.byProvider).map(([prov, models]) => [prov, models.map(modelEntry)])
+    ),
   };
 }
 

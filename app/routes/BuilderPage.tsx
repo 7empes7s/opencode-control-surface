@@ -69,6 +69,53 @@ function ModelSummary({ models }: { models: BuilderModelsInventory }) {
   );
 }
 
+function ModelSelect({
+  label,
+  value,
+  onChange,
+  models,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  models: BuilderModelsInventory;
+}) {
+  const allModels = [...models.heavy, ...models.medium, ...models.light];
+  return (
+    <label className="modal-input-row">
+      <span className="modal-input-label">{label}</span>
+      <select
+        className="audit-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">auto (health-based)</option>
+        {models.heavy.length > 0 && (
+          <optgroup label="heavy">
+            {models.heavy.map((m) => (
+              <option key={m.name} value={m.name}>{m.label}</option>
+            ))}
+          </optgroup>
+        )}
+        {models.medium.length > 0 && (
+          <optgroup label="medium">
+            {models.medium.map((m) => (
+              <option key={m.name} value={m.name}>{m.label}</option>
+            ))}
+          </optgroup>
+        )}
+        {models.light.length > 0 && (
+          <optgroup label="light">
+            {models.light.map((m) => (
+              <option key={m.name} value={m.name}>{m.label}</option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
+
 function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderWorkflowInput {
   const plan = data.planCandidates.find((item) => item.exists && item.kind === "builder")
     ?? data.planCandidates.find((item) => item.exists && item.kind === "canonical")
@@ -229,25 +276,59 @@ function WorkflowModal({
           </label>
           <label className="modal-input-row">
             <span className="modal-input-label">Planner</span>
-            <input
-              className="modal-input"
+            <select
+              className="audit-select"
               value={draft.config.modelPolicy.planner ?? ""}
               onChange={(event) => setDraft((prev) => ({
                 ...prev,
                 config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, planner: event.target.value || undefined } },
               }))}
-            />
+            >
+              <option value="">auto (health-based)</option>
+              {data.models.heavy.length > 0 && (
+                <optgroup label="heavy">
+                  {data.models.heavy.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+              {data.models.medium.length > 0 && (
+                <optgroup label="medium">
+                  {data.models.medium.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+              {data.models.light.length > 0 && (
+                <optgroup label="light">
+                  {data.models.light.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+            </select>
           </label>
           <label className="modal-input-row">
             <span className="modal-input-label">Builder</span>
-            <input
-              className="modal-input"
+            <select
+              className="audit-select"
               value={draft.config.modelPolicy.builder ?? ""}
               onChange={(event) => setDraft((prev) => ({
                 ...prev,
                 config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, builder: event.target.value || undefined } },
               }))}
-            />
+            >
+              <option value="">auto (health-based)</option>
+              {data.models.heavy.length > 0 && (
+                <optgroup label="heavy">
+                  {data.models.heavy.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+              {data.models.medium.length > 0 && (
+                <optgroup label="medium">
+                  {data.models.medium.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+              {data.models.light.length > 0 && (
+                <optgroup label="light">
+                  {data.models.light.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+                </optgroup>
+              )}
+            </select>
           </label>
           <label className="modal-input-row builder-form-wide">
             <span className="modal-input-label">internal</span>

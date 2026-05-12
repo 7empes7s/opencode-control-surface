@@ -14,6 +14,7 @@ import {
   type BuilderRun,
   type BuilderWorkflow,
 } from "./store.ts";
+import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 
@@ -422,16 +423,22 @@ async function startNextPass(
   nextSequence: number,
 ): Promise<void> {
   const agent = workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex";
-  const model = workflow.config.modelPolicy.builder ?? null;
+
+  const role: ModelRole = nextSequence === 1 ? "planner" : nextSequence === 2 ? "builder" : "reviewer";
+  const selection = selectModelForRole(role, workflow.config, agent);
+  const { model, provider, reason: modelReason } = selection;
+
+  const phase = nextSequence === 1 ? "plan" : nextSequence === 2 ? "implement" : "review";
 
   const passId = createBuilderPass({
     runId: run.id,
     workflowId: workflow.id,
     sequence: nextSequence,
-    phase: "implement",
+    phase,
     agent,
     model,
-    provider: agent,
+    modelReason,
+    provider,
   });
 
   updateBuilderRun(run.id, { currentPassId: passId });
@@ -563,6 +570,7 @@ export function createBuilderPass(input: {
   phase: string;
   agent: string | null;
   model: string | null;
+  modelReason?: string | null;
   provider: string | null;
 }): string {
   const db = requireDb();
@@ -572,9 +580,9 @@ export function createBuilderPass(input: {
   db.query(`
     INSERT INTO builder_passes
       (id, run_id, workflow_id, sequence, phase, status, agent, provider, model,
-       started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
+       model_reason, started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
        summary, next_instruction, failure_class, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.runId,
@@ -585,6 +593,7 @@ export function createBuilderPass(input: {
     input.agent,
     input.provider,
     input.model,
+    input.modelReason ?? null,
     ts,
     null,
     "[]",
@@ -607,6 +616,7 @@ export function updateBuilderPass(
     summary?: string | null;
     failureClass?: string | null;
     error?: string | null;
+    modelReason?: string | null;
     jobIds?: string[];
     artifactIds?: string[];
     validationIds?: string[];
@@ -635,6 +645,10 @@ export function updateBuilderPass(
   if (updates.error !== undefined) {
     sets.push("error = ?");
     params.push(updates.error);
+  }
+  if (updates.modelReason !== undefined) {
+    sets.push("model_reason = ?");
+    params.push(updates.modelReason);
   }
   if (updates.jobIds !== undefined) {
     sets.push("job_ids_json = ?");
@@ -796,7 +810,8 @@ export async function startWorkflowRun(
 
   // Determine agent/model
   const agent = workflow.config.agentOrder[0] ?? "codex";
-  const model = workflow.config.modelPolicy.builder ?? null;
+  const selection = selectModelForRole("planner", workflow.config, agent);
+  const { model, provider, reason: modelReason } = selection;
 
   // Create run
   const run = createBuilderRun(workflowId, trigger, actor);
@@ -814,10 +829,11 @@ export async function startWorkflowRun(
     runId: run.id,
     workflowId,
     sequence: 1,
-    phase: "implement",
+    phase: "plan",
     agent,
     model,
-    provider: agent,
+    modelReason,
+    provider,
   });
 
   // Update run with current pass

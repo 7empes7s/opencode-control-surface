@@ -383,6 +383,8 @@ function migrateDashboardDb(db: Database): void {
   ensureColumn(db, "jobs", "max_retries", "INTEGER NOT NULL DEFAULT 3");
   ensureColumn(db, "jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0");
 
+  ensureColumn(db, "builder_passes", "model_reason", "TEXT");
+
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_action_audit_target ON action_audit (target_type, target_id);
     CREATE INDEX IF NOT EXISTS idx_action_audit_result_status ON action_audit (result_status);

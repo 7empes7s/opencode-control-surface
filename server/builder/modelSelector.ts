@@ -1,0 +1,139 @@
+import { getModelsDetail, type ModelEntry } from "../adapters/models.ts";
+import type { BuilderWorkflowConfig } from "./store.ts";
+
+export type ModelRole = "planner" | "builder" | "reviewer";
+
+export interface ModelSelection {
+  model: string | null;
+  provider: string | null;
+  reason: string;
+  role: ModelRole;
+  capability: string | null;
+  qualityStatus: ModelEntry["qualityStatus"] | null;
+}
+
+function isModelHealthy(entry: ModelEntry): boolean {
+  return entry.available && entry.qualityStatus === "healthy" && entry.latency !== null && entry.latency < 30000;
+}
+
+function isModelUsable(entry: ModelEntry): boolean {
+  return entry.available && entry.qualityStatus !== "blocked";
+}
+
+export function selectModelForRole(
+  role: ModelRole,
+  config: BuilderWorkflowConfig,
+  agent: string,
+): ModelSelection {
+  const detail = getModelsDetail();
+  const modelMap = new Map(detail.models.map((m) => [m.logicalName, m]));
+
+  const preferredModel = config.modelPolicy[role] ?? null;
+
+  if (preferredModel && modelMap.has(preferredModel)) {
+    const entry = modelMap.get(preferredModel)!;
+    if (isModelUsable(entry)) {
+      return {
+        model: preferredModel,
+        provider: agent,
+        reason: `primary:${role}`,
+        role,
+        capability: entry.capability || null,
+        qualityStatus: entry.qualityStatus,
+      };
+    }
+    const reason = !entry.available
+      ? `preferred.${role}.${preferredModel}.unavailable`
+      : `preferred.${role}.${preferredModel}.degraded:${entry.qualityStatus}`;
+    return tryFallback(modelMap, config.modelPolicy.fallbackTargets, agent, role, reason);
+  }
+
+  return tryFallback(modelMap, config.modelPolicy.fallbackTargets, agent, role, `no-preferred.${role}`);
+}
+
+function tryFallback(
+  modelMap: Map<string, ModelEntry>,
+  fallbackTargets: string[],
+  agent: string,
+  role: ModelRole,
+  priorReason: string,
+): ModelSelection {
+  for (const candidate of fallbackTargets) {
+    if (!modelMap.has(candidate)) continue;
+    const entry = modelMap.get(candidate)!;
+    if (!isModelUsable(entry)) continue;
+    return {
+      model: candidate,
+      provider: agent,
+      reason: `fallback:${priorReason}->${candidate}`,
+      role,
+      capability: entry.capability || null,
+      qualityStatus: entry.qualityStatus,
+    };
+  }
+
+  const availableModels = Array.from(modelMap.values()).filter(isModelUsable);
+  if (availableModels.length > 0) {
+    const best = availableModels.reduce((a, b) =>
+      (a.latency ?? Infinity) < (b.latency ?? Infinity) ? a : b
+    );
+    return {
+      model: best.logicalName,
+      provider: agent,
+      reason: `emergency-fallback:${priorReason}->${best.logicalName}`,
+      role,
+      capability: best.capability || null,
+      qualityStatus: best.qualityStatus,
+    };
+  }
+
+  return {
+    model: null,
+    provider: agent,
+    reason: `no-model-available:${priorReason}`,
+    role,
+    capability: null,
+    qualityStatus: null,
+  };
+}
+
+export function getModelLabel(entry: ModelEntry): string {
+  const providerTag = entry.provider === "local" ? "GPU" : entry.provider ?? "cloud";
+  const capTag = entry.capability || "unknown";
+  const healthTag = entry.qualityStatus !== "healthy" ? ` [${entry.qualityStatus}]` : "";
+  return `${entry.logicalName} (${providerTag}/${capTag})${healthTag}`;
+}
+
+export interface CategorizedModels {
+  heavy: ModelEntry[];
+  medium: ModelEntry[];
+  light: ModelEntry[];
+  byProvider: Record<string, ModelEntry[]>;
+  all: ModelEntry[];
+}
+
+export function getCategorizedModels(): CategorizedModels {
+  const detail = getModelsDetail();
+  const byCapability: CategorizedModels["heavy"] = [];
+  const byMedium: CategorizedModels["medium"] = [];
+  const byLight: CategorizedModels["light"] = [];
+  const byProvider: Record<string, ModelEntry[]> = {};
+
+  for (const m of detail.models) {
+    if (m.capability === "heavy") byCapability.push(m);
+    else if (m.capability === "medium") byMedium.push(m);
+    else byLight.push(m);
+
+    const prov = m.provider || "unknown";
+    if (!byProvider[prov]) byProvider[prov] = [];
+    byProvider[prov].push(m);
+  }
+
+  return {
+    heavy: byCapability,
+    medium: byMedium,
+    light: byLight,
+    byProvider,
+    all: detail.models,
+  };
+}

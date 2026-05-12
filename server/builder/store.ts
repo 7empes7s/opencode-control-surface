@@ -100,6 +100,7 @@ export type BuilderPass = {
   agent: string | null;
   provider: string | null;
   model: string | null;
+  modelReason: string | null;
   startedAt: number | null;
   finishedAt: number | null;
   jobIds: string[];
@@ -429,6 +430,7 @@ type DbPassRow = {
   agent: string | null;
   provider: string | null;
   model: string | null;
+  model_reason: string | null;
   started_at: number | null;
   finished_at: number | null;
   job_ids_json: string | null;
@@ -456,6 +458,7 @@ function mapPass(row: DbPassRow): BuilderPass {
     agent: row.agent,
     provider: row.provider,
     model: row.model,
+    modelReason: row.model_reason,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     jobIds: parseStringArray(row.job_ids_json),
@@ -473,7 +476,7 @@ export function readBuilderPasses(runId: string): BuilderPass[] {
   try {
     return (getDashboardDb()!.query(`
       SELECT id, run_id, workflow_id, sequence, phase, status, agent, provider, model,
-        started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
+        model_reason, started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
         summary, next_instruction, failure_class, error
       FROM builder_passes
       WHERE run_id = ?
