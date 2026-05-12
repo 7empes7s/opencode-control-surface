@@ -17,6 +17,10 @@ import {
   CalendarDays,
   Settings2,
   MoreHorizontal,
+  Moon,
+  Sun,
+  Monitor,
+  LayoutDashboard,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -27,6 +31,8 @@ type NavItem = {
   icon: typeof LayoutGrid;
   match?: (loc: string) => boolean;
 };
+type Theme = "dark" | "light";
+type Variant = "terminal" | "compact";
 
 const NAV: NavItem[] = [
   { href: "/", label: "Home", icon: LayoutGrid, match: (l) => l === "/" },
@@ -45,7 +51,6 @@ const NAV: NavItem[] = [
   { href: "/claude", label: "Claude Code", icon: Sparkles },
 ];
 
-// Primary tabs shown in the bottom nav (mobile) and top nav (desktop compact)
 const PRIMARY_NAV: NavItem[] = [
   NAV[0],  // Home
   NAV[2],  // Pipeline
@@ -56,6 +61,34 @@ const PRIMARY_NAV: NavItem[] = [
 
 function isActive(item: NavItem, location: string): boolean {
   return item.match ? item.match(location) : location.startsWith(item.href);
+}
+
+function usePreferences() {
+  const [theme, setThemeState] = useState<Theme>(
+    () => (localStorage.getItem("tib-theme") as Theme) || "dark"
+  );
+  const [variant, setVariantState] = useState<Variant>(
+    () => (localStorage.getItem("tib-variant") as Variant) || "terminal"
+  );
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.setAttribute("data-variant", variant);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setTheme = (t: Theme) => {
+    setThemeState(t);
+    document.documentElement.setAttribute("data-theme", t);
+    localStorage.setItem("tib-theme", t);
+  };
+  const setVariant = (v: Variant) => {
+    setVariantState(v);
+    document.documentElement.setAttribute("data-variant", v);
+    localStorage.setItem("tib-variant", v);
+  };
+
+  return { theme, setTheme, variant, setVariant };
 }
 
 /* ── Compact stack status for top nav ─────────────────────────────────── */
@@ -70,7 +103,10 @@ function StackPill() {
   const band = failed > 0 ? "err" : inactive > 0 ? "warn" : "ok";
 
   return (
-    <span className={`topnav-stack-pill ${band}`} title={`${healthy}/${services.length} services · GPU ${data.gpu?.status ?? "?"} · Q${data.autopipeline?.queueDepth ?? 0}`}>
+    <span
+      className={`topnav-stack-pill ${band}`}
+      title={`${healthy}/${services.length} services · GPU ${data.gpu?.status ?? "?"} · Q${data.autopipeline?.queueDepth ?? 0}`}
+    >
       <span className={`live-dot ${connected ? "" : "off"}`} />
       <span className="topnav-stack-label">
         {failed > 0 ? `${failed} failed` : inactive > 0 ? `${inactive} inactive` : "ok"}
@@ -82,6 +118,7 @@ function StackPill() {
 export function DashSidebar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [location] = useLocation();
+  const { theme, setTheme, variant, setVariant } = usePreferences();
 
   useEffect(() => { setDrawerOpen(false); }, [location]);
 
@@ -100,7 +137,7 @@ export function DashSidebar() {
 
   return (
     <>
-      {/* ── Top nav (desktop + tablet) ────────────────────── */}
+      {/* ── Top nav (all screen sizes) ───────────────────── */}
       <header className="dash-topnav">
         <div className="topnav-brand">
           <span className="rail-brand-mark" />
@@ -122,6 +159,38 @@ export function DashSidebar() {
 
         <div className="topnav-right">
           <StackPill />
+          <div className="topnav-toggle-group" title="Theme">
+            <button
+              className={`topnav-mode-btn${theme === "dark" ? " active" : ""}`}
+              onClick={() => setTheme("dark")}
+              title="Dark mode"
+            >
+              <Moon size={11} strokeWidth={1.75} />
+            </button>
+            <button
+              className={`topnav-mode-btn${theme === "light" ? " active" : ""}`}
+              onClick={() => setTheme("light")}
+              title="Light mode"
+            >
+              <Sun size={11} strokeWidth={1.75} />
+            </button>
+          </div>
+          <div className="topnav-toggle-group" title="Variant">
+            <button
+              className={`topnav-mode-btn${variant === "terminal" ? " active" : ""}`}
+              onClick={() => setVariant("terminal")}
+              title="Terminal variant"
+            >
+              <Monitor size={11} strokeWidth={1.75} />
+            </button>
+            <button
+              className={`topnav-mode-btn${variant === "compact" ? " active" : ""}`}
+              onClick={() => setVariant("compact")}
+              title="Compact variant"
+            >
+              <LayoutDashboard size={11} strokeWidth={1.75} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -148,33 +217,37 @@ export function DashSidebar() {
         </button>
       </nav>
 
-      {/* ── Drawer (mobile · all pages) ──────────────────── */}
+      {/* ── Drawer (all pages grid) ───────────────────────── */}
       {drawerOpen && (
         <div className="drawer-overlay" onClick={() => setDrawerOpen(false)}>
           <aside className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-head">
-              <div className="rail-brand">
-                <span className="rail-brand-mark" />
-                <span className="rail-brand-name">TIB</span>
-                <span className="rail-brand-sub">Control</span>
-              </div>
-              <button type="button" className="drawer-close" aria-label="Close" onClick={() => setDrawerOpen(false)}>
-                <X size={18} strokeWidth={1.75} />
+              <span className="drawer-head-title">All pages</span>
+              <button
+                type="button"
+                className="drawer-close"
+                aria-label="Close"
+                onClick={() => setDrawerOpen(false)}
+              >
+                <X size={16} strokeWidth={1.75} />
               </button>
             </div>
-            <ul className="rail-nav">
+            <div className="drawer-nav-grid">
               {NAV.map(({ href, label, icon: Icon, match }) => {
                 const active = match ? match(location) : location.startsWith(href);
                 return (
-                  <li key={href}>
-                    <Link href={href} onClick={() => setDrawerOpen(false)} className={`rail-nav-link${active ? " active" : ""}`}>
-                      <Icon size={16} strokeWidth={1.75} />
-                      <span>{label}</span>
-                    </Link>
-                  </li>
+                  <Link
+                    key={href}
+                    href={href}
+                    className={`drawer-nav-item${active ? " active" : ""}`}
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    <Icon size={22} strokeWidth={1.5} />
+                    <span>{label}</span>
+                  </Link>
                 );
               })}
-            </ul>
+            </div>
           </aside>
         </div>
       )}

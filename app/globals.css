@@ -43,6 +43,87 @@
   --sans: "Figtree", system-ui, sans-serif;
 }
 
+/* ── Light mode ─────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:         oklch(93%  0.006 248);
+  --bg-panel:   oklch(98%  0.004 248);
+  --bg-hover:   oklch(90%  0.008 248);
+  --bg-active:  oklch(87%  0.012 248);
+  --border:        oklch(81% 0.010 248);
+  --border-bright: oklch(64% 0.012 248);
+  --text:       oklch(24%  0.012 248);
+  --text-dim:   oklch(46%  0.012 248);
+  --text-bright:oklch(8%   0.008 248);
+  --accent:     oklch(44%  0.168  72);
+  --accent-dim: oklch(88%  0.048  72);
+  --green:      oklch(38%  0.130 145);
+  --green-dim:  oklch(88%  0.028 145);
+  --amber-warn: oklch(42%  0.148  52);
+  --amber-warn-dim: oklch(90% 0.028 52);
+  --red:        oklch(42%  0.185  22);
+  --red-dim:    oklch(90%  0.028  22);
+  --blue:       oklch(40%  0.130 240);
+}
+
+/* ── Compact variant (navy-teal palette) ─────────────────────────────────── */
+[data-variant="compact"] {
+  --bg:         oklch(8.5%  0.020 222);
+  --bg-panel:   oklch(11%   0.022 222);
+  --bg-hover:   oklch(15%   0.024 222);
+  --bg-active:  oklch(13%   0.026 222);
+  --border:        oklch(21% 0.020 222);
+  --border-bright: oklch(33% 0.024 222);
+  --text:       oklch(88%   0.008 222);
+  --text-dim:   oklch(64%   0.010 222);
+  --text-bright:oklch(97%   0.005 222);
+  --accent:     oklch(70%   0.128 182);  /* teal */
+  --accent-dim: oklch(25%   0.054 182);
+  --green:      oklch(64%   0.130 145);
+  --green-dim:  oklch(25%   0.048 145);
+  --amber-warn: oklch(70%   0.148  52);
+  --amber-warn-dim: oklch(26% 0.052 52);
+  --red:        oklch(66%   0.185  22);
+  --red-dim:    oklch(24%   0.060  22);
+}
+[data-variant="compact"][data-theme="light"] {
+  --bg:         oklch(92%   0.008 222);
+  --bg-panel:   oklch(99%   0.004 222);
+  --bg-hover:   oklch(88%   0.012 222);
+  --bg-active:  oklch(85%   0.016 222);
+  --border:        oklch(80% 0.010 222);
+  --border-bright: oklch(62% 0.014 222);
+  --text:       oklch(12%   0.012 222);
+  --text-dim:   oklch(35%   0.012 222);
+  --text-bright:oklch(4%    0.008 222);
+  --accent:     oklch(36%   0.128 182);
+  --accent-dim: oklch(87%   0.038 182);
+  --green:      oklch(38%   0.130 145);
+  --green-dim:  oklch(88%   0.028 145);
+  --amber-warn: oklch(42%   0.148  52);
+  --amber-warn-dim: oklch(90% 0.028 52);
+  --red:        oklch(42%   0.185  22);
+  --red-dim:    oklch(90%   0.028  22);
+}
+[data-variant="terminal"][data-theme="light"] {
+  --bg:         oklch(94%   0.009 75);   /* warm paper */
+  --bg-panel:   oklch(97%   0.005 75);
+  --bg-hover:   oklch(91%   0.012 75);
+  --bg-active:  oklch(88%   0.016 75);
+  --border:        oklch(82% 0.014 75);
+  --border-bright: oklch(66% 0.018 75);
+  --text:       oklch(18%   0.008 75);
+  --text-dim:   oklch(42%   0.008 75);
+  --text-bright:oklch(6%    0.005 75);
+  --accent:     oklch(36%   0.148 145);  /* dark green on warm bg */
+  --accent-dim: oklch(88%   0.038 145);
+  --green:      oklch(36%   0.130 145);
+  --green-dim:  oklch(88%   0.028 145);
+  --amber-warn: oklch(40%   0.148  52);
+  --amber-warn-dim: oklch(90% 0.028 52);
+  --red:        oklch(40%   0.185  22);
+  --red-dim:    oklch(90%   0.028  22);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; width: 100%; }
 
@@ -417,11 +498,34 @@ body {
 .topnav-stack-pill.checking { opacity: 0.5; }
 .topnav-stack-label { font-size: 10.5px; }
 
+.topnav-toggle-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.topnav-mode-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+  flex-shrink: 0;
+}
+.topnav-mode-btn + .topnav-mode-btn { border-left: 1px solid var(--border); }
+.topnav-mode-btn:hover { color: var(--text); background: var(--bg-hover); }
+.topnav-mode-btn.active { color: var(--accent); background: color-mix(in oklch, var(--accent) 10%, transparent); }
+
 /* ── Mobile bottom tab bar ───────────────────────────────────────────────── */
 
 .dash-bottomnav {
   display: none; /* shown only on mobile via media query */
 }
+/* hide bottom tab bar on chat-style pages (bare layout) */
+.dash-shell:has(.dash-main.bare) .dash-bottomnav { display: none !important; }
 
 /* ── Sidebar (legacy, hidden — kept for drawer refs) ─────────────────────── */
 
@@ -722,13 +826,15 @@ body {
 .drawer-head {
   display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
 }
-.drawer-head .rail-brand {
-  border: none; padding: 0; margin: 0;
+.drawer-head-title {
+  font-family: var(--sans); font-size: 12px; font-weight: 600;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.10em;
 }
 .drawer-close {
-  width: 36px; height: 36px;
+  width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: 1px solid var(--border);
   color: var(--text-dim); border-radius: 4px;
@@ -736,16 +842,32 @@ body {
 }
 .drawer-close:hover { color: var(--text); border-color: var(--border-bright); }
 
-.drawer .rail-nav { gap: 4px; }
-.drawer .rail-nav-link {
-  font-size: 14px; padding: 10px 12px; min-height: 44px;
+.drawer-nav-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
 }
-.drawer-foot {
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+.drawer-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  text-align: center;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  min-height: 72px;
 }
-.drawer-foot .rail-stack { border-top: none; padding-top: 0; }
+.drawer-nav-item:hover { color: var(--text); background: var(--bg-hover); border-color: var(--border-bright); }
+.drawer-nav-item.active { color: var(--accent); border-color: var(--accent-dim); background: color-mix(in oklch, var(--accent) 8%, var(--bg)); }
 
 /* ── Sections / titles ─────────────────────────────────────────────────── */
 
@@ -1388,6 +1510,21 @@ body {
   .dash-page { padding-bottom: calc(70px + env(safe-area-inset-bottom, 0px)); }
 
   .dash-main { width: 100%; }
+
+  /* drawer becomes a bottom sheet on mobile */
+  .drawer {
+    inset: auto 0 0 0;
+    width: 100%;
+    border-radius: 14px 14px 0 0;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    animation: drawer-up 200ms cubic-bezier(0.25, 1, 0.5, 1) both;
+    max-height: 82dvh;
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+  @keyframes drawer-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .drawer-nav-grid { grid-template-columns: repeat(4, 1fr); }
+  .drawer-nav-item { min-height: 66px; padding: 12px 6px 10px; font-size: 10.5px; }
 
   /* Compress the sticky desktop header on mobile — drawer + topbar-mobile do that job */
   .dash-header {
