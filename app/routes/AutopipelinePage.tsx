@@ -44,6 +44,9 @@ type Modal =
 export function AutopipelinePage() {
   const { data, loading, error, refresh } = useApi<AutopipelineDetail>("/api/autopipeline", 10_000);
   const [modal, setModal] = useState<Modal | null>(null);
+  const [showFullQueue, setShowFullQueue] = useState(false);
+  const [showFullApprovals, setShowFullApprovals] = useState(false);
+  const [showFullDurations, setShowFullDurations] = useState(false);
   const cmd = useAction("/api/autopipeline/command");
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
@@ -51,6 +54,13 @@ export function AutopipelinePage() {
   if (!data) return null;
 
   const d = data;
+  const MAX_ROWS_WITH_HEADER = 8;
+  const MAX_BODY_ROWS = MAX_ROWS_WITH_HEADER - 1;
+  const approvals = d.queue.filter((i) => i.waitingApproval);
+  const queueRows = showFullQueue ? d.queue : d.queue.slice(0, MAX_BODY_ROWS);
+  const approvalRows = showFullApprovals ? approvals : approvals.slice(0, MAX_BODY_ROWS);
+  const durationRows = d.stageDurations.filter((row) => row.sampleCount > 0);
+  const durationRowsVisible = showFullDurations ? durationRows : durationRows.slice(0, MAX_BODY_ROWS);
 
   return (
     <div className="dash-page">
@@ -163,7 +173,7 @@ export function AutopipelinePage() {
                 <th>slug / id</th><th>stage</th><th></th><th className="queue-col-priority">priority</th><th className="queue-col-elapsed">elapsed</th><th className="queue-col-flags">flags</th>
               </tr></thead>
               <tbody>
-                {d.queue.map((item) => (
+                {queueRows.map((item) => (
                   <tr key={item.id}>
                     <td className="mono trunc">{item.slug ?? item.id}</td>
                     <td className="mono">{item.stage}</td>
@@ -187,6 +197,13 @@ export function AutopipelinePage() {
               </tbody>
             </table>
           )}
+          {d.queue.length > MAX_BODY_ROWS && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowFullQueue((v) => !v)}>
+                {showFullQueue ? "Show less" : `Show all (${d.queue.length})`}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -198,7 +215,7 @@ export function AutopipelinePage() {
             <table className="data-table">
               <thead><tr><th>slug / id</th><th>stage</th><th>age</th></tr></thead>
               <tbody>
-                {d.queue.filter((i) => i.waitingApproval).map((item) => (
+                {approvalRows.map((item) => (
                   <tr key={item.id}>
                     <td className="mono trunc">{item.slug ?? item.id}</td>
                     <td className="mono">{item.stage}</td>
@@ -207,6 +224,13 @@ export function AutopipelinePage() {
                 ))}
               </tbody>
             </table>
+            {approvals.length > MAX_BODY_ROWS && (
+              <div style={{ marginTop: 10 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setShowFullApprovals((v) => !v)}>
+                  {showFullApprovals ? "Show less" : `Show all (${approvals.length})`}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -257,7 +281,14 @@ export function AutopipelinePage() {
       <div className="section-card" id="throughput">
         <div className="section-card-header"><span className="title">stage durations (from dossier timestamps)</span></div>
         <div className="section-card-body table-wrap">
-          <StageDurationTable durations={d.stageDurations} />
+          <StageDurationTable durations={durationRowsVisible} />
+          {durationRows.length > MAX_BODY_ROWS && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowFullDurations((v) => !v)}>
+                {showFullDurations ? "Show less" : `Show all (${durationRows.length})`}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

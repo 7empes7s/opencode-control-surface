@@ -1120,12 +1120,14 @@ body {
   background: oklch(0% 0 0 / 70%);
   backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
-  z-index: 1000; padding: 16px;
+  z-index: 9999; padding: 16px;
   animation: overlay-in 140ms ease-out both;
 }
 .modal-box {
   background: var(--bg-panel); border: 1px solid var(--border-bright);
   border-radius: 6px; padding: 22px; max-width: 480px; width: 100%;
+  max-height: min(86vh, 720px);
+  overflow: auto;
   display: flex; flex-direction: column; gap: 14px;
   box-shadow: 0 12px 40px oklch(0% 0 0 / 60%);
   animation: modal-slide-in 220ms cubic-bezier(0.25, 1, 0.5, 1) both;
