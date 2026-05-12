@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSy
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
-import { createJob, finishJob, updateJobOutput } from "../db/writer.ts";
+import { createJob, finishJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
 import {
   readBuilderRun,
   readBuilderRuns,
@@ -84,6 +84,273 @@ function readLogFile(runId: string, name: string): string {
     return readFileSync(path, "utf8");
   } catch {
     return "";
+  }
+}
+
+// ── Phase 5: Git / Backup / Logging helpers ────────────────────────────────
+
+function captureSnapshotPatch(workflow: BuilderWorkflow, run: BuilderRun, passId: string): void {
+  const projectRoot = workflow.projectRoot;
+  if (!existsSync(projectRoot)) return;
+
+  ensureRunsDir();
+  const runDirPath = runDir(run.id);
+  if (!existsSync(runDirPath)) mkdirSync(runDirPath, { recursive: true });
+
+  // Capture git diff for all changed files
+  const diffResult = spawnSync("git", ["diff", "--no-color"], {
+    encoding: "utf8",
+    cwd: projectRoot,
+    timeout: 15_000,
+  });
+
+  // Capture dirty state summary
+  const statusResult = spawnSync("git", ["status", "--porcelain"], {
+    encoding: "utf8",
+    cwd: projectRoot,
+    timeout: 10_000,
+  });
+
+  const diffText = diffResult.stdout ?? "";
+  const statusText = statusResult.stdout ?? "";
+
+  // Write patch file
+  const patchPath = join(runDir(run.id), "pre-pass.patch");
+  writeFileSync(patchPath, diffText, { encoding: "utf8" });
+
+  // Write dirty state file
+  const dirtyPath = join(runDir(run.id), "pre-pass-dirty.txt");
+  writeFileSync(dirtyPath, statusText, { encoding: "utf8" });
+
+  // Create patch artifact
+  createBuilderArtifact({
+    workflowId: workflow.id,
+    runId: run.id,
+    passId,
+    kind: "pre-pass-patch",
+    path: patchPath,
+    metadata: {
+      dirtyFiles: statusText.split("\n").filter(Boolean).length,
+      snapshotAt: new Date().toISOString(),
+      phase: "pre-pass",
+    },
+  });
+
+  // Create dirty-state artifact
+  if (statusText.trim()) {
+    createBuilderArtifact({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "pre-pass-dirty-state",
+      path: dirtyPath,
+      metadata: {
+        snapshotAt: new Date().toISOString(),
+        phase: "pre-pass",
+      },
+    });
+  }
+}
+
+function runBackup(workflow: BuilderWorkflow, run: BuilderRun, passId: string): void {
+  const projectRoot = workflow.projectRoot;
+  if (!existsSync(projectRoot)) return;
+
+  const backupDir = "/var/lib/control-surface/builder-backups";
+  if (!existsSync(backupDir)) {
+    mkdirSync(backupDir, { recursive: true });
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = join(backupDir, `${run.id}-${ts}.tar.gz`);
+
+  // Exclude .git, node_modules, dist, .next, builder-runs
+  const excludeFlags = [
+    "--exclude=.git",
+    "--exclude=node_modules",
+    "--exclude=dist",
+    "--exclude=.next",
+    "--exclude=*.pyc",
+    "--exclude=__pycache__",
+    "--exclude=builder-runs",
+  ];
+  const excludeArgs = excludeFlags.flatMap((f) => f.split(" "));
+  // flatten properly
+  const flatExclude: string[] = [];
+  for (const f of excludeFlags) flatExclude.push(...f.split(" "));
+
+  const tarResult = spawnSync("tar", [
+    "-czf", backupPath,
+    "-C", projectRoot,
+    ".",
+    ...flatExclude,
+  ], { encoding: "utf8", timeout: 120_000 });
+
+  if (tarResult.status === 0 && existsSync(backupPath)) {
+    createBuilderArtifact({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "backup",
+      path: backupPath,
+      metadata: {
+        projectRoot,
+        createdAt: new Date().toISOString(),
+        phase: "pre-pass",
+        sizeBytes: existsSync(backupPath) ? readFileSync(backupPath).byteLength : 0,
+      },
+    });
+  }
+}
+
+function commitChanges(workflow: BuilderWorkflow, run: BuilderRun): { commitHash: string | null; message: string } {
+  const projectRoot = workflow.projectRoot;
+  const message = `Builder: ${workflow.name} pass 1 (automated)\n\nWorkflow: ${workflow.id}\nRun: ${run.id}\nTimestamp: ${new Date().toISOString()}`;
+
+  try {
+    if (!existsSync(join(projectRoot, ".git"))) {
+      return { commitHash: null, message: "no git repo" };
+    }
+
+    // git add -A
+    const addResult = spawnSync("git", ["add", "-A"], { encoding: "utf8", cwd: projectRoot, timeout: 30_000 });
+    if (addResult.status !== 0) {
+      return { commitHash: null, message: `git add failed: ${addResult.stderr}` };
+    }
+
+    // Check if anything is staged
+    const diffResult = spawnSync("git", ["diff", "--cached", "--name-only"], { encoding: "utf8", cwd: projectRoot, timeout: 10_000 });
+    if (!diffResult.stdout?.trim()) {
+      return { commitHash: null, message: "nothing to commit" };
+    }
+
+    // git commit
+    const commitResult = spawnSync("git", ["commit", "-m", message], {
+      encoding: "utf8",
+      cwd: projectRoot,
+      timeout: 30_000,
+      env: { ...process.env, GIT_AUTHOR_NAME: "Builder Pipeline", GIT_AUTHOR_EMAIL: "builder@localhost" },
+    });
+
+    if (commitResult.status !== 0) {
+      return { commitHash: null, message: `git commit failed: ${commitResult.stderr}` };
+    }
+
+    const hashResult = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: projectRoot, timeout: 10_000 });
+    const commitHash = hashResult.stdout?.trim() ?? null;
+
+    // Write commit artifact
+    const commitInfoPath = join(runDir(run.id), "commit-info.txt");
+    writeFileSync(commitInfoPath, `commit: ${commitHash}\nworkflow: ${workflow.name}\nrun: ${run.id}\nmessage: ${message}`, { encoding: "utf8" });
+
+    createBuilderArtifact({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId: null,
+      kind: "git-commit",
+      path: commitInfoPath,
+      metadata: { commitHash, workflowName: workflow.name, runId: run.id },
+    });
+
+    return { commitHash, message: "committed" };
+  } catch (e) {
+    return { commitHash: null, message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function pushChanges(workflow: BuilderWorkflow, run: BuilderRun): string {
+  const projectRoot = workflow.projectRoot;
+  const pushPolicy = workflow.config.gitPolicy.push;
+
+  if (pushPolicy === "never") return "push disabled by policy";
+
+  try {
+    if (!existsSync(join(projectRoot, ".git"))) {
+      return "no git repo";
+    }
+
+    if (pushPolicy === "current-branch") {
+      const pushResult = spawnSync("git", ["push"], { encoding: "utf8", cwd: projectRoot, timeout: 60_000 });
+      if (pushResult.status !== 0) {
+        return `git push failed: ${pushResult.stderr?.slice(0, 500)}`;
+      }
+      return "pushed to current-branch";
+    }
+
+    if (pushPolicy === "workflow-branch") {
+      const branchName = `builder/${workflow.id.slice(0, 16)}/${run.id.slice(0, 16)}`;
+      const pushResult = spawnSync("git", ["push", "origin", `HEAD:refs/heads/${branchName}`, "-u"], {
+        encoding: "utf8",
+        cwd: projectRoot,
+        timeout: 60_000,
+      });
+      if (pushResult.status !== 0) {
+        return `git push to workflow branch failed: ${pushResult.stderr?.slice(0, 500)}`;
+      }
+      return `pushed to workflow branch: ${branchName}`;
+    }
+
+    return "unknown push policy";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string | null, runStatus: string): void {
+  const ts = new Date().toISOString();
+  const vaultDate = ts.slice(0, 10); // YYYY-MM-DD
+
+  // Build summary lines
+  const summaryLines: string[] = [
+    `## Builder run: ${workflow.name}`,
+    `**Status**: ${runStatus}`,
+    `**Workflow**: ${workflow.id}`,
+    `**Run**: ${run.id}`,
+    `**Trigger**: ${run.trigger}`,
+    `**Pass**: ${passId ?? "-"}`,
+    `**Started**: ${run.startedAt ? new Date(run.startedAt).toISOString() : "-"}`,
+    `**Finished**: ${run.finishedAt ? new Date(run.finishedAt).toISOString() : "-"}`,
+    `**Agent**: ${workflow.config.agentOrder[0] ?? "unknown"}`,
+    `**Model**: ${workflow.config.modelPolicy.builder ?? "-"}`,
+    `**Plan**: ${workflow.planFile}`,
+    `**Project**: ${workflow.projectRoot}`,
+    "",
+  ];
+
+  const vaultEntry = summaryLines.join("\n");
+
+  // Write to AI Vault daily note
+  const vaultPath = `/opt/ai-vault/daily/${vaultDate}.md`;
+  try {
+    const existing = existsSync(vaultPath) ? readFileSync(vaultPath, "utf8") : "";
+    const marker = `## Builder Runs`;
+    if (existing.includes(marker)) {
+      const parts = existing.split(marker);
+      const after = parts[1] ?? "";
+      const restParts = after.split("---");
+      const rest = restParts.slice(1).join("---");
+      writeFileSync(vaultPath, `${parts[0]}${marker}\n\n${vaultEntry}\n---${rest}`, { encoding: "utf8" });
+    } else {
+      const separator = existing.trim() ? "\n\n---\n\n" : "";
+      writeFileSync(vaultPath, existing + separator + `## Builder Runs\n\n${vaultEntry}`, { encoding: "utf8" });
+    }
+  } catch (e) {
+    console.error("[builder] vault log write failed:", e);
+  }
+
+  // Write to project plan file if it exists
+  if (workflow.planFile && existsSync(workflow.planFile)) {
+    try {
+      const planContent = readFileSync(workflow.planFile, "utf8");
+      const runMarker = `## Builder Run ${run.id.slice(0, 8)}`;
+      if (!planContent.includes(runMarker)) {
+        const timestamp = new Date().toISOString();
+        const entry = `\n\n---\n${runMarker}\n- **Status**: ${runStatus}\n- **Trigger**: ${run.trigger}\n- **Finished**: ${timestamp}\n- **Artifact**: /var/lib/control-surface/builder-runs/${run.id}/\n`;
+        writeFileSync(workflow.planFile, planContent + entry, { encoding: "utf8" });
+      }
+    } catch (e) {
+      console.error("[builder] plan log write failed:", e);
+    }
   }
 }
 
@@ -418,6 +685,12 @@ export async function startWorkflowRun(
   // Update run with current pass
   updateBuilderRun(run.id, { currentPassId: passId });
 
+  // Phase 5: pre-pass snapshot and backup
+  captureSnapshotPatch(workflow, run, passId);
+  if (workflow.config.backupPolicy.enabled && workflow.config.backupPolicy.beforeRun) {
+    runBackup(workflow, run, passId);
+  }
+
   // Create job
   const jobId = `job_${randomUUID()}`;
   const scriptPath = writePassScript(run.id, workflow, agent, model);
@@ -641,6 +914,45 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   if (workflow) {
     releaseProjectLock(workflow.projectRoot);
     updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "ready" : "failed");
+  }
+
+  // Phase 5: commit / push / vault-log (after lock release so git operations are safe)
+  if (workflow) {
+    try {
+      if (runStatus === "success" && workflow.config.gitPolicy.commit === "after-validation") {
+        const { commitHash, message: commitMsg } = commitChanges(workflow, run);
+        if (commitHash) {
+          writeActionAudit({
+            actionKind: "builder.commit",
+            actionId: `builder-commit:${run.id}`,
+            targetType: "builder-run",
+            targetId: run.id,
+            risk: "medium",
+            result: `committed ${commitHash.slice(0, 8)}`,
+            resultStatus: "success",
+            evidence: [{ label: "commit", kind: "git", ref: commitHash }],
+          });
+          const pushMsg = pushChanges(workflow, run);
+          writeActionAudit({
+            actionKind: "builder.push",
+            actionId: `builder-push:${run.id}`,
+            targetType: "builder-run",
+            targetId: run.id,
+            risk: workflow.config.gitPolicy.push === "current-branch" ? "high" : "medium",
+            result: pushMsg,
+            resultStatus: "success",
+          });
+          console.log(`[builder] commit ${commitHash.slice(0, 8)} pushed: ${pushMsg}`);
+        } else {
+          console.log(`[builder] commit skipped: ${commitMsg}`);
+        }
+      }
+    } catch (e) {
+      console.error("[builder] commit/push failed:", e);
+    }
+
+    // Always log to vault regardless of run status
+    logToVault(workflow, run, passId ?? null, runStatus);
   }
 
   return readBuilderRun(runId);
