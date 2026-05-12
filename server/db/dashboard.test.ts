@@ -33,6 +33,13 @@ const expectedTables = [
   "content_health_findings",
   "source_stats",
   "runbooks",
+  "builder_projects",
+  "builder_workflows",
+  "builder_runs",
+  "builder_passes",
+  "builder_artifacts",
+  "builder_validations",
+  "builder_locks",
 ];
 
 let tempDir: string;
@@ -81,7 +88,7 @@ function registerDashboardDbTests(): void {
     }
 
     const version = getDashboardDb()!.query("SELECT version FROM schema_version").get() as { version: number };
-    expect(version.version).toBe(1);
+    expect(version.version).toBe(2);
   });
 
   test("operator_state write and read round-trips JSON values", () => {

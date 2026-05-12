@@ -21,6 +21,7 @@ import {
   Sun,
   Monitor,
   LayoutDashboard,
+  Hammer,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -45,6 +46,7 @@ const NAV: NavItem[] = [
   { href: "/incidents", label: "Incidents", icon: AlertTriangle },
   { href: "/jobs", label: "Jobs", icon: ClipboardList },
   { href: "/audit", label: "Audit", icon: History },
+  { href: "/builder", label: "Builder", icon: Hammer },
   { href: "/settings", label: "Settings", icon: Settings2 },
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },
@@ -56,7 +58,7 @@ const PRIMARY_NAV: NavItem[] = [
   NAV[2],  // Pipeline
   NAV[3],  // Doctor
   NAV[5],  // NewsBites
-  NAV[11], // OpenCode
+  NAV[12], // OpenCode
 ];
 
 function isActive(item: NavItem, location: string): boolean {

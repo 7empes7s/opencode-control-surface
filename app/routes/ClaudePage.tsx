@@ -28,6 +28,8 @@ type ClaudeSessionMeta = {
   updatedAt: number;
   messageCount: number;
   claudeSessionId: string | null;
+  running?: boolean;
+  runStartedAt?: number | null;
 };
 
 type ClaudeMessageT = {
@@ -133,10 +135,14 @@ export function ClaudePage() {
   const loadList = async () => {
     try {
       const res = await authFetch("/api/claude/sessions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { sessions: ClaudeSessionMeta[] };
-      setSessions(json.sessions);
-      return json.sessions;
-    } catch {
+      const list = Array.isArray(json.sessions) ? json.sessions : [];
+      setSessions(list);
+      return list;
+    } catch (e) {
+      setSessions([]);
+      setError(e instanceof Error ? e.message : String(e));
       return [] as ClaudeSessionMeta[];
     }
   };
@@ -152,12 +158,40 @@ export function ClaudePage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [active?.messages.length, liveItems.length]);
 
+  useEffect(() => {
+    if (!active?.id || !active.running) return;
+    setSending(true);
+    const poll = async () => {
+      try {
+        const res = await authFetch(`/api/claude/sessions/${active.id}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json() as { session: ClaudeSessionT };
+        const next = {
+          ...json.session,
+          messages: Array.isArray(json.session.messages) ? json.session.messages : [],
+        };
+        setActive(next);
+        if (!next.running) {
+          setSending(false);
+          setLiveItems([]);
+          loadList();
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    };
+    const timer = window.setInterval(poll, 5000);
+    poll();
+    return () => window.clearInterval(timer);
+  }, [active?.id, active?.running]);
+
   const selectSession = async (id: string) => {
     setError(null);
     try {
       const res = await authFetch(`/api/claude/sessions/${id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { session: ClaudeSessionT };
-      setActive(json.session);
+      setActive({ ...json.session, messages: Array.isArray(json.session.messages) ? json.session.messages : [] });
       setDrawerOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -244,7 +278,7 @@ export function ClaudePage() {
       const fetched = await authFetch(`/api/claude/sessions/${active.id}`);
       if (fetched.ok) {
         const json = await fetched.json() as { session: ClaudeSessionT };
-        setActive(json.session);
+        setActive({ ...json.session, messages: Array.isArray(json.session.messages) ? json.session.messages : [] });
       }
       loadList();
     } catch (e) {
@@ -258,8 +292,14 @@ export function ClaudePage() {
     }
   };
 
-  const stop = () => {
+  const stop = async () => {
+    if (active) {
+      await authFetch(`/api/claude/sessions/${active.id}/stop`, { method: "POST" }).catch(() => null);
+    }
     abortRef.current?.abort();
+    setSending(false);
+    setLiveItems([]);
+    if (active) selectSession(active.id);
   };
 
   const orderedSessions = useMemo(
@@ -405,7 +445,11 @@ export function ClaudePage() {
               <div className="msg-wrap">
                 <div className="msg-assistant">
                   <div className="msg-label model">claude</div>
-                  {liveItems.length === 0 ? (
+                  {active.running && liveItems.length === 0 ? (
+                    <div className="part-text oc-codex-thinking">
+                      <Loader2 size={12} className="oc-spin" /> running in background...
+                    </div>
+                  ) : liveItems.length === 0 ? (
                     <div className="part-text oc-codex-thinking">
                       <Loader2 size={12} className="oc-spin" /> thinking…
                     </div>

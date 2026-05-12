@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
-export const DASHBOARD_SCHEMA_VERSION = 1;
+export const DASHBOARD_SCHEMA_VERSION = 2;
 
 type InitDashboardDbOptions = {
   enabled?: boolean;
@@ -238,6 +238,118 @@ function migrateDashboardDb(db: Database): void {
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS builder_projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root TEXT NOT NULL UNIQUE,
+      config_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS builder_workflows (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      plan_file TEXT NOT NULL,
+      config_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_run_id TEXT,
+      next_run_at INTEGER,
+      paused_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_builder_workflows_project
+      ON builder_workflows (project_id);
+    CREATE INDEX IF NOT EXISTS idx_builder_workflows_status
+      ON builder_workflows (status);
+
+    CREATE TABLE IF NOT EXISTS builder_runs (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at INTEGER,
+      finished_at INTEGER,
+      current_pass_id TEXT,
+      stop_requested_at INTEGER,
+      stop_requested_by TEXT,
+      result_json TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_builder_runs_workflow
+      ON builder_runs (workflow_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_builder_runs_status
+      ON builder_runs (status);
+
+    CREATE TABLE IF NOT EXISTS builder_passes (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      status TEXT NOT NULL,
+      agent TEXT,
+      provider TEXT,
+      model TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      job_ids_json TEXT,
+      validation_ids_json TEXT,
+      artifact_ids_json TEXT,
+      summary TEXT,
+      next_instruction TEXT,
+      failure_class TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_builder_passes_run
+      ON builder_passes (run_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_builder_passes_workflow
+      ON builder_passes (workflow_id, sequence);
+
+    CREATE TABLE IF NOT EXISTS builder_artifacts (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      pass_id TEXT,
+      kind TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sha256 TEXT,
+      created_at INTEGER NOT NULL,
+      metadata_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_builder_artifacts_run
+      ON builder_artifacts (run_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS builder_validations (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      pass_id TEXT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      command TEXT,
+      url TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      output_tail TEXT,
+      artifact_id TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_builder_validations_run
+      ON builder_validations (run_id, started_at);
+
+    CREATE TABLE IF NOT EXISTS builder_locks (
+      project_root TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      acquired_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      holder TEXT NOT NULL
     );
   `);
 

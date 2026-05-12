@@ -15,6 +15,7 @@ import { JobsPage } from "./routes/JobsPage";
 import { AuditPage } from "./routes/AuditPage";
 import { TodayPage } from "./routes/TodayPage";
 import { SettingsPage } from "./routes/SettingsPage";
+import { BuilderPage } from "./routes/BuilderPage";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -87,6 +88,9 @@ export function App() {
         </Route>
         <Route path="/settings">
           <DashLayout><SettingsPage /></DashLayout>
+        </Route>
+        <Route path="/builder">
+          <DashLayout><BuilderPage /></DashLayout>
         </Route>
 
         <Route>

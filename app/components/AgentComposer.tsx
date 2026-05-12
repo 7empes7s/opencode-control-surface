@@ -101,6 +101,18 @@ export function AgentComposer({
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [value]);
 
+  useEffect(() => {
+    if (!running || !onStop) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onStop();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [running, onStop]);
+
   const voice = useVoice((t) => onChange(value ? `${value} ${t}` : t));
   const slash = useMemo(() => {
     if (!agent || running) return null;

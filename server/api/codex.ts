@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,12 +9,14 @@ import { normalizeWorkspace } from "./workspaces.ts";
 const STATE_DIR = "/var/lib/control-surface";
 const STATE_FILE = join(STATE_DIR, "codex-sessions.json");
 const CODEX_SESSIONS_DIR = "/root/.codex/sessions";
+const activeCodexRuns = new Map<string, { child: ChildProcessWithoutNullStreams; startedAt: number }>();
 
 export type CodexMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   ts: number;
+  items?: CodexStreamItem[];
 };
 
 export type CodexSession = {
@@ -25,6 +27,8 @@ export type CodexSession = {
   createdAt: number;
   updatedAt: number;
   messages: CodexMessage[];
+  running?: boolean;
+  runStartedAt?: number | null;
 };
 
 type State = { sessions: CodexSession[] };
@@ -170,6 +174,8 @@ export async function codexListHandler(): Promise<Response> {
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,
         codexSessionId: s.codexSessionId,
+        running: activeCodexRuns.has(s.id),
+        runStartedAt: activeCodexRuns.get(s.id)?.startedAt ?? null,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt),
   });
@@ -201,7 +207,13 @@ export async function codexGetHandler(id: string): Promise<Response> {
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
   if (!session) return json({ error: "not found" }, 404);
-  return json({ session });
+  return json({
+    session: {
+      ...session,
+      running: activeCodexRuns.has(id),
+      runStartedAt: activeCodexRuns.get(id)?.startedAt ?? null,
+    },
+  });
 }
 
 export async function codexDeleteHandler(id: string): Promise<Response> {
@@ -282,9 +294,16 @@ export async function codexSendHandler(req: Request, id: string): Promise<Respon
 type CodexEvent =
   | { type: "thread.started"; thread_id: string }
   | { type: "turn.started" }
-  | { type: "item.completed"; item: { id: string; type: string; text?: string } }
+  | { type: "item.completed"; item: CodexStreamItem }
   | { type: "turn.completed"; usage?: Record<string, unknown> }
   | { type: string; [k: string]: unknown };
+
+type CodexStreamItem = {
+  id?: string;
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+};
 
 function sseFrame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -298,6 +317,12 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
   if (!session) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  if (activeCodexRuns.has(id)) {
+    return new Response(JSON.stringify({ error: "session already running" }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   // Persist the user message before streaming begins so reload-mid-run still shows it.
   const userMsg: CodexMessage = {
@@ -339,10 +364,12 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
         env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" },
         stdio: ["ignore", "pipe", "pipe"],
       });
+      activeCodexRuns.set(id, { child, startedAt: Date.now() });
 
       let capturedThreadId: string | null = null;
       let stderr = "";
       const agentTexts: string[] = [];
+      const completedItems: CodexStreamItem[] = [];
 
       const rl = createInterface({ input: child.stdout });
       rl.on("line", (line) => {
@@ -355,8 +382,9 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
           capturedThreadId = (ev as { thread_id: string }).thread_id;
           send("started", { codexThreadId: capturedThreadId });
         } else if (ev.type === "item.completed") {
-          const item = (ev as { item: { id: string; type: string; text?: string } }).item;
+          const item = (ev as { item: CodexStreamItem }).item;
           if (item.type === "agent_message" && item.text) agentTexts.push(item.text);
+          completedItems.push(item);
           send("item", { item });
         } else if (ev.type === "turn.completed") {
           const usage = (ev as { usage?: unknown }).usage;
@@ -369,15 +397,8 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
         if (stderr.length > 4000) stderr = stderr.slice(-4000);
       });
 
-      // No wall-clock timeout: codex runs as long as it needs. Abort via client
-      // disconnect (req.signal) or by deleting the session.
-      const onAbort = () => {
-        try { child.kill("SIGTERM"); } catch {}
-      };
-      req.signal.addEventListener("abort", onAbort);
-
       child.on("close", (code) => {
-        req.signal.removeEventListener("abort", onAbort);
+        activeCodexRuns.delete(id);
         rl.close();
 
         // Persist final state.
@@ -394,6 +415,7 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
               ? (finalText || "(codex returned no message)")
               : `codex exited ${code}\n${stderr.slice(-1000) || finalText}`,
             ts: Date.now(),
+            items: completedItems,
           };
           target.messages.push(assistant);
           target.updatedAt = Date.now();
@@ -415,6 +437,7 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
       });
 
       child.on("error", (err) => {
+        activeCodexRuns.delete(id);
         send("error", { error: `codex spawn error: ${err.message}` });
         send("done", { ok: false });
         try { controller.close(); } catch {}
@@ -431,4 +454,21 @@ export async function codexStreamHandler(req: Request, id: string): Promise<Resp
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+export async function codexStopHandler(id: string): Promise<Response> {
+  const active = activeCodexRuns.get(id);
+  if (!active) return json({ ok: true, stopped: false });
+
+  try {
+    active.child.kill("SIGTERM");
+    setTimeout(() => {
+      if (activeCodexRuns.get(id)?.child === active.child) {
+        try { active.child.kill("SIGKILL"); } catch {}
+      }
+    }, 5000).unref?.();
+    return json({ ok: true, stopped: true });
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 }

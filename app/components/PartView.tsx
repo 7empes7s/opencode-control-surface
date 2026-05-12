@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Part, ToolState } from "../lib/store";
 import { ChevronRight, ChevronDown, Terminal, FileEdit, Search, Globe, Wrench } from "lucide-react";
 
@@ -65,16 +65,23 @@ function ToolIcon({ tool }: { tool: string }) {
 
 // ── Tool part ──────────────────────────────────────────────────────────────
 
-function ToolPartView({ part }: { part: Extract<Part, { type: "tool" }> }) {
-  const [open, setOpen] = useState(false);
+function ToolPartView({ part, defaultOpen = false }: { part: Extract<Part, { type: "tool" }>; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const state = part.state as ToolState;
+
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
 
   const statusLabel = state.status;
   const title = state.status !== "pending" ? (state as { title?: string }).title ?? "" : "";
   const output = state.status === "completed" ? (state as { output: string }).output : "";
+  const error = state.status === "error" ? (state as { error: string }).error : "";
   const inputStr = state.status === "pending"
     ? (state as { raw: string }).raw
     : JSON.stringify((state as { input: Record<string, unknown> }).input, null, 2);
+  const body = [inputStr, output, error].filter(Boolean).join("\n\n");
+  const preview = (output || error || inputStr || "").replace(/\s+/g, " ").trim();
 
   return (
     <div className={`part-tool status-${state.status}`}>
@@ -82,14 +89,17 @@ function ToolPartView({ part }: { part: Extract<Part, { type: "tool" }> }) {
         <ToolIcon tool={part.tool} />
         <span className="tool-name-text">
           {part.tool}
-          {title && <span className="tool-title">{title}</span>}
+          {title && <span className="tool-title"> {title}</span>}
         </span>
         <span className={`tool-badge ${state.status}`}>{statusLabel}</span>
         {open ? <ChevronDown size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} /> : <ChevronRight size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} />}
       </button>
+      {!open && preview && (
+        <div className="part-tool-preview">{preview.slice(0, 260)}{preview.length > 260 ? "..." : ""}</div>
+      )}
       {open && (
         <div className="part-tool-body">
-          {output || inputStr}
+          {body}
         </div>
       )}
     </div>
@@ -113,15 +123,18 @@ function ReasoningPartView({ part }: { part: Extract<Part, { type: "reasoning" }
 
 // ── Patch part ─────────────────────────────────────────────────────────────
 
-function PatchPartView({ part }: { part: Extract<Part, { type: "patch" }> }) {
-  const [open, setOpen] = useState(false);
+function PatchPartView({ part, defaultOpen = false }: { part: Extract<Part, { type: "patch" }>; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
   return (
     <div className="part-tool">
       <button className="part-tool-header" onClick={() => setOpen((v) => !v)}>
         <FileEdit size={12} style={{ color: "var(--blue)" }} />
         <span className="tool-name-text">
           patch
-          <span className="tool-title">{part.files.length} file{part.files.length !== 1 ? "s" : ""}</span>
+          <span className="tool-title"> {part.files.length} file{part.files.length !== 1 ? "s" : ""}</span>
         </span>
         <span className="tool-badge completed">applied</span>
         {open ? <ChevronDown size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} /> : <ChevronRight size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} />}
@@ -137,7 +150,17 @@ function PatchPartView({ part }: { part: Extract<Part, { type: "patch" }> }) {
 
 // ── Main export ────────────────────────────────────────────────────────────
 
-export function PartView({ part, isLast, running }: { part: Part; isLast: boolean; running: boolean }) {
+export function PartView({
+  part,
+  isLast,
+  running,
+  defaultOpenActions = false,
+}: {
+  part: Part;
+  isLast: boolean;
+  running: boolean;
+  defaultOpenActions?: boolean;
+}) {
   if (part.type === "text") {
     const showCursor = isLast && running && part.text;
     return (
@@ -153,11 +176,11 @@ export function PartView({ part, isLast, running }: { part: Part; isLast: boolea
   }
 
   if (part.type === "tool") {
-    return <ToolPartView part={part as Extract<Part, { type: "tool" }>} />;
+    return <ToolPartView part={part as Extract<Part, { type: "tool" }>} defaultOpen={defaultOpenActions} />;
   }
 
   if (part.type === "patch") {
-    return <PatchPartView part={part as Extract<Part, { type: "patch" }>} />;
+    return <PatchPartView part={part as Extract<Part, { type: "patch" }>} defaultOpen={defaultOpenActions} />;
   }
 
   // step-start, step-finish, others — skip silently

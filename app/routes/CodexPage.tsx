@@ -8,6 +8,7 @@ import {
 import { AgentDiscoveryStrip } from "../components/AgentDiscoveryStrip";
 import { AgentComposer } from "../components/AgentComposer";
 import { AgentVaultLogButton } from "../components/AgentVaultLogButton";
+import { TranscriptControls, type ActionFilter, type TranscriptMode } from "../components/TranscriptControls";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 import { authFetch } from "../lib/authFetch";
 
@@ -28,6 +29,8 @@ type CodexSessionMeta = {
   updatedAt: number;
   messageCount: number;
   codexSessionId: string | null;
+  running?: boolean;
+  runStartedAt?: number | null;
 };
 
 type CodexMessage = {
@@ -35,12 +38,14 @@ type CodexMessage = {
   role: "user" | "assistant" | "system";
   content: string;
   ts: number;
+  items?: StreamItem[];
 };
 
 type StreamItem = {
-  id: string;
+  id?: string;
   type: string; // "agent_message" | "reasoning" | "command_execution" | other
   text?: string;
+  [key: string]: unknown;
 };
 
 type CodexSession = CodexSessionMeta & { messages: CodexMessage[] };
@@ -129,16 +134,22 @@ export function CodexPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveItems, setLiveItems] = useState<StreamItem[]>([]);
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("all");
+  const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const loadList = async () => {
     try {
       const res = await authFetch("/api/codex/sessions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { sessions: CodexSessionMeta[] };
-      setSessions(json.sessions);
-      return json.sessions;
-    } catch {
+      const list = Array.isArray(json.sessions) ? json.sessions : [];
+      setSessions(list);
+      return list;
+    } catch (e) {
+      setSessions([]);
+      setError(e instanceof Error ? e.message : String(e));
       return [] as CodexSessionMeta[];
     }
   };
@@ -154,12 +165,40 @@ export function CodexPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [active?.messages.length, liveItems.length]);
 
+  useEffect(() => {
+    if (!active?.id || !active.running) return;
+    setSending(true);
+    const poll = async () => {
+      try {
+        const res = await authFetch(`/api/codex/sessions/${active.id}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json() as { session: CodexSession };
+        const next = {
+          ...json.session,
+          messages: Array.isArray(json.session.messages) ? json.session.messages : [],
+        };
+        setActive(next);
+        if (!next.running) {
+          setSending(false);
+          setLiveItems([]);
+          loadList();
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    };
+    const timer = window.setInterval(poll, 5000);
+    poll();
+    return () => window.clearInterval(timer);
+  }, [active?.id, active?.running]);
+
   const selectSession = async (id: string) => {
     setError(null);
     try {
       const res = await authFetch(`/api/codex/sessions/${id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as { session: CodexSession };
-      setActive(json.session);
+      setActive({ ...json.session, messages: Array.isArray(json.session.messages) ? json.session.messages : [] });
       setDrawerOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -245,7 +284,7 @@ export function CodexPage() {
       const fetched = await authFetch(`/api/codex/sessions/${active.id}`);
       if (fetched.ok) {
         const json = await fetched.json() as { session: CodexSession };
-        setActive(json.session);
+        setActive({ ...json.session, messages: Array.isArray(json.session.messages) ? json.session.messages : [] });
       }
       loadList();
     } catch (e) {
@@ -259,8 +298,14 @@ export function CodexPage() {
     }
   };
 
-  const stop = () => {
+  const stop = async () => {
+    if (active) {
+      await authFetch(`/api/codex/sessions/${active.id}/stop`, { method: "POST" }).catch(() => null);
+    }
     abortRef.current?.abort();
+    setSending(false);
+    setLiveItems([]);
+    if (active) selectSession(active.id);
   };
 
   const orderedSessions = useMemo(
@@ -271,6 +316,10 @@ export function CodexPage() {
     active?.messages.map((m) => ({
       role: m.role,
       content: m.content,
+      toolText: (m.items ?? [])
+        .filter(isCodexActionItem)
+        .map((item) => `${item.type} ${codexItemDetail(item)}`)
+        .join("\n"),
     })) ?? []
   ), [active?.messages]);
   const { triggerSessionEnd, sessionEndPromptModal } = useSessionEndPrompt({
@@ -285,6 +334,21 @@ export function CodexPage() {
     setDrawerOpen(false);
     if (!triggerSessionEnd("new-session", () => setNewOpen(true))) setNewOpen(true);
   };
+
+  const transcriptCounts = useMemo(() => {
+    const items = [
+      ...(active?.messages.flatMap((m) => m.items ?? []) ?? []),
+      ...liveItems,
+    ];
+    return {
+      messages: active?.messages.filter((m) => m.role !== "system").length ?? 0,
+      actions: items.filter(isCodexActionItem).length,
+      thoughts: items.filter(isCodexThoughtItem).length,
+      errored: items.filter((item) => isCodexActionItem(item) && codexActionCategory(item) === "errored").length,
+      edits: items.filter((item) => isCodexActionItem(item) && codexActionCategory(item) === "edits").length,
+      deletes: items.filter((item) => isCodexActionItem(item) && codexActionCategory(item) === "deletes").length,
+    };
+  }, [active?.messages, liveItems]);
 
   return (
     <div className="oc-shell codex-shell">
@@ -362,6 +426,15 @@ export function CodexPage() {
 
       <main className="oc-main">
         <AgentDiscoveryStrip agent="codex" onInsert={(t) => setInput((prev) => prev + t)} />
+        {active && (
+          <TranscriptControls
+            mode={transcriptMode}
+            actionFilter={actionFilter}
+            counts={transcriptCounts}
+            onModeChange={setTranscriptMode}
+            onActionFilterChange={setActionFilter}
+          />
+        )}
         {!active ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />
@@ -371,8 +444,8 @@ export function CodexPage() {
               <Plus size={14} /> New session
             </button>
             <div className="oc-codex-note">
-              Codex runs as <code>codex exec</code> in the directory you pick. Single-shot per
-              message — full streaming &amp; tool-use UI is on the roadmap.
+              Codex runs as <code>codex exec</code> in the directory you pick. Runs continue
+              on the server if this browser tab closes.
             </div>
           </div>
         ) : (
@@ -390,13 +463,22 @@ export function CodexPage() {
                   </div>
                 );
               }
+              const showContent = transcriptMode !== "actions" && m.content.trim().length > 0;
+              const itemSource = showContent
+                ? (m.items ?? []).filter((item) => !isCodexMessageItem(item))
+                : (m.items ?? []);
+              const visibleItems = codexVisibleItems(itemSource, transcriptMode, actionFilter);
+              if (!showContent && visibleItems.length === 0 && !isSystem) return null;
               return (
                 <div key={m.id} className="msg-wrap">
                   <div className="msg-assistant">
                     <div className={`msg-label model${isSystem ? " err" : ""}`}>
                       {isSystem ? "codex (error)" : "codex"}
                     </div>
-                    <div className="part-text">{m.content}</div>
+                    {showContent && <div className="part-text">{m.content}</div>}
+                    {visibleItems.map((item, idx) => (
+                      <CodexLiveItem key={`${m.id}_${item.id ?? idx}`} item={item} />
+                    ))}
                   </div>
                 </div>
               );
@@ -405,20 +487,27 @@ export function CodexPage() {
               <div className="msg-wrap">
                 <div className="msg-assistant">
                   <div className="msg-label model">codex</div>
-                  {liveItems.length === 0 ? (
+                  {active.running && liveItems.length === 0 ? (
                     <div className="part-text oc-codex-thinking">
-                      <Loader2 size={12} className="oc-spin" /> thinking…
+                      <Loader2 size={12} className="oc-spin" /> running in background...
+                    </div>
+                  ) : codexVisibleItems(liveItems, transcriptMode, actionFilter).length === 0 ? (
+                    <div className="part-text oc-codex-thinking">
+                      <Loader2 size={12} className="oc-spin" /> {transcriptMode === "actions" ? "waiting for matching actions..." : "thinking..."}
                     </div>
                   ) : (
-                    liveItems.map((it, idx) => <CodexLiveItem key={idx} item={it} />)
+                    codexVisibleItems(liveItems, transcriptMode, actionFilter).map((it, idx) => <CodexLiveItem key={idx} item={it} />)
                   )}
                   {liveItems.length > 0 && (
                     <div className="oc-codex-thinking" style={{ marginTop: 6 }}>
-                      <Loader2 size={11} className="oc-spin" /> running…
+                      <Loader2 size={11} className="oc-spin" /> running...
                     </div>
                   )}
                 </div>
               </div>
+            )}
+            {active.messages.length > 0 && !sending && transcriptMode === "actions" && transcriptCounts.actions > 0 && active.messages.every((m) => m.role === "user" || codexVisibleItems(m.items ?? [], transcriptMode, actionFilter).length === 0) && (
+              <div className="oc-thread-hint">No actions match this filter.</div>
             )}
             {error && <div className="loading-dim error" style={{ padding: "8px 20px" }}>{error}</div>}
             <div ref={bottomRef} />
@@ -454,38 +543,88 @@ export function CodexPage() {
   );
 }
 
+function isCodexThoughtItem(item: StreamItem): boolean {
+  return item.type === "reasoning" || item.type === "reasoning_delta" || item.type.includes("reasoning");
+}
+
+function isCodexMessageItem(item: StreamItem): boolean {
+  return item.type === "agent_message" || item.type === "message" || item.type === "assistant_message";
+}
+
+function isCodexActionItem(item: StreamItem): boolean {
+  return !isCodexMessageItem(item) && !isCodexThoughtItem(item);
+}
+
+function codexItemDetail(item: StreamItem): string {
+  if (typeof item.text === "string" && item.text.trim()) return item.text;
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (key === "id" || key === "type" || value === undefined || value === null) continue;
+    rest[key] = value;
+  }
+  try {
+    return Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : "";
+  } catch {
+    return "";
+  }
+}
+
+function codexActionCategory(item: StreamItem): ActionFilter {
+  const text = `${item.type} ${codexItemDetail(item)}`.toLowerCase();
+  if (/\b(error|failed|exit code|non-zero|exception)\b/.test(text)) return "errored";
+  if (/\b(delete|deleted|remove|removed|unlink|rm\s+-|rm\s)/.test(text)) return "deletes";
+  if (/\b(write|edit|edited|patch|apply_patch|update|create|modified)\b/.test(text)) return "edits";
+  if (/\b(command|exec|bash|shell|run)\b/.test(text)) return "commands";
+  if (/\b(read|grep|glob|search|find|list|open)\b/.test(text)) return "reads";
+  if (/\b(web|fetch|http|url|search_query)\b/.test(text)) return "web";
+  return "other";
+}
+
+function codexVisibleItems(items: StreamItem[], mode: TranscriptMode, filter: ActionFilter): StreamItem[] {
+  if (mode === "messages") return items.filter(isCodexMessageItem);
+  if (mode === "actions") {
+    return items.filter((item) => isCodexActionItem(item) && (filter === "all" || codexActionCategory(item) === filter));
+  }
+  return items;
+}
+
 function CodexLiveItem({ item }: { item: StreamItem }) {
   const t = item.type;
   if (t === "agent_message") {
     return <div className="part-text">{item.text ?? ""}</div>;
   }
   if (t === "reasoning") {
+    const detail = codexItemDetail(item);
     return (
       <div className="codex-item codex-item-reasoning">
         <div className="codex-item-head">
           <Brain size={11} strokeWidth={2} /> reasoning
         </div>
-        {item.text && <div className="codex-item-body">{item.text}</div>}
+        {detail && <div className="codex-item-body">{detail}</div>}
       </div>
     );
   }
   if (t === "command_execution" || t === "command" || t === "tool_call") {
+    const detail = codexItemDetail(item);
     return (
       <div className="codex-item codex-item-tool">
         <div className="codex-item-head">
           <Wrench size={11} strokeWidth={2} /> {t.replace(/_/g, " ")}
+          <span className={`codex-item-kind ${codexActionCategory(item)}`}>{codexActionCategory(item)}</span>
         </div>
-        {item.text && <div className="codex-item-body mono">{item.text}</div>}
+        {detail && <div className="codex-item-body mono">{detail}</div>}
       </div>
     );
   }
   // Unknown item type — show a compact pill so we don't lose visibility.
+  const detail = codexItemDetail(item);
   return (
     <div className="codex-item codex-item-unknown">
       <div className="codex-item-head">
         <MessageSquare size={11} strokeWidth={2} /> {t}
+        {isCodexActionItem(item) && <span className={`codex-item-kind ${codexActionCategory(item)}`}>{codexActionCategory(item)}</span>}
       </div>
-      {item.text && <div className="codex-item-body">{item.text}</div>}
+      {detail && <div className="codex-item-body">{detail}</div>}
     </div>
   );
 }

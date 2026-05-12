@@ -5,11 +5,12 @@ import {
   Paperclip, Image as ImageIcon, Cpu, FolderOpen, ChevronDown,
   TriangleAlert, FileText,
 } from "lucide-react";
-import { useStore, type Attachment, type Session } from "../lib/store";
+import { useStore, type Attachment, type Part, type Session } from "../lib/store";
 import { PartView } from "./PartView";
 import { AgentDiscoveryStrip } from "./AgentDiscoveryStrip";
 import { AgentComposer } from "./AgentComposer";
 import { AgentVaultLogButton } from "./AgentVaultLogButton";
+import { TranscriptControls, type ActionFilter, type TranscriptMode } from "./TranscriptControls";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 
 const PRESET_DIRS = [
@@ -266,7 +267,7 @@ export function OpenCodeView() {
   const {
     sessions, activeSession, selectSession,
     messages, parts, messageOrder, messageParts, running, sendMessage,
-    currentModel, providers, loadProviders,
+    currentModel, providers, loadProviders, abortSession,
   } = useStore();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -274,6 +275,8 @@ export function OpenCodeView() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("all");
+  const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -328,6 +331,23 @@ export function OpenCodeView() {
       .map((id) => messages.find((m) => m.info.id === id))
       .filter(Boolean) as typeof messages
   ), [messageOrder, messages]);
+
+  const transcriptCounts = useMemo(() => {
+    const allParts = orderedMsgs.flatMap((msg) => {
+      const livePartIds = messageParts[msg.info.id] ?? msg.parts.map((p) => p.id);
+      return livePartIds
+        .map((pid) => parts[pid] ?? msg.parts.find((p) => p.id === pid))
+        .filter(Boolean) as Part[];
+    });
+    return {
+      messages: allParts.filter(isOpenCodeMessagePart).length,
+      actions: allParts.filter(isOpenCodeActionPart).length,
+      thoughts: allParts.filter((part) => part.type === "reasoning").length,
+      errored: allParts.filter((part) => isOpenCodeActionPart(part) && openCodeActionCategory(part) === "errored").length,
+      edits: allParts.filter((part) => isOpenCodeActionPart(part) && openCodeActionCategory(part) === "edits").length,
+      deletes: allParts.filter((part) => isOpenCodeActionPart(part) && openCodeActionCategory(part) === "deletes").length,
+    };
+  }, [messageParts, orderedMsgs, parts]);
 
   const sessionEndMessages = useMemo(() => orderedMsgs.map((msg) => {
     const livePartIds = messageParts[msg.info.id] ?? msg.parts.map((p) => p.id);
@@ -420,6 +440,15 @@ export function OpenCodeView() {
       {/* Chat area */}
       <main className="oc-main">
         <AgentDiscoveryStrip agent="opencode" onInsert={(t) => setInput((prev) => prev + t)} />
+        {activeSession && (
+          <TranscriptControls
+            mode={transcriptMode}
+            actionFilter={actionFilter}
+            counts={transcriptCounts}
+            onModeChange={setTranscriptMode}
+            onActionFilterChange={setActionFilter}
+          />
+        )}
         {!activeSession ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />
@@ -473,7 +502,11 @@ export function OpenCodeView() {
                 );
               }
 
-              const visibleParts = liveParts.filter((p) => p && p.type !== "step-start" && p.type !== "step-finish");
+              const visibleParts = openCodeVisibleParts(
+                liveParts.filter(Boolean) as Part[],
+                transcriptMode,
+                actionFilter,
+              );
               if (visibleParts.length === 0 && !running) return null;
 
               return (
@@ -486,6 +519,7 @@ export function OpenCodeView() {
                         part={part!}
                         isLast={isLastMsg && partIdx === visibleParts.length - 1}
                         running={running}
+                        defaultOpenActions={transcriptMode === "actions"}
                       />
                     ))}
                     {isLastMsg && running && visibleParts.length === 0 && (
@@ -495,6 +529,17 @@ export function OpenCodeView() {
                 </div>
               );
             })}
+
+            {orderedMsgs.length > 0 && !running && transcriptMode === "actions" && transcriptCounts.actions > 0 && orderedMsgs.every((msg) => {
+              if (msg.info.role === "user") return true;
+              const livePartIds = messageParts[msg.info.id] ?? msg.parts.map((p) => p.id);
+              const liveParts = livePartIds
+                .map((pid) => parts[pid] ?? msg.parts.find((p) => p.id === pid))
+                .filter(Boolean) as Part[];
+              return openCodeVisibleParts(liveParts, transcriptMode, actionFilter).length === 0;
+            }) && (
+              <div className="oc-thread-hint">No actions match this filter.</div>
+            )}
 
             <div className="msg-wrap"><PermissionBanner /></div>
             <div ref={bottomRef} />
@@ -507,6 +552,7 @@ export function OpenCodeView() {
             value={input}
             onChange={setInput}
             onSubmit={handleSubmit}
+            onStop={abortSession}
             running={running}
             placeholder="Message OpenCode"
             agent="opencode"
@@ -570,4 +616,42 @@ function safeJson(value: unknown): string {
   } catch {
     return "";
   }
+}
+
+function isOpenCodeMessagePart(part: Part): boolean {
+  return part.type === "text";
+}
+
+function isOpenCodeActionPart(part: Part): boolean {
+  return part.type === "tool" || part.type === "patch";
+}
+
+function openCodeActionCategory(part: Part): ActionFilter {
+  const text = openCodePartSearchText(part);
+  if (/\b(error|failed|exit code|non-zero|exception)\b/.test(text)) return "errored";
+  if (/\b(delete|deleted|remove|removed|unlink|rm\s+-|rm\s)/.test(text)) return "deletes";
+  if (/\b(write|edit|edited|patch|apply_patch|update|create|modified)\b/.test(text)) return "edits";
+  if (/\b(bash|exec|command|shell|run)\b/.test(text)) return "commands";
+  if (/\b(read|grep|glob|search|find|list|open)\b/.test(text)) return "reads";
+  if (/\b(web|fetch|http|url)\b/.test(text)) return "web";
+  return "other";
+}
+
+function openCodeVisibleParts(parts: Part[], mode: TranscriptMode, filter: ActionFilter): Part[] {
+  if (mode === "messages") return parts.filter(isOpenCodeMessagePart);
+  if (mode === "actions") {
+    return parts.filter((part) => isOpenCodeActionPart(part) && (filter === "all" || openCodeActionCategory(part) === filter));
+  }
+  return parts.filter((part) => part.type !== "step-start" && part.type !== "step-finish");
+}
+
+function openCodePartSearchText(part: Part): string {
+  if (part.type === "patch") {
+    return `patch ${(part as { files?: string[] }).files?.join(" ") ?? ""}`.toLowerCase();
+  }
+  if (part.type !== "tool") return part.type.toLowerCase();
+
+  const toolPart = part as Extract<Part, { type: "tool" }>;
+  const state = toolPart.state as unknown;
+  return `${toolPart.tool} ${safeJson(state)}`.toLowerCase();
 }

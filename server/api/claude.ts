@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -8,6 +8,7 @@ import { normalizeWorkspace } from "./workspaces.ts";
 const STATE_DIR = "/var/lib/control-surface";
 const STATE_FILE = join(STATE_DIR, "claude-sessions.json");
 const CLAUDE_BIN = "/root/.local/bin/claude";
+const activeClaudeRuns = new Map<string, { child: ChildProcessWithoutNullStreams; startedAt: number }>();
 
 export type ClaudeMessage = {
   id: string;
@@ -24,6 +25,8 @@ export type ClaudeSession = {
   createdAt: number;
   updatedAt: number;
   messages: ClaudeMessage[];
+  running?: boolean;
+  runStartedAt?: number | null;
 };
 
 type State = { sessions: ClaudeSession[] };
@@ -100,6 +103,8 @@ export async function claudeListHandler(): Promise<Response> {
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,
         claudeSessionId: s.claudeSessionId,
+        running: activeClaudeRuns.has(s.id),
+        runStartedAt: activeClaudeRuns.get(s.id)?.startedAt ?? null,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt),
   });
@@ -131,7 +136,13 @@ export async function claudeGetHandler(id: string): Promise<Response> {
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
   if (!session) return json({ error: "not found" }, 404);
-  return json({ session });
+  return json({
+    session: {
+      ...session,
+      running: activeClaudeRuns.has(id),
+      runStartedAt: activeClaudeRuns.get(id)?.startedAt ?? null,
+    },
+  });
 }
 
 export async function claudeDeleteHandler(id: string): Promise<Response> {
@@ -181,6 +192,12 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
   if (!session) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  if (activeClaudeRuns.has(id)) {
+    return new Response(JSON.stringify({ error: "session already running" }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   // First send: pick our own UUID via --session-id. Subsequent: --resume <uuid>.
   const isFirstTurn = !session.claudeSessionId;
@@ -220,6 +237,7 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
         env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" },
         stdio: ["ignore", "pipe", "pipe"],
       });
+      activeClaudeRuns.set(id, { child, startedAt: Date.now() });
 
       let stderr = "";
       const assistantTexts: string[] = [];
@@ -273,14 +291,9 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
         if (stderr.length > 4000) stderr = stderr.slice(-4000);
       });
 
-      const onAbort = () => {
-        try { child.kill("SIGTERM"); } catch {}
-      };
-      req.signal.addEventListener("abort", onAbort);
-
       child.on("close", (code) => {
+        activeClaudeRuns.delete(id);
         clearInterval(heartbeat);
-        req.signal.removeEventListener("abort", onAbort);
         rl.close();
 
         const fresh = loadState();
@@ -317,6 +330,7 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
       });
 
       child.on("error", (err) => {
+        activeClaudeRuns.delete(id);
         clearInterval(heartbeat);
         send("error", { error: `claude spawn error: ${err.message}` });
         send("done", { ok: false });
@@ -334,4 +348,21 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+export async function claudeStopHandler(id: string): Promise<Response> {
+  const active = activeClaudeRuns.get(id);
+  if (!active) return json({ ok: true, stopped: false });
+
+  try {
+    active.child.kill("SIGTERM");
+    setTimeout(() => {
+      if (activeClaudeRuns.get(id)?.child === active.child) {
+        try { active.child.kill("SIGKILL"); } catch {}
+      }
+    }, 5000).unref?.();
+    return json({ ok: true, stopped: true });
+  } catch (e) {
+    return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+  }
 }

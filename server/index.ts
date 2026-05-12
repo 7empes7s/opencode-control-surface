@@ -3,6 +3,7 @@ import { checkToken } from "./api/actions.ts";
 import { normalizeWorkspace } from "./api/workspaces.ts";
 import { initDashboardDb } from "./db/dashboard.ts";
 import { startIngestor } from "./db/ingestor.ts";
+import { startBuilderReconciler } from "./builder/runner.ts";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const PORT = parseInt(process.env.PORT || "3000");
@@ -115,13 +116,20 @@ if (process.env.DASHBOARD_DB === "1" && !dashboardDb) {
 const ingestor = startIngestor();
 if (ingestor) {
   console.log("[control-surface] dashboard ingestor started");
-  const shutdown = () => {
-    ingestor.stop();
-    process.exit(0);
-  };
-  process.once("SIGTERM", shutdown);
-  process.once("SIGINT", shutdown);
 }
+
+const builderReconciler = startBuilderReconciler();
+if (builderReconciler) {
+  console.log("[control-surface] builder reconciler started");
+}
+
+const shutdown = () => {
+  ingestor?.stop();
+  builderReconciler?.stop();
+  process.exit(0);
+};
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
 
 const server = Bun.serve({
   port: PORT,

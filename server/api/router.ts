@@ -12,13 +12,33 @@ import { eventsHandler } from "./events.ts";
 import { jobHandler, jobsHandler } from "./jobs.ts";
 import { metricsHandler } from "./metrics.ts";
 import {
+  builderArtifactsHandler,
+  builderCancelRunHandler,
+  builderCreateWorkflowHandler,
+  builderDiscoverHandler,
+  builderModelsHandler,
+  builderPauseWorkflowHandler,
+  builderProjectsHandler,
+  builderResumeWorkflowHandler,
+  builderRetryRunHandler,
+  builderRunnerDisabledHandler,
+  builderRunHandler,
+  builderRunReconcileHandler,
+  builderRunsHandler,
+  builderStartWorkflowHandler,
+  builderStopWorkflowHandler,
+  builderUpdateWorkflowHandler,
+  builderWorkflowHandler,
+  builderWorkflowsHandler,
+} from "./builder.ts";
+import {
   codexListHandler, codexCreateHandler, codexGetHandler,
-  codexDeleteHandler, codexSendHandler, codexStreamHandler,
+  codexDeleteHandler, codexSendHandler, codexStreamHandler, codexStopHandler,
 } from "./codex.ts";
 import {
   claudeHealthHandler,
   claudeListHandler, claudeCreateHandler, claudeGetHandler,
-  claudeDeleteHandler, claudeStreamHandler,
+  claudeDeleteHandler, claudeStreamHandler, claudeStopHandler,
 } from "./claude.ts";
 import {
   agentsDiscoveryHandler,
@@ -83,6 +103,44 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   if (method === "GET" && pathname === "/api/agents/summary") return agentsSummaryHandler();
   if (method === "GET" && pathname === "/api/agents/discovery") return agentsDiscoveryHandler();
   if (method === "GET" && pathname === "/api/agents/workspaces") return agentsWorkspacesHandler();
+  if (pathname.startsWith("/api/builder/") && !checkToken(req)) return unauthorized();
+  if (method === "GET" && pathname === "/api/builder/projects") return builderProjectsHandler();
+  if (method === "GET" && pathname === "/api/builder/discover") return builderDiscoverHandler(url);
+  if (method === "GET" && pathname === "/api/builder/models") return builderModelsHandler();
+  if (method === "GET" && pathname === "/api/builder/workflows") return builderWorkflowsHandler();
+  if (method === "POST" && pathname === "/api/builder/workflows") return builderCreateWorkflowHandler(req);
+  const builderWorkflowMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)$/);
+  if (builderWorkflowMatch) {
+    if (method === "GET") return builderWorkflowHandler(builderWorkflowMatch[1]);
+    if (method === "PUT") return builderUpdateWorkflowHandler(req, builderWorkflowMatch[1]);
+  }
+  const builderWorkflowActionMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/(start|pause|resume|stop|trigger-doctor)$/);
+  if (method === "POST" && builderWorkflowActionMatch) {
+    const workflowId = builderWorkflowActionMatch[1];
+    const action = builderWorkflowActionMatch[2];
+    if (action === "start") return builderStartWorkflowHandler(workflowId, req);
+    if (action === "stop") return builderStopWorkflowHandler(workflowId, req);
+    if (action === "pause") return builderPauseWorkflowHandler(workflowId);
+    if (action === "resume") return builderResumeWorkflowHandler(workflowId);
+    return builderRunnerDisabledHandler(action);
+  }
+  if (method === "GET" && pathname === "/api/builder/runs") return builderRunsHandler(url);
+  const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
+  if (method === "GET" && builderRunMatch) {
+    // Reconcile running status on every GET
+    builderRunReconcileHandler(builderRunMatch[1]);
+    return builderRunHandler(builderRunMatch[1]);
+  }
+  const builderRunActionMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/(retry|cancel)$/);
+  if (method === "POST" && builderRunActionMatch) {
+    const runId = builderRunActionMatch[1];
+    const action = builderRunActionMatch[2];
+    if (action === "retry") return builderRetryRunHandler(runId);
+    if (action === "cancel") return builderCancelRunHandler(runId);
+    return builderRunnerDisabledHandler(action);
+  }
+  if (method === "GET" && pathname === "/api/builder/artifacts") return builderArtifactsHandler(url);
+  if (method === "POST" && pathname === "/api/builder/provision") return builderRunnerDisabledHandler("provision");
 
   // Mission Control, Today, Settings
   if (method === "GET" && pathname === "/api/mission-control") return missionControlHandler();
@@ -131,6 +189,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   if (method === "POST" && codexSendMatch) return codexSendHandler(req, codexSendMatch[1]);
   const codexStreamMatch = pathname.match(/^\/api\/codex\/sessions\/([^/]+)\/stream$/);
   if (method === "POST" && codexStreamMatch) return codexStreamHandler(req, codexStreamMatch[1]);
+  const codexStopMatch = pathname.match(/^\/api\/codex\/sessions\/([^/]+)\/stop$/);
+  if (method === "POST" && codexStopMatch) return codexStopHandler(codexStopMatch[1]);
 
   // ── Claude tab ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/claude/health") return claudeHealthHandler();
@@ -144,6 +204,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   }
   const claudeStreamMatch = pathname.match(/^\/api\/claude\/sessions\/([^/]+)\/stream$/);
   if (method === "POST" && claudeStreamMatch) return claudeStreamHandler(req, claudeStreamMatch[1]);
+  const claudeStopMatch = pathname.match(/^\/api\/claude\/sessions\/([^/]+)\/stop$/);
+  if (method === "POST" && claudeStopMatch) return claudeStopHandler(claudeStopMatch[1]);
 
   return new Response(JSON.stringify({ error: "not found" }), {
     status: 404,

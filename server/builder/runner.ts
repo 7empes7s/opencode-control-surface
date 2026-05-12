@@ -1,0 +1,836 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
+import { createJob, finishJob, updateJobOutput } from "../db/writer.ts";
+import {
+  readBuilderRun,
+  readBuilderRuns,
+  readBuilderWorkflow,
+  readBuilderValidations,
+  type BuilderRun,
+  type BuilderWorkflow,
+} from "./store.ts";
+
+const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
+
+function ensureRunsDir(): void {
+  if (!existsSync(BUILDER_RUNS_DIR)) {
+    mkdirSync(BUILDER_RUNS_DIR, { recursive: true });
+  }
+}
+
+function runDir(runId: string): string {
+  return join(BUILDER_RUNS_DIR, runId);
+}
+
+function tmuxSessionName(runId: string): string {
+  return `builder-${runId.slice(0, 20)}`;
+}
+
+function requireDb() {
+  if (!isDashboardDbEnabled()) throw new Error("DASHBOARD_DB disabled");
+  const db = getDashboardDb();
+  if (!db) throw new Error("dashboard SQLite unavailable");
+  return db;
+}
+
+function now(): number {
+  return Date.now();
+}
+
+// ── Tmux helpers ───────────────────────────────────────────────────────────
+
+function tmuxExists(session: string): boolean {
+  const result = spawnSync("tmux", ["has-session", "-t", session], { encoding: "utf8" });
+  return result.status === 0;
+}
+
+function tmuxKill(session: string): void {
+  spawnSync("tmux", ["kill-session", "-t", session], { encoding: "utf8" });
+}
+
+function tmuxSendKeys(session: string, keys: string): void {
+  spawnSync("tmux", ["send-keys", "-t", session, keys], { encoding: "utf8" });
+}
+
+function tmuxCapturePane(session: string): string {
+  const result = spawnSync("tmux", ["capture-pane", "-p", "-t", session], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  return result.stdout ?? "";
+}
+
+// ── Run helpers ────────────────────────────────────────────────────────────
+
+function readExitCode(runId: string): number | null {
+  const path = join(runDir(runId), "exit.code");
+  if (!existsSync(path)) return null;
+  try {
+    const text = readFileSync(path, "utf8").trim();
+    const code = Number.parseInt(text, 10);
+    return Number.isFinite(code) ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function readLogFile(runId: string, name: string): string {
+  const path = join(runDir(runId), name);
+  if (!existsSync(path)) return "";
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+// ── Builder run / pass / artifact writers ──────────────────────────────────
+
+export function createBuilderRun(workflowId: string, trigger: string, actor = "operator"): BuilderRun {
+  const db = requireDb();
+  const id = `br_${randomUUID()}`;
+  const ts = now();
+
+  db.query(`
+    INSERT INTO builder_runs
+      (id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
+       stop_requested_at, stop_requested_by, result_json, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    workflowId,
+    trigger,
+    "running",
+    ts,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  );
+
+  const run = readBuilderRun(id);
+  if (!run) throw new Error("created run could not be read");
+
+  // Update workflow lastRunId and status
+  db.query(`
+    UPDATE builder_workflows
+    SET last_run_id = ?, status = ?, updated_at = ?
+    WHERE id = ?
+  `).run(id, "running", ts, workflowId);
+
+  return run;
+}
+
+export function updateBuilderRun(
+  runId: string,
+  updates: {
+    status?: string;
+    currentPassId?: string | null;
+    finishedAt?: number | null;
+    error?: string | null;
+    result?: unknown;
+  },
+): void {
+  const db = requireDb();
+  const sets: string[] = [];
+  const params: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    sets.push("status = ?");
+    params.push(updates.status);
+  }
+  if (updates.currentPassId !== undefined) {
+    sets.push("current_pass_id = ?");
+    params.push(updates.currentPassId);
+  }
+  if (updates.finishedAt !== undefined) {
+    sets.push("finished_at = ?");
+    params.push(updates.finishedAt);
+  }
+  if (updates.error !== undefined) {
+    sets.push("error = ?");
+    params.push(updates.error);
+  }
+  if (updates.result !== undefined) {
+    sets.push("result_json = ?");
+    params.push(JSON.stringify(updates.result));
+  }
+
+  if (sets.length === 0) return;
+  params.push(runId);
+
+  db.query(`UPDATE builder_runs SET ${sets.join(", ")} WHERE id = ?`).run(...(params as (string | number | null)[]));
+}
+
+export function createBuilderPass(input: {
+  runId: string;
+  workflowId: string;
+  sequence: number;
+  phase: string;
+  agent: string | null;
+  model: string | null;
+  provider: string | null;
+}): string {
+  const db = requireDb();
+  const id = `bp_${randomUUID()}`;
+  const ts = now();
+
+  db.query(`
+    INSERT INTO builder_passes
+      (id, run_id, workflow_id, sequence, phase, status, agent, provider, model,
+       started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
+       summary, next_instruction, failure_class, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.runId,
+    input.workflowId,
+    input.sequence,
+    input.phase,
+    "running",
+    input.agent,
+    input.provider,
+    input.model,
+    ts,
+    null,
+    "[]",
+    "[]",
+    "[]",
+    null,
+    null,
+    null,
+    null,
+  );
+
+  return id;
+}
+
+export function updateBuilderPass(
+  passId: string,
+  updates: {
+    status?: string;
+    finishedAt?: number | null;
+    summary?: string | null;
+    failureClass?: string | null;
+    error?: string | null;
+    jobIds?: string[];
+    artifactIds?: string[];
+    validationIds?: string[];
+  },
+): void {
+  const db = requireDb();
+  const sets: string[] = [];
+  const params: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    sets.push("status = ?");
+    params.push(updates.status);
+  }
+  if (updates.finishedAt !== undefined) {
+    sets.push("finished_at = ?");
+    params.push(updates.finishedAt);
+  }
+  if (updates.summary !== undefined) {
+    sets.push("summary = ?");
+    params.push(updates.summary);
+  }
+  if (updates.failureClass !== undefined) {
+    sets.push("failure_class = ?");
+    params.push(updates.failureClass);
+  }
+  if (updates.error !== undefined) {
+    sets.push("error = ?");
+    params.push(updates.error);
+  }
+  if (updates.jobIds !== undefined) {
+    sets.push("job_ids_json = ?");
+    params.push(JSON.stringify(updates.jobIds));
+  }
+  if (updates.artifactIds !== undefined) {
+    sets.push("artifact_ids_json = ?");
+    params.push(JSON.stringify(updates.artifactIds));
+  }
+  if (updates.validationIds !== undefined) {
+    sets.push("validation_ids_json = ?");
+    params.push(JSON.stringify(updates.validationIds));
+  }
+
+  if (sets.length === 0) return;
+  params.push(passId);
+
+  db.query(`UPDATE builder_passes SET ${sets.join(", ")} WHERE id = ?`).run(...(params as (string | number | null)[]));
+}
+
+export function createBuilderArtifact(input: {
+  workflowId: string;
+  runId: string;
+  passId?: string | null;
+  kind: string;
+  path: string;
+  sha256?: string | null;
+  metadata?: unknown;
+}): string {
+  const db = requireDb();
+  const id = `ba_${randomUUID()}`;
+  const ts = now();
+
+  db.query(`
+    INSERT INTO builder_artifacts
+      (id, workflow_id, run_id, pass_id, kind, path, sha256, created_at, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.workflowId,
+    input.runId,
+    input.passId ?? null,
+    input.kind,
+    input.path,
+    input.sha256 ?? null,
+    ts,
+    input.metadata ? JSON.stringify(input.metadata) : null,
+  );
+
+  return id;
+}
+
+export function updateBuilderWorkflowStatus(workflowId: string, status: string): void {
+  const db = requireDb();
+  db.query(`UPDATE builder_workflows SET status = ?, updated_at = ? WHERE id = ?`).run(
+    status,
+    now(),
+    workflowId,
+  );
+}
+
+// ── Lock helpers ───────────────────────────────────────────────────────────
+
+function acquireProjectLock(projectRoot: string, workflowId: string, runId: string, holder: string): boolean {
+  const db = requireDb();
+  const ts = now();
+  const expires = ts + 24 * 60 * 60 * 1000; // 24h
+
+  try {
+    db.query(`
+      INSERT INTO builder_locks (project_root, workflow_id, run_id, acquired_at, expires_at, holder)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(projectRoot, workflowId, runId, ts, expires, holder);
+    return true;
+  } catch {
+    // Conflict means already locked
+    return false;
+  }
+}
+
+function releaseProjectLock(projectRoot: string): void {
+  const db = requireDb();
+  db.query(`DELETE FROM builder_locks WHERE project_root = ?`).run(projectRoot);
+}
+
+// ── Command builder ──────────────────────────────────────────────────────────
+
+function buildCodexPrompt(workflow: BuilderWorkflow): string {
+  const { planFile, projectRoot } = workflow;
+  return `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.`;
+}
+
+function writePassScript(runId: string, workflow: BuilderWorkflow, agent: string, model: string | null): string {
+  ensureRunsDir();
+  const dir = runDir(runId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const scriptPath = join(dir, "pass-1.sh");
+  const prompt = buildCodexPrompt(workflow);
+
+  let command: string;
+  if (agent === "codex") {
+    const modelFlag = model ? `--model ${model} ` : "";
+    command = `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never ${modelFlag}-o "${dir}/codex-output.txt" -C "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+  } else if (agent === "claude") {
+    command = `claude --permission-mode dontAsk -d "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+  } else if (agent === "opencode") {
+    command = `opencode run --project "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+  } else {
+    command = `echo "Unsupported builder agent: ${agent}"`;
+  }
+
+  const script = `#!/bin/bash
+set -euo pipefail
+BUILDER_DIR="${dir}"
+RUN_ID="${runId}"
+echo "[builder] Pass 1 starting at $(date -Iseconds)" | tee "$BUILDER_DIR/stdout.log"
+echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/stdout.log"
+echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/stdout.log"
+echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/stdout.log"
+${command} >> "$BUILDER_DIR/stdout.log" 2>> "$BUILDER_DIR/stderr.log"
+EXIT_CODE=$?
+echo "$EXIT_CODE" > "$BUILDER_DIR/exit.code"
+echo "[builder] Pass 1 finished with exit code $EXIT_CODE at $(date -Iseconds)" >> "$BUILDER_DIR/stdout.log"
+`;
+
+  writeFileSync(scriptPath, script, { mode: 0o755 });
+  return scriptPath;
+}
+
+// ── Runner API ───────────────────────────────────────────────────────────────
+
+export async function startWorkflowRun(
+  workflowId: string,
+  trigger: string,
+  actor = "operator",
+): Promise<BuilderRun> {
+  const workflow = readBuilderWorkflow(workflowId);
+  if (!workflow) throw new Error("workflow not found");
+  if (workflow.status !== "ready" && workflow.status !== "running" && workflow.status !== "paused") {
+    throw new Error(`workflow cannot be started from status ${workflow.status}`);
+  }
+
+  // Determine agent/model
+  const agent = workflow.config.agentOrder[0] ?? "codex";
+  const model = workflow.config.modelPolicy.builder ?? null;
+
+  // Create run
+  const run = createBuilderRun(workflowId, trigger, actor);
+
+  // Acquire lock
+  if (!acquireProjectLock(workflow.projectRoot, workflowId, run.id, actor)) {
+    // Rollback run
+    updateBuilderRun(run.id, { status: "failed", finishedAt: now(), error: "project locked by another run" });
+    updateBuilderWorkflowStatus(workflowId, "blocked");
+    throw new Error("project is locked by another run");
+  }
+
+  // Create pass
+  const passId = createBuilderPass({
+    runId: run.id,
+    workflowId,
+    sequence: 1,
+    phase: "implement",
+    agent,
+    model,
+    provider: agent,
+  });
+
+  // Update run with current pass
+  updateBuilderRun(run.id, { currentPassId: passId });
+
+  // Create job
+  const jobId = `job_${randomUUID()}`;
+  const scriptPath = writePassScript(run.id, workflow, agent, model);
+  createJob({
+    id: jobId,
+    kind: "builder.agent-pass",
+    status: "running",
+    actor,
+    reason: `builder workflow ${workflow.name} pass 1`,
+    targetType: "builder-run",
+    targetId: run.id,
+    command: scriptPath,
+    request: { workflowId, runId: run.id, passId, agent, model },
+    evidence: { planFile: workflow.planFile, projectRoot: workflow.projectRoot },
+  });
+
+  // Link job to pass
+  updateBuilderPass(passId, { jobIds: [jobId] });
+
+  // Create artifacts for script and expected outputs
+  const scriptArtifact = createBuilderArtifact({
+    workflowId,
+    runId: run.id,
+    passId,
+    kind: "command-script",
+    path: scriptPath,
+  });
+  const stdoutArtifact = createBuilderArtifact({
+    workflowId,
+    runId: run.id,
+    passId,
+    kind: "stdout",
+    path: join(runDir(run.id), "stdout.log"),
+  });
+  const stderrArtifact = createBuilderArtifact({
+    workflowId,
+    runId: run.id,
+    passId,
+    kind: "stderr",
+    path: join(runDir(run.id), "stderr.log"),
+  });
+  updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
+
+  // Spawn tmux
+  const session = tmuxSessionName(run.id);
+  const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], {
+    encoding: "utf8",
+  });
+
+  if (spawnResult.status !== 0) {
+    const error = spawnResult.stderr || `tmux spawn failed (exit ${spawnResult.status})`;
+    updateBuilderPass(passId, { status: "failed", finishedAt: now(), error });
+    updateBuilderRun(run.id, { status: "failed", finishedAt: now(), error, currentPassId: null });
+    finishJob(jobId, "failed", { error });
+    releaseProjectLock(workflow.projectRoot);
+    updateBuilderWorkflowStatus(workflowId, "failed");
+    throw new Error(error);
+  }
+
+  return readBuilderRun(run.id)!;
+}
+
+export async function stopWorkflowRun(
+  runId: string,
+  actor = "operator",
+): Promise<void> {
+  const run = readBuilderRun(runId);
+  if (!run) throw new Error("run not found");
+
+  const session = tmuxSessionName(runId);
+  if (tmuxExists(session)) {
+    tmuxKill(session);
+  }
+
+  const ts = now();
+  const passId = run.currentPassId;
+  if (passId) {
+    updateBuilderPass(passId, { status: "canceled", finishedAt: ts });
+  }
+
+  updateBuilderRun(runId, { status: "canceled", finishedAt: ts, currentPassId: null });
+
+  // Update jobs linked to this run
+  const db = requireDb();
+  db.query(`UPDATE jobs SET state = ?, status = ?, finished_at = ? WHERE target_type = ? AND target_id = ? AND state = ?`).run(
+    "canceled", "canceled", ts, "builder-run", runId, "running",
+  );
+
+  const workflow = readBuilderWorkflow(run.workflowId);
+  if (workflow) {
+    releaseProjectLock(workflow.projectRoot);
+    updateBuilderWorkflowStatus(run.workflowId, "ready");
+  }
+}
+
+export async function pauseWorkflow(workflowId: string): Promise<void> {
+  const workflow = readBuilderWorkflow(workflowId);
+  if (!workflow) throw new Error("workflow not found");
+  if (workflow.status !== "running" && workflow.status !== "ready") {
+    throw new Error(`workflow cannot be paused from status ${workflow.status}`);
+  }
+  updateBuilderWorkflowStatus(workflowId, "paused");
+}
+
+export async function resumeWorkflow(workflowId: string): Promise<void> {
+  const workflow = readBuilderWorkflow(workflowId);
+  if (!workflow) throw new Error("workflow not found");
+  if (workflow.status !== "paused" && workflow.status !== "blocked") {
+    throw new Error(`workflow cannot be resumed from status ${workflow.status}`);
+  }
+  updateBuilderWorkflowStatus(workflowId, "ready");
+}
+
+export async function retryRun(runId: string, actor = "operator"): Promise<BuilderRun> {
+  const run = readBuilderRun(runId);
+  if (!run) throw new Error("run not found");
+  return startWorkflowRun(run.workflowId, "retry", actor);
+}
+
+export async function cancelRun(runId: string, actor = "operator"): Promise<void> {
+  await stopWorkflowRun(runId, actor);
+}
+
+// ── Status reconciliation ──────────────────────────────────────────────────
+
+export async function reconcileRunStatus(runId: string): Promise<BuilderRun | null> {
+  const run = readBuilderRun(runId);
+  if (!run || run.status !== "running") return run;
+
+  const session = tmuxSessionName(runId);
+  if (tmuxExists(session)) {
+    // Still running — optionally capture pane output to job tail
+    const paneOutput = tmuxCapturePane(session);
+    if (paneOutput) {
+      updateJobOutputForRun(runId, paneOutput);
+    }
+    return run;
+  }
+
+  // Tmux session is gone — process finished
+  const exitCode = readExitCode(runId);
+  const ts = now();
+  const passId = run.currentPassId;
+
+  // Capture final output
+  const stdout = readLogFile(runId, "stdout.log");
+  const stderr = readLogFile(runId, "stderr.log");
+  const codexOutput = readLogFile(runId, "codex-output.txt");
+
+  if (passId) {
+    const passStatus = exitCode === 0 ? "success" : "failed";
+    const summary = codexOutput || stdout.slice(-2000);
+    const failureClass = exitCode === null ? "unknown" : exitCode === 0 ? null : "unknown";
+    updateBuilderPass(passId, {
+      status: passStatus,
+      finishedAt: ts,
+      summary: summary || null,
+      failureClass,
+    });
+  }
+
+  // Run validation commands if pass succeeded
+  const workflow = readBuilderWorkflow(run.workflowId);
+  let validationIds: string[] = [];
+  if (passId && workflow) {
+    try {
+      validationIds = await runValidationCommands(workflow, run, passId, workflow.projectRoot);
+      updateBuilderPass(passId, { validationIds });
+    } catch (err) {
+      console.error("[builder] validation run failed:", err);
+    }
+  }
+
+  const runStatus = exitCode === 0 && validationIds.every((vid) => {
+    const vs = readBuilderValidations(runId).find((v) => v.id === vid);
+    return vs && vs.status === "success";
+  }) ? "success" : exitCode === 0 ? "success" : "failed";
+
+  updateBuilderRun(runId, {
+    status: runStatus,
+    finishedAt: ts,
+    currentPassId: null,
+    error: stderr ? stderr.slice(-2000) : null,
+  });
+
+  // Finish jobs
+  const db = requireDb();
+  db.query(`
+    UPDATE jobs
+    SET state = ?, status = ?, finished_at = ?, output_tail = COALESCE(?, output_tail), error = ?, exit_code = ?
+    WHERE target_type = ? AND target_id = ? AND state = ?
+  `).run(
+    runStatus,
+    runStatus,
+    ts,
+    stdout ? stdout.slice(-8000) : null,
+    stderr ? stderr.slice(-2000) : null,
+    exitCode,
+    "builder-run",
+    runId,
+    "running",
+  );
+
+  // Release lock
+  if (workflow) {
+    releaseProjectLock(workflow.projectRoot);
+    updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "ready" : "failed");
+  }
+
+  return readBuilderRun(runId);
+}
+
+function updateJobOutputForRun(runId: string, output: string): void {
+  const db = requireDb();
+  try {
+    db.query(`UPDATE jobs SET output_tail = ? WHERE target_type = ? AND target_id = ? AND state = ?`).run(
+      output.slice(-8000),
+      "builder-run",
+      runId,
+      "running",
+    );
+  } catch {
+    // ignore
+  }
+}
+
+// ── Validation runner ─────────────────────────────────────────────────────────
+
+function createValidationRow(input: {
+  workflowId: string;
+  runId: string;
+  passId: string | null;
+  kind: string;
+  status: string;
+  command: string | null;
+  url: string | null;
+  startedAt: number;
+  finishedAt: number;
+  outputTail: string | null;
+  artifactId: string | null;
+  error: string | null;
+}): string {
+  const db = requireDb();
+  const id = `bv_${randomUUID()}`;
+  db.query(`
+    INSERT INTO builder_validations
+      (id, workflow_id, run_id, pass_id, kind, status, command, url,
+       started_at, finished_at, output_tail, artifact_id, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.workflowId,
+    input.runId,
+    input.passId,
+    input.kind,
+    input.status,
+    input.command,
+    input.url,
+    input.startedAt,
+    input.finishedAt,
+    input.outputTail,
+    input.artifactId,
+    input.error,
+  );
+  return id;
+}
+
+async function runValidationCommands(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+): Promise<string[]> {
+  const commands = workflow.config.validationProfile.commands;
+  const internalUrl = workflow.config.validationProfile.internalUrl;
+  const publicUrl = workflow.config.validationProfile.publicUrl;
+  const validationIds: string[] = [];
+  const ts = Date.now();
+
+  for (const command of commands) {
+    const vStarted = Date.now();
+    let outputTail = "";
+    let error: string | null = null;
+    let status = "failed";
+
+    try {
+      const workDir = existsSync(projectRoot) ? projectRoot : "/tmp";
+      const result = spawnSync("/bin/bash", ["-c", command], {
+        encoding: "utf8",
+        timeout: 120_000,
+        cwd: workDir,
+        env: { ...process.env, BUILDER_RUN_ID: run.id },
+      });
+      outputTail = (result.stdout ?? "").slice(-4000);
+      if (result.stderr) {
+        outputTail += "\n" + result.stderr.slice(-2000);
+      }
+      if (result.status === 0) {
+        status = "success";
+      } else if (result.status === null) {
+        error = "validation timed out after 120s";
+        status = "timeout";
+      } else {
+        error = `exit code ${result.status}`;
+        status = result.status === 0 ? "success" : "failed";
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "command",
+      status,
+      command,
+      url: null,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: outputTail || null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  // URL smoke checks
+  const urlTargets = [internalUrl, publicUrl].filter(Boolean) as string[];
+  for (const url of urlTargets) {
+    const vStarted = Date.now();
+    let error: string | null = null;
+    let status = "failed";
+
+    try {
+      const result = spawnSync("curl", [
+        "--max-time", "10",
+        "--silent", "--show-error",
+        "-o", "/dev/null",
+        "-w", "%{http_code}",
+        url,
+      ], { encoding: "utf8", timeout: 15_000 });
+      const code = (result.stdout ?? "").trim();
+      if (code.startsWith("2")) {
+        status = "success";
+      } else {
+        error = `HTTP ${code}`;
+        status = "failed";
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      status = "error";
+    }
+
+    const vFinished = Date.now();
+    const vid = createValidationRow({
+      workflowId: workflow.id,
+      runId: run.id,
+      passId,
+      kind: "url-smoke",
+      status,
+      command: null,
+      url,
+      startedAt: vStarted,
+      finishedAt: vFinished,
+      outputTail: null,
+      artifactId: null,
+      error,
+    });
+    validationIds.push(vid);
+  }
+
+  return validationIds;
+}
+
+// ── Background reconciler ─────────────────────────────────────────────────────
+
+export type BuilderReconcilerController = { stop(): void };
+
+export function startBuilderReconciler(options: { intervalMs?: number } = {}): BuilderReconcilerController | null {
+  if (!isDashboardDbEnabled()) return null;
+
+  const intervalMs = options.intervalMs ?? 10_000;
+  let stopped = false;
+
+  async function tick(): Promise<void> {
+    if (stopped) return;
+    try {
+      const running = readBuilderRuns().filter((r) => r.status === "running");
+      for (const run of running) {
+        if (stopped) break;
+        try {
+          await reconcileRunStatus(run.id);
+        } catch (err) {
+          console.error(`[builder-reconciler] reconcile ${run.id} failed`, err);
+        }
+      }
+    } catch (err) {
+      console.error("[builder-reconciler] tick failed", err);
+    }
+  }
+
+  const timer = setInterval(() => { void tick(); }, intervalMs);
+  timer.unref?.();
+
+  void tick(); // run once on startup
+
+  return {
+    stop(): void {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+}

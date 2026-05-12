@@ -46,7 +46,9 @@ export type Message = {
 export type Permission = {
   id: string;
   sessionID: string;
-  createdAt: number;
+  createdAt?: number;
+  permission?: string;
+  patterns?: string[];
   metadata: { message?: string; title?: string; [k: string]: unknown };
 };
 
@@ -136,6 +138,21 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function apiPostJsonOk(path: string, body: Record<string, unknown>): Promise<boolean> {
+  const res = await authFetch(`${API}${path}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return false;
+
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return false;
+  await res.json().catch(() => null);
+  return true;
+}
+
 export const useStore = create<State>((set, get) => {
   function handleSSE(event: MessageEvent) {
     let ev: { type: string; properties: Record<string, unknown> };
@@ -200,7 +217,8 @@ export const useStore = create<State>((set, get) => {
         break;
       }
 
-      case "permission.updated": {
+      case "permission.updated":
+      case "permission.asked": {
         const perm = ev.properties as unknown as Permission;
         if (!activeSession || perm.sessionID !== activeSession.id) return;
         set({ permission: perm });
@@ -344,16 +362,24 @@ export const useStore = create<State>((set, get) => {
     },
 
     abortSession: async () => {
+      const { activeSession } = get();
+      if (activeSession) {
+        await apiFetch(`/session/${activeSession.id}/abort`, { method: "POST" }).catch(() => null);
+      }
       set({ running: false, isStreaming: false });
     },
 
     replyPermission: async (id: string, action: "allow" | "deny") => {
       const { activeSession } = get();
       if (!activeSession) return;
-      await apiFetch(`/session/${activeSession.id}/permission/${id}`, {
-        method: "POST",
-        body: JSON.stringify({ action }),
-      });
+
+      const reply = action === "allow" ? "once" : "reject";
+      const ok =
+        await apiPostJsonOk(`/permission/${id}/reply`, { reply }) ||
+        await apiPostJsonOk(`/session/${activeSession.id}/permissions/${id}`, { response: reply }) ||
+        await apiPostJsonOk(`/session/${activeSession.id}/permission/${id}`, { action });
+
+      if (!ok) throw new Error("permission reply failed");
       set({ permission: null });
     },
 
