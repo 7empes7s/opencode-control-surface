@@ -30,6 +30,14 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
+function ModeBadge({ mode }: { mode: string }) {
+  const colors: Record<string, string> = {
+    "once": "gray", "auto-continue": "blue", "scheduled": "amber",
+    "permanent": "green", "doctor": "purple"
+  };
+  return <Pill color={colors[mode] ?? "gray"}>{mode}</Pill>;
+}
+
 function statusColor(status: string | boolean | null | undefined): string {
   if (status === true || status === "ok" || status === "active" || status === "clean") return "green";
   if (status === "missing" || status === "error" || status === false) return "red";
@@ -256,6 +264,39 @@ function WorkflowModal({
               <option value="doctor">doctor</option>
             </select>
           </label>
+          {(draft.mode === "scheduled" || draft.mode === "permanent") && (
+            <>
+              <label className="modal-input-row">
+                <span className="modal-input-label">Cron expression</span>
+                <input
+                  className="modal-input"
+                  placeholder="*/5 * * * *"
+                  value={draft.config.schedule?.expression ?? ""}
+                  onChange={(event) => setDraft((prev) => ({
+                    ...prev,
+                    config: { ...prev.config, schedule: { ...prev.config.schedule, expression: event.target.value } },
+                  }))}
+                />
+              </label>
+              <label className="modal-input-row">
+                <span className="modal-input-label">Timezone</span>
+                <select
+                  className="audit-select"
+                  value={draft.config.schedule?.timezone ?? "UTC"}
+                  onChange={(event) => setDraft((prev) => ({
+                    ...prev,
+                    config: { ...prev.config, schedule: { ...prev.config.schedule, timezone: event.target.value } },
+                  }))}
+                >
+                  <option value="UTC">UTC</option>
+                  <option value="Europe/London">Europe/London</option>
+                  <option value="Europe/Paris">Europe/Paris</option>
+                  <option value="America/New_York">America/New_York</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles</option>
+                </select>
+              </label>
+            </>
+          )}
           <label className="modal-input-row">
             <span className="modal-input-label">Status</span>
             <select
@@ -962,7 +1003,12 @@ export function BuilderPage() {
                       return (
                         <tr key={workflow.id}>
                           <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
-                          <td><Pill>{workflow.mode}</Pill></td>
+                          <td>
+                            <ModeBadge mode={workflow.mode} />
+                            {workflow.mode === "scheduled" && workflow.nextRunAt && (
+                              <div className="text-xs text-dim">next: {new Date(workflow.nextRunAt).toLocaleString()}</div>
+                            )}
+                          </td>
                           <td>{workflow.name}</td>
                           <td className="mono trunc">{workflow.projectRoot}</td>
                           <td className="mono trunc">{workflow.planFile}</td>

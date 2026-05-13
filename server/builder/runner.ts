@@ -8,6 +8,7 @@ import {
   readBuilderRun,
   readBuilderRuns,
   readBuilderWorkflow,
+  readBuilderWorkflows,
   readBuilderValidations,
   readBuilderPasses,
   readBuilderArtifacts,
@@ -16,6 +17,7 @@ import {
 } from "./store.ts";
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
 import { runDoctorReview, writeDoctorReport } from "./doctor.ts";
+import { getNextRunTime, isDue, getBackoffMs } from "./scheduler.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 
@@ -952,7 +954,12 @@ export async function pauseWorkflow(workflowId: string): Promise<void> {
   if (workflow.status !== "running" && workflow.status !== "ready") {
     throw new Error(`workflow cannot be paused from status ${workflow.status}`);
   }
-  updateBuilderWorkflowStatus(workflowId, "paused");
+  if (workflow.mode === "scheduled") {
+    const db = requireDb();
+    db.query(`UPDATE builder_workflows SET next_run_at = NULL, status = 'paused' WHERE id = ?`).run(workflowId);
+  } else {
+    updateBuilderWorkflowStatus(workflowId, "paused");
+  }
 }
 
 export async function resumeWorkflow(workflowId: string): Promise<void> {
@@ -961,7 +968,16 @@ export async function resumeWorkflow(workflowId: string): Promise<void> {
   if (workflow.status !== "paused" && workflow.status !== "blocked") {
     throw new Error(`workflow cannot be resumed from status ${workflow.status}`);
   }
-  updateBuilderWorkflowStatus(workflowId, "ready");
+  if (workflow.mode === "scheduled" && workflow.config.schedule?.expression) {
+    const next = getNextRunTime(
+      workflow.config.schedule.expression,
+      workflow.config.schedule.timezone ?? "UTC"
+    );
+    const db = requireDb();
+    db.query(`UPDATE builder_workflows SET status = 'ready', next_run_at = ? WHERE id = ?`).run(next, workflowId);
+  } else {
+    updateBuilderWorkflowStatus(workflowId, "ready");
+  }
 }
 
 export async function retryRun(runId: string, actor = "operator"): Promise<BuilderRun> {
@@ -1102,6 +1118,23 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     if (!shouldContinue) {
       releaseProjectLock(workflow.projectRoot);
       updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "done" : "failed");
+
+      if (workflow.mode === "permanent" && workflow.status === "ready" && run.finishedAt) {
+        const resultObj = run.result as { attemptCount?: number } | null;
+        const attemptCount = resultObj?.attemptCount ?? 0;
+        const backoffMs = getBackoffMs(attemptCount);
+        const nextAttemptAt = run.finishedAt + backoffMs;
+        if (Date.now() >= nextAttemptAt) {
+          try {
+            await startWorkflowRun(workflow.id, "permanent");
+            updateBuilderRun(run.id, {
+              result: { ...resultObj, attemptCount: attemptCount + 1 },
+            });
+          } catch (e) {
+            console.error(`[builder-permanent] restart ${workflow.id} failed`, e);
+          }
+        }
+      }
     }
   }
 
@@ -1609,6 +1642,31 @@ export function startBuilderReconciler(options: { intervalMs?: number } = {}): B
           await reconcileRunStatus(run.id);
         } catch (err) {
           console.error(`[builder-reconciler] reconcile ${run.id} failed`, err);
+        }
+      }
+
+      const SCHEDULED_MODES = new Set(["scheduled", "permanent"]);
+      const workflows = readBuilderWorkflows().filter((w) =>
+        SCHEDULED_MODES.has(w.mode) && w.status === "ready"
+      );
+      for (const wf of workflows) {
+        if (stopped) break;
+        if (wf.nextRunAt && isDue(wf.nextRunAt)) {
+          try {
+            await startWorkflowRun(wf.id, "scheduled");
+            if (wf.mode === "scheduled") {
+              const next = getNextRunTime(
+                wf.config.schedule?.expression ?? "",
+                wf.config.schedule?.timezone ?? "UTC"
+              );
+              if (next) {
+                const db = requireDb();
+                db.query(`UPDATE builder_workflows SET next_run_at = ? WHERE id = ?`).run(next, wf.id);
+              }
+            }
+          } catch (err) {
+            console.error(`[builder-scheduler] trigger ${wf.id} failed`, err);
+          }
         }
       }
     } catch (err) {

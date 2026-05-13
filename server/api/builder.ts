@@ -37,6 +37,7 @@ import {
   cancelRun,
   reconcileRunStatus,
 } from "../builder/runner.ts";
+import { getNextRunTime } from "../builder/scheduler.ts";
 
 function json<T>(body: ApiEnvelope<T>, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -198,7 +199,18 @@ export function builderWorkflowHandler(id: string): Response {
 export async function builderCreateWorkflowHandler(req: Request): Promise<Response> {
   try {
     const input = await parseWorkflowInput(req);
-    const workflow = createBuilderWorkflow(input);
+    let computedNextRunAt = input.nextRunAt ?? null;
+    if (input.mode === "scheduled" && input.config.schedule?.expression) {
+      computedNextRunAt = getNextRunTime(
+        input.config.schedule.expression,
+        input.config.schedule.timezone ?? "UTC"
+      );
+    }
+    if (input.mode !== "scheduled") {
+      computedNextRunAt = null;
+    }
+    const inputWithNextRun = { ...input, nextRunAt: computedNextRunAt };
+    const workflow = createBuilderWorkflow(inputWithNextRun);
     writeActionAudit({
       actionKind: "builder.workflow.create",
       actionId: `builder-workflow:create:${workflow.id}`,
@@ -232,7 +244,18 @@ export async function builderCreateWorkflowHandler(req: Request): Promise<Respon
 export async function builderUpdateWorkflowHandler(req: Request, id: string): Promise<Response> {
   try {
     const input = await parseWorkflowInput(req);
-    const workflow = updateBuilderWorkflow(id, input);
+    let computedNextRunAt = input.nextRunAt ?? null;
+    if (input.mode === "scheduled" && input.config.schedule?.expression) {
+      computedNextRunAt = getNextRunTime(
+        input.config.schedule.expression,
+        input.config.schedule.timezone ?? "UTC"
+      );
+    }
+    if (input.mode !== "scheduled") {
+      computedNextRunAt = null;
+    }
+    const inputWithNextRun = { ...input, nextRunAt: computedNextRunAt };
+    const workflow = updateBuilderWorkflow(id, inputWithNextRun);
     if (!workflow) return apiError("not found", 404);
     writeActionAudit({
       actionKind: "builder.workflow.update",
