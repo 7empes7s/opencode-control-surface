@@ -1510,6 +1510,11 @@ body {
   background: color-mix(in oklch, var(--amber-warn) 8%, transparent);
 }
 .btn-amber:hover:not(:disabled) { background: color-mix(in oklch, var(--amber-warn) 16%, transparent); transform: translateY(-1px); }
+.btn-secondary {
+  color: var(--accent); border-color: color-mix(in oklch, var(--accent) 20%, transparent);
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+}
+.btn-secondary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 12%, transparent); border-color: color-mix(in oklch, var(--accent) 40%, transparent); }
 .btn-xs { padding: 0 6px; font-size: 11px; min-height: 24px; gap: 4px; }
 
 .action-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -1552,6 +1557,7 @@ body {
 .modal-input:focus { border-color: var(--accent-dim); }
 .modal-input::placeholder { color: var(--text-dim); }
 .modal-error { font-family: var(--sans); font-size: 12px; color: var(--red); }
+.modal-success { font-family: var(--sans); font-size: 12px; color: var(--accent); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
 .oc-vault-btn { color: var(--accent); border-color: var(--accent-dim); }

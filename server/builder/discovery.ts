@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { getModelsDetail } from "../adapters/models.ts";
 import { getCategorizedModels } from "./modelSelector.ts";
 import { WORKSPACE_ROOTS, normalizeWorkspace, type WorkspaceRisk } from "../api/workspaces.ts";
+import { isProjectRootAllowlisted } from "./provision.ts";
 
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
 
@@ -222,7 +223,7 @@ function projectFromRoot(root: string): BuilderProject | null {
 }
 
 export function getBuilderProjects(): BuilderProject[] {
-  return WORKSPACE_ROOTS
+  const staticProjects = WORKSPACE_ROOTS
     .filter((entry) => existsSync(entry.path))
     .map((entry) => ({
       root: entry.path,
@@ -232,6 +233,26 @@ export function getBuilderProjects(): BuilderProject[] {
       note: entry.note,
       ...PROJECT_TARGETS[entry.path],
     }));
+
+  // Add dynamically provisioned projects from process.env
+  const allKey = "BUILDER_PROVISIONED_ROOTS";
+  const provisioned = process.env[allKey] ?? "";
+  const provisionedProjects: BuilderProject[] = [];
+  for (const rootPath of provisioned.split(",").filter(Boolean)) {
+    if (!existsSync(rootPath)) continue;
+    if (staticProjects.some(p => p.root === rootPath)) continue;
+    const labelKey = `BUILDER_ALLOWED_ROOT_${Buffer.from(rootPath).toString("base64").replace(/[/+=]/g, "_")}`;
+    const label = process.env[labelKey] ?? basename(rootPath);
+    provisionedProjects.push({
+      root: rootPath,
+      label,
+      risk: "medium",
+      writable: true,
+      note: "Provisioned project",
+    });
+  }
+
+  return [...staticProjects, ...provisionedProjects];
 }
 
 function findProjectForPath(path: string): BuilderProject | null {

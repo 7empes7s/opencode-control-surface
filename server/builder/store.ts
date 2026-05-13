@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { redactForDashboard } from "../db/writer.ts";
 import { getBuilderProjects, type BuilderProject } from "./discovery.ts";
+import { isProjectRootAllowlisted } from "./provision.ts";
 
 export type BuilderWorkflowMode = "once" | "auto-continue" | "scheduled" | "permanent" | "doctor";
 export type BuilderWorkflowStatus = "draft" | "ready" | "running" | "paused" | "blocked" | "done" | "failed" | "canceled";
@@ -616,4 +617,146 @@ export function readBuilderDoctorReports(workflowId?: string, runId?: string, li
     console.error("[control-surface] readBuilderDoctorReports failed", error);
     return [];
   }
+}
+
+export type ProvisionResult = {
+  id: string;
+  projectRoot: string;
+  name: string;
+  workflowId: string;
+  workflowStatus: string;
+  provisioned: {
+    cloned: boolean;
+    gitInitialized: boolean;
+    agentsMd: boolean;
+    planFile: string | null;
+    vaultNote: boolean;
+    skillFile: boolean;
+  };
+  warnings: string[];
+  error?: string;
+};
+
+export function provisionProject(input: {
+  projectRoot: string;
+  name: string;
+  repoUrl?: string;
+  description?: string;
+  tags?: string[];
+  owner?: string;
+  planFile: string;
+  agentOrder: string[];
+  fallbackTargets: string[];
+  validationCommands: string[];
+  gitPolicy: { commit: string; push: string };
+  internalUrl?: string;
+  publicUrl?: string;
+}): ProvisionResult {
+  // Import provision module lazily to avoid circular dependency at module init
+  const { provisionProject: doScaffold } = require("./provision.ts") as typeof import("./provision.ts");
+
+  const scaffoldResult = doScaffold({
+    repoUrl: input.repoUrl,
+    projectRoot: input.projectRoot,
+    name: input.name,
+    description: input.description,
+    tags: input.tags,
+    owner: input.owner,
+    defaultPlanPath: input.planFile,
+    validationCommands: input.validationCommands,
+  });
+
+  if (!scaffoldResult.ok) {
+    return {
+      id: "",
+      projectRoot: input.projectRoot,
+      name: input.name,
+      workflowId: "",
+      workflowStatus: "",
+      provisioned: scaffoldResult.provisioned,
+      warnings: scaffoldResult.warnings,
+      error: scaffoldResult.error,
+    };
+  }
+
+  // Register the new project root in SQLite
+  const db = requireDb();
+  const now = Date.now();
+  const projectId = `project:${input.projectRoot}`;
+
+  const projectConfig = {
+    root: input.projectRoot,
+    label: input.name,
+    risk: "medium" as const,
+    writable: true,
+    note: input.description ?? "",
+    service: undefined as string | undefined,
+    internalUrl: input.internalUrl,
+    publicUrl: input.publicUrl,
+    defaultPlan: input.planFile,
+  };
+
+  db.query(`
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(root) DO UPDATE SET
+      name = excluded.name,
+      config_json = excluded.config_json,
+      updated_at = excluded.updated_at
+  `).run(
+    projectId,
+    input.name,
+    input.projectRoot,
+    JSON.stringify(projectConfig),
+    now,
+    now,
+  );
+
+  // Create a draft workflow linked to the new project
+  const workflowId = `bw_${randomUUID()}`;
+  const workflowConfig = {
+    projectRoot: input.projectRoot,
+    agentOrder: input.agentOrder,
+    modelPolicy: { fallbackTargets: input.fallbackTargets },
+    validationProfile: {
+      commands: input.validationCommands,
+      internal: input.validationCommands,
+      runtime: [],
+      public: [],
+      playwright: { enabled: false },
+      internalUrl: input.internalUrl ?? null,
+      publicUrl: input.publicUrl ?? null,
+    },
+    gitPolicy: input.gitPolicy,
+    backupPolicy: { enabled: true, beforeRun: true },
+    riskPolicy: { liveDeploys: "disabled" as const, maxPasses: 1 },
+  };
+
+  db.query(`
+    INSERT INTO builder_workflows
+      (id, project_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    workflowId,
+    projectId,
+    `${input.name} initial build`,
+    "auto-continue",
+    "draft",
+    input.planFile,
+    JSON.stringify(workflowConfig),
+    now,
+    now,
+    null,
+    null,
+  );
+
+  return {
+    id: projectId,
+    projectRoot: input.projectRoot,
+    name: input.name,
+    workflowId,
+    workflowStatus: "draft",
+    provisioned: scaffoldResult.provisioned,
+    warnings: scaffoldResult.warnings,
+  };
 }

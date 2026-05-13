@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
 
 export type WorkspaceRisk = "low" | "medium" | "high";
 
@@ -61,6 +61,19 @@ function isWithin(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
+function getProvisionedRoots(): Map<string, string> {
+  const allKey = "BUILDER_PROVISIONED_ROOTS";
+  const provisioned = process.env[allKey] ?? "";
+  const map = new Map<string, string>();
+  for (const entry of provisioned.split(",").filter(Boolean)) {
+    // Try to look up label from env var key
+    const labelKey = `BUILDER_ALLOWED_ROOT_${Buffer.from(entry).toString("base64").replace(/[/+=]/g, "_")}`;
+    const label = process.env[labelKey] ?? basename(entry);
+    map.set(entry, label);
+  }
+  return map;
+}
+
 export function normalizeWorkspace(input?: string): { ok: true; path: string; root: WorkspaceRoot } | { ok: false; error: string } {
   const requested = resolve(input?.trim() || "/opt");
 
@@ -83,6 +96,23 @@ export function normalizeWorkspace(input?: string): { ok: true; path: string; ro
     if (isWithin(realRequested, realRoot)) {
       return { ok: true, path: realRequested, root };
     }
+  }
+
+  // Check dynamically provisioned roots
+  const provisionedRoots = getProvisionedRoots();
+  for (const [rootPath] of provisionedRoots) {
+    if (!existsSync(rootPath)) continue;
+    try {
+      const realRoot = realpathSync(rootPath);
+      if (isWithin(realRequested, realRoot)) {
+        const label = provisionedRoots.get(rootPath) ?? basename(rootPath);
+        return {
+          ok: true,
+          path: realRequested,
+          root: { path: rootPath, label, risk: "medium", writable: true, note: "Provisioned project" },
+        };
+      }
+    } catch { /* skip */ }
   }
 
   return {

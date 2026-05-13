@@ -723,6 +723,131 @@ function CollapsibleSection({ title, children, defaultOpen = false }: { title: s
   );
 }
 
+function ProvisionModal({
+  onClose,
+  onProvisioned,
+}: {
+  onClose: () => void;
+  onProvisioned: () => void;
+}) {
+  const [projectRoot, setProjectRoot] = useState("/opt/provisioned/");
+  const [name, setName] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [owner, setOwner] = useState("");
+  const [planFile, setPlanFile] = useState("");
+  const [agentOrder, setAgentOrder] = useState("codex, claude, opencode");
+  const [internalUrl, setInternalUrl] = useState("");
+  const [publicUrl, setPublicUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function provision() {
+    if (!name.trim()) { setError("name required"); return; }
+    if (!projectRoot.trim()) { setError("project root required"); return; }
+    setSaving(true);
+    setError(null);
+    setResult(null);
+    try {
+      const response = await authFetch("/api/builder/provision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          projectRoot: projectRoot.trim(),
+          repoUrl: repoUrl.trim() || undefined,
+          description: description.trim() || undefined,
+          tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+          owner: owner.trim() || undefined,
+          planFile: planFile.trim() || undefined,
+          agentOrder: agentOrder.split(",").map((a) => a.trim()).filter(Boolean),
+          internalUrl: internalUrl.trim() || undefined,
+          publicUrl: publicUrl.trim() || undefined,
+          gitPolicy: { commit: "manual", push: "never" },
+        }),
+      });
+      const data = await response.json() as { result?: { ok: boolean; name: string; projectRoot: string; warnings?: string[]; error?: string }; error?: string };
+      if (!response.ok || data.error) {
+        setError(data.error ?? `HTTP ${response.status}`);
+        return;
+      }
+      if (data.result?.error) {
+        setError(data.result.error);
+        return;
+      }
+      setResult({ ok: true, message: `Provisioned ${data.result?.name} at ${data.result?.projectRoot}` });
+      setTimeout(() => {
+        onProvisioned();
+        onClose();
+      }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={() => !saving && onClose()}>
+      <div className="modal-box builder-workflow-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-title">Bootstrap New Project</div>
+        <div className="builder-form-grid" style={{ maxHeight: "70vh", overflowY: "auto" }}>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Project name <span className="text-red">*</span></span>
+            <input className="modal-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My New Project" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Project root <span className="text-red">*</span></span>
+            <input className="modal-input" value={projectRoot} onChange={(e) => setProjectRoot(e.target.value)} placeholder="/opt/provisioned/" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Git repo URL</span>
+            <input className="modal-input" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder="https://github.com/user/repo.git (optional)" />
+          </label>
+          <label className="modal-input-row builder-form-wide">
+            <span className="modal-input-label">Description</span>
+            <textarea className="modal-input builder-textarea" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What does this project do?" rows={2} />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Tags</span>
+            <input className="modal-input" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="node, typescript, dashboard (comma-separated)" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Owner</span>
+            <input className="modal-input" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="operator" />
+          </label>
+          <label className="modal-input-row builder-form-wide">
+            <span className="modal-input-label">Plan file path</span>
+            <input className="modal-input" value={planFile} onChange={(e) => setPlanFile(e.target.value)} placeholder="Leave blank to auto-detect or create stub PLAN.md" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Agent order</span>
+            <input className="modal-input" value={agentOrder} onChange={(e) => setAgentOrder(e.target.value)} placeholder="codex, claude, opencode" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Internal URL</span>
+            <input className="modal-input" value={internalUrl} onChange={(e) => setInternalUrl(e.target.value)} placeholder="http://127.0.0.1:3000 (optional)" />
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Public URL</span>
+            <input className="modal-input" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://myapp.example.com (optional)" />
+          </label>
+        </div>
+        {result && <div className="modal-success">{result.message}</div>}
+        {error && <div className="modal-error">{error}</div>}
+        <div className="modal-actions">
+          <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-sm btn-primary" onClick={provision} disabled={saving || Boolean(result)}>
+            {saving ? "Provisioning..." : "Bootstrap Project"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DoctorReportModal({
   report,
   onClose,
@@ -877,6 +1002,7 @@ function DoctorReportModal({
 export function BuilderPage() {
   const [selectedRoot, setSelectedRoot] = useState("/opt/opencode-control-surface");
   const [creating, setCreating] = useState(false);
+  const [showProvision, setShowProvision] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedDoctorReport, setSelectedDoctorReport] = useState<BuilderDoctorReport | null>(null);
   const projectsApi = useAuthenticatedApi<BuilderProjectsResponse>("/api/builder/projects", 60_000);
@@ -966,6 +1092,9 @@ export function BuilderPage() {
         <button className="btn btn-sm btn-ghost" onClick={() => { discoverApi.refresh(); workflowsApi.refresh(); runsApi.refresh(); }} disabled={discoverApi.loading}>
           <RefreshCw size={14} /> refresh
         </button>
+        <button className="btn btn-sm btn-secondary" onClick={() => setShowProvision(true)} disabled={!data}>
+          <Plus size={14} /> bootstrap
+        </button>
         <button className="btn btn-sm btn-primary" onClick={() => setCreating(true)} disabled={!data}>
           <Plus size={14} /> workflow
         </button>
@@ -993,6 +1122,16 @@ export function BuilderPage() {
 
       {data && (
         <>
+          {showProvision && (
+            <ProvisionModal
+              onClose={() => setShowProvision(false)}
+              onProvisioned={() => {
+                setShowProvision(false);
+                projectsApi.refresh();
+                discoverApi.refresh();
+              }}
+            />
+          )}
           {creating && (
             <WorkflowModal
               data={data}

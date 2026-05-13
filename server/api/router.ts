@@ -20,6 +20,7 @@ import {
   builderModelsHandler,
   builderPauseWorkflowHandler,
   builderProjectsHandler,
+  builderProvisionHandler,
   builderResumeWorkflowHandler,
   builderRetryRunHandler,
   builderRunHandler,
@@ -144,7 +145,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
     return builderRunnerDisabledHandler(action);
   }
   if (method === "GET" && pathname === "/api/builder/artifacts") return builderArtifactsHandler(url);
-  if (method === "POST" && pathname === "/api/builder/provision") return builderRunnerDisabledHandler("provision");
+  if (method === "POST" && pathname === "/api/builder/provision") {
+    if (!checkToken(req)) return unauthorized();
+    return builderProvisionHandler(req);
+  }
 
   // Mission Control, Today, Settings
   if (method === "GET" && pathname === "/api/mission-control") return missionControlHandler();

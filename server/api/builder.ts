@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import {
   discoverBuilderProject,
   getBuilderModelsInventory,
@@ -17,6 +18,7 @@ import {
   readBuilderWorkflow,
   readBuilderWorkflows,
   updateBuilderWorkflow,
+  provisionProject,
   type BuilderArtifact,
   type BuilderDoctorReport,
   type BuilderPass,
@@ -24,6 +26,7 @@ import {
   type BuilderValidation,
   type BuilderWorkflow,
   type BuilderWorkflowInput,
+  type ProvisionResult,
 } from "../builder/store.ts";
 import { isDashboardDbEnabled } from "../db/dashboard.ts";
 import { writeActionAudit } from "../db/writer.ts";
@@ -496,6 +499,12 @@ export type BuilderDoctorReportsResponse = {
   reason?: string;
 };
 
+export type BuilderProvisionResponse = {
+  result: ProvisionResult;
+  degraded: boolean;
+  reason?: string;
+};
+
 export function builderDoctorReportsHandler(url: URL): Response {
   const reason = dbUnavailable();
   if (reason) {
@@ -536,6 +545,90 @@ export async function builderTriggerDoctorReviewHandler(workflowId: string): Pro
       actionKind: "builder.doctor-review",
       targetType: "builder-workflow",
       targetId: workflowId,
+      resultStatus: "failed",
+      error: errorMessage(error),
+    });
+    return apiError(errorMessage(error), 400);
+  }
+}
+
+export async function builderProvisionHandler(req: Request): Promise<Response> {
+  const reason = dbUnavailable();
+  if (reason) {
+    return json(ok<BuilderProvisionResponse>({ result: { id: "", projectRoot: "", name: "", workflowId: "", workflowStatus: "", provisioned: { cloned: false, gitInitialized: false, agentsMd: false, planFile: null, vaultNote: false, skillFile: false }, warnings: [], error: reason }, degraded: true, reason }, { builder: "stale" }));
+  }
+
+  try {
+    const body = await req.json() as Partial<{
+      projectRoot: string;
+      name: string;
+      repoUrl: string;
+      description: string;
+      tags: string[];
+      owner: string;
+      planFile: string;
+      agentOrder: string[];
+      fallbackTargets: string[];
+      validationCommands: string[];
+      gitPolicy: { commit: string; push: string };
+      internalUrl: string;
+      publicUrl: string;
+    }>;
+
+    const projectRoot = String(body.projectRoot ?? "").trim();
+    if (!projectRoot) return apiError("projectRoot required");
+    const name = String(body.name ?? "").trim();
+    if (!name) return apiError("name required");
+    if (name.length > 120) return apiError("name too long (max 120 chars)");
+
+    // Validate path is outside existing static roots (prevent overwrite of live services)
+    const STATIC_ROOTS = ["/opt/opencode-control-surface", "/opt/newsbites", "/opt/mimoun", "/opt/paperclip", "/opt", "/root"];
+    const resolved = resolve(projectRoot);
+    if (STATIC_ROOTS.some(r => resolved === r || resolved.startsWith(r + "/"))) {
+      return apiError(`cannot provision inside protected root: ${projectRoot}`, 403);
+    }
+
+    const result = provisionProject({
+      projectRoot: resolved,
+      name,
+      repoUrl: body.repoUrl?.trim() || undefined,
+      description: body.description?.trim(),
+      tags: Array.isArray(body.tags) ? body.tags : [],
+      owner: body.owner?.trim(),
+      planFile: String(body.planFile ?? ""),
+      agentOrder: Array.isArray(body.agentOrder) ? body.agentOrder : ["codex", "claude", "opencode"],
+      fallbackTargets: Array.isArray(body.fallbackTargets) ? body.fallbackTargets : [],
+      validationCommands: Array.isArray(body.validationCommands) ? body.validationCommands : [],
+      gitPolicy: body.gitPolicy ?? { commit: "manual", push: "never" },
+      internalUrl: body.internalUrl?.trim() || undefined,
+      publicUrl: body.publicUrl?.trim() || undefined,
+    });
+
+    writeActionAudit({
+      actionKind: "builder.provision",
+      actionId: `builder-provision:${resolved}`,
+      targetType: "builder-project",
+      targetId: result.id || resolved,
+      risk: "medium",
+      request: { projectRoot: resolved, name, repoUrl: body.repoUrl },
+      result: result.error
+        ? `provision failed: ${result.error}`
+        : `provisioned ${name} at ${resolved}, workflow ${result.workflowId}`,
+      resultStatus: result.error ? "failed" : "success",
+      evidence: [
+        { label: "projectRoot", kind: "file" as const, ref: resolved },
+        { label: "workflow", kind: "db" as const, ref: `builder_workflows:${result.workflowId}` },
+      ],
+      rollbackHint: result.error ? undefined : "Delete the provisioned workflow from /builder and remove the project directory.",
+    });
+
+    return json(ok<BuilderProvisionResponse>({ result, degraded: false }, { builder: "ok" }), 201);
+  } catch (error) {
+    writeActionAudit({
+      actionKind: "builder.provision",
+      targetType: "builder-project",
+      targetId: "new",
+      risk: "medium",
       resultStatus: "failed",
       error: errorMessage(error),
     });
