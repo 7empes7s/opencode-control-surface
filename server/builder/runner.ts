@@ -779,13 +779,20 @@ function writePassScript(
   } else if (agent === "gemini") {
     const modelFlag = model ? `--model ${model} ` : "";
     const approvalMode = (workflow.config as { geminiApprovalMode?: string }).geminiApprovalMode ?? "auto_edit";
-    command = `gemini --skip-trust --approval-mode ${approvalMode} ${modelFlag}--prompt "${prompt.replace(/"/g, '\\"')}"`;
+    const escapedPrompt = prompt.replace(/"/g, '\\"');
+    command = `printf '%s' "${escapedPrompt}" | gemini --skip-trust --approval-mode ${approvalMode} ${modelFlag}--prompt -`;
   } else {
     command = `echo "Unsupported builder agent: ${agent}"`;
   }
 
   const continuationBlock = continuationContext
-    ? `\n# Continuation context written to file\nCONTEXT_FILE="${dir}/continuation-${passNumber}.txt"\necho -e "${continuationContext.replace(/"/g, '\\"').replace(/\n/g, '\\n')}" > "$CONTEXT_FILE"\necho "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/${stdoutLog}"\n`
+    ? `\n# Continuation context written to file
+CONTEXT_FILE="${dir}/continuation-${passNumber}.txt"
+cat > "$CONTEXT_FILE" << 'BUILDER_EOF'
+${continuationContext}
+BUILDER_EOF
+echo "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/${stdoutLog}"
+`
     : "";
 
   const script = `#!/bin/bash
