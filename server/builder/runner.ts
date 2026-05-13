@@ -15,6 +15,7 @@ import {
   type BuilderWorkflow,
 } from "./store.ts";
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
+import { runDoctorReview, writeDoctorReport } from "./doctor.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 
@@ -824,12 +825,13 @@ export async function startWorkflowRun(
     throw new Error("project is locked by another run");
   }
 
-  // Create pass
+  // Create pass - doctor mode uses "doctor" phase instead of "plan"
+  const phase = workflow.mode === "doctor" ? "doctor" : "plan";
   const passId = createBuilderPass({
     runId: run.id,
     workflowId,
     sequence: 1,
-    phase: "plan",
+    phase,
     agent,
     model,
     modelReason,
@@ -1080,6 +1082,20 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     AUTO_CONTINUE_MODES.has(workflow.mode) &&
     passSeq < workflow.config.riskPolicy.maxPasses,
   );
+
+  // Doctor mode: run doctor review after successful pass, but do NOT auto-continue
+  if (workflow && runStatus === "success" && workflow.mode === "doctor" && passId) {
+    try {
+      const doctorReport = await runDoctorReview(workflow, run.id, passId);
+      writeDoctorReport(doctorReport);
+      updateBuilderRun(run.id, {
+        result: { ...(run.result as object || {}), doctorReportId: doctorReport.id, doctorReport: doctorReport },
+      });
+      console.log(`[builder] doctor review completed for run ${run.id}, score: ${doctorReport.overallScore}`);
+    } catch (err) {
+      console.error("[builder] doctor review failed:", err);
+    }
+  }
 
   // Release lock only if we're not continuing to another pass
   if (workflow) {

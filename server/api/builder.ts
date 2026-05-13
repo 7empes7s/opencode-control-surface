@@ -9,6 +9,7 @@ import {
 import {
   createBuilderWorkflow,
   readBuilderArtifacts,
+  readBuilderDoctorReports,
   readBuilderPasses,
   readBuilderRun,
   readBuilderRuns,
@@ -17,6 +18,7 @@ import {
   readBuilderWorkflows,
   updateBuilderWorkflow,
   type BuilderArtifact,
+  type BuilderDoctorReport,
   type BuilderPass,
   type BuilderRun,
   type BuilderValidation,
@@ -463,4 +465,57 @@ export function builderRunnerDisabledHandler(action: string): Response {
     status: 409,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+export type BuilderDoctorReportsResponse = {
+  reports: BuilderDoctorReport[];
+  degraded: boolean;
+  reason?: string;
+};
+
+export function builderDoctorReportsHandler(url: URL): Response {
+  const reason = dbUnavailable();
+  if (reason) {
+    return json(ok<BuilderDoctorReportsResponse>({ reports: [], degraded: true, reason }, { builder: "stale" }));
+  }
+
+  const workflowId = url.searchParams.get("workflowId") || undefined;
+  const runId = url.searchParams.get("runId") || undefined;
+  const limit = Number.parseInt(url.searchParams.get("limit") ?? "10", 10);
+
+  const reports = readBuilderDoctorReports(workflowId, runId, limit || 10);
+  return json(ok<BuilderDoctorReportsResponse>({ reports, degraded: false }, { builder: "ok" }));
+}
+
+export async function builderTriggerDoctorReviewHandler(workflowId: string): Promise<Response> {
+  try {
+    const workflow = readBuilderWorkflow(workflowId);
+    if (!workflow) return apiError("workflow not found", 404);
+
+    const run = await startWorkflowRun(workflowId, "doctor-review");
+    writeActionAudit({
+      actionKind: "builder.doctor-review",
+      actionId: `builder-doctor-review:${workflowId}`,
+      targetType: "builder-workflow",
+      targetId: workflowId,
+      risk: "medium",
+      result: `started doctor run ${run.id}`,
+      resultStatus: "success",
+      evidence: [{ label: "Doctor review", kind: "doctor", ref: run.id }],
+    });
+
+    return json(ok({
+      run,
+      degraded: false,
+    }, { builder: "ok" }), 201);
+  } catch (error) {
+    writeActionAudit({
+      actionKind: "builder.doctor-review",
+      targetType: "builder-workflow",
+      targetId: workflowId,
+      resultStatus: "failed",
+      error: errorMessage(error),
+    });
+    return apiError(errorMessage(error), 400);
+  }
 }

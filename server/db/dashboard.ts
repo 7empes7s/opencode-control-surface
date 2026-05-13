@@ -351,6 +351,26 @@ function migrateDashboardDb(db: Database): void {
       expires_at INTEGER NOT NULL,
       holder TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS builder_doctor_reports (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      run_id TEXT,
+      pass_id TEXT,
+      created_at INTEGER NOT NULL,
+      project_root TEXT NOT NULL,
+      plan_file TEXT NOT NULL,
+      code_review_json TEXT,
+      accessibility_json TEXT,
+      performance_json TEXT,
+      security_json TEXT,
+      runtime_json TEXT,
+      overall_score REAL NOT NULL,
+      verdict TEXT NOT NULL,
+      evidence_json TEXT,
+      FOREIGN KEY (workflow_id) REFERENCES builder_workflows(id),
+      FOREIGN KEY (run_id) REFERENCES builder_runs(id)
+    );
   `);
 
   ensureColumn(db, "action_audit", "actor_source", "TEXT");

@@ -568,3 +568,52 @@ export function readBuilderValidations(runId: string): BuilderValidation[] {
     return [];
   }
 }
+
+export type BuilderDoctorReport = {
+  id: string;
+  workflowId: string;
+  runId: string | null;
+  passId: string | null;
+  createdAt: number;
+  projectRoot: string;
+  planFile: string;
+  codeReview: { changedFiles: number; issues: { severity: string; file: string; line?: number; message: string }[]; score: number } | null;
+  accessibility: { url: string; score: number; issues: string[] }[] | null;
+  performance: { url: string; metrics: Record<string, number>; score: number }[] | null;
+  security: { check: string; passed: boolean; details: string }[] | null;
+  runtime: { endpoint: string; statusCode: number; ok: boolean }[] | null;
+  overallScore: number;
+  verdict: string;
+  evidence: { label: string; kind: string; ref: string }[];
+};
+
+export function readBuilderDoctorReports(workflowId?: string, runId?: string, limit = 10): BuilderDoctorReport[] {
+  if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
+  try {
+    const db = getDashboardDb()!;
+    let sql = `SELECT id, workflow_id, run_id, pass_id, created_at, project_root, plan_file,
+      code_review_json, accessibility_json, performance_json, security_json, runtime_json,
+      overall_score, verdict, evidence_json
+      FROM builder_doctor_reports`;
+    const params: string[] = [];
+    const conditions: string[] = [];
+    if (workflowId) {
+      conditions.push("workflow_id = ?");
+      params.push(workflowId);
+    }
+    if (runId) {
+      conditions.push("run_id = ?");
+      params.push(runId);
+    }
+    if (conditions.length > 0) {
+      sql += " WHERE " + conditions.join(" AND ");
+    }
+    sql += " ORDER BY created_at DESC LIMIT ?";
+    params.push(String(limit));
+
+    return db.query(sql).all(...params) as BuilderDoctorReport[];
+  } catch (error) {
+    console.error("[control-surface] readBuilderDoctorReports failed", error);
+    return [];
+  }
+}

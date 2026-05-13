@@ -10,9 +10,10 @@ import type {
   BuilderProject,
   BuilderSkillStatus,
 } from "../../server/builder/discovery";
-import type { BuilderWorkflowInput } from "../../server/builder/store";
+import type { BuilderWorkflowInput, BuilderDoctorReport } from "../../server/builder/store";
 import type {
   BuilderProjectsResponse,
+  BuilderDoctorReportsResponse,
   BuilderRunResponse,
   BuilderRunsResponse,
   BuilderWorkflowResponse,
@@ -478,9 +479,13 @@ function WorkflowModal({
 function WorkflowActions({
   workflow,
   onMutated,
+  onDoctorReview,
+  hasDoctorReports,
 }: {
   workflow: { id: string; status: string };
   onMutated: () => void;
+  onDoctorReview: () => void;
+  hasDoctorReports: boolean;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -529,6 +534,9 @@ function WorkflowActions({
           <Play size={12} />
         </button>
       )}
+      <button className="btn btn-xs btn-ghost" onClick={onDoctorReview} disabled={loading} title="run doctor review" style={{ marginLeft: 4 }}>
+        <RefreshCw size={12} />
+      </button>
     </div>
   );
 }
@@ -658,10 +666,140 @@ function RunDetailPanel({
   );
 }
 
+function DoctorReportModal({
+  report,
+  onClose,
+}: {
+  report: BuilderDoctorReport;
+  onClose: () => void;
+}) {
+  const verdictColor = report.verdict === "ready" ? "green" : report.verdict === "needs-work" ? "amber" : "red";
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box builder-detail-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-title">
+          Doctor Report
+          <span className="mono dim" style={{ marginLeft: 12 }}>{report.id}</span>
+          <button className="btn btn-xs btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button>
+        </div>
+        <div className="builder-detail-body">
+          <div className="builder-detail-meta builder-kv-grid">
+            <div><span>verdict</span><strong><Pill color={verdictColor}>{report.verdict}</Pill></strong></div>
+            <div><span>score</span><strong className="text-2xl">{report.overallScore}</strong></div>
+            <div><span>created</span><strong className="mono">{fmtTs(report.createdAt)}</strong></div>
+          </div>
+
+          {report.codeReview && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Code Review</div>
+              <div className="builder-kv-grid">
+                <div><span>changed files</span><strong>{report.codeReview.changedFiles}</strong></div>
+                <div><span>score</span><strong>{report.codeReview.score}</strong></div>
+                <div><span>issues</span><strong>{report.codeReview.issues.length}</strong></div>
+              </div>
+              {report.codeReview.issues.length > 0 && (
+                <table className="data-table" style={{ marginTop: 8 }}>
+                  <thead><tr><th>severity</th><th>file</th><th>message</th></tr></thead>
+                  <tbody>
+                    {report.codeReview.issues.slice(0, 10).map((issue, i) => (
+                      <tr key={i}>
+                        <td><Pill color={issue.severity === "error" ? "red" : issue.severity === "warning" ? "amber" : "gray"}>{issue.severity}</Pill></td>
+                        <td className="mono trunc">{issue.file}</td>
+                        <td className="trunc">{issue.message.slice(0, 60)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {report.accessibility && report.accessibility.length > 0 && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Accessibility</div>
+              {report.accessibility.map((a, i) => (
+                <div key={i} className="builder-kv-grid">
+                  <div><span>url</span><strong className="mono trunc">{a.url}</strong></div>
+                  <div><span>score</span><strong>{a.score}</strong></div>
+                  <div><span>issues</span><strong>{a.issues.length}</strong></div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {report.performance && report.performance.length > 0 && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Performance</div>
+              {report.performance.map((p, i) => (
+                <div key={i} className="builder-kv-grid">
+                  <div><span>url</span><strong className="mono trunc">{p.url}</strong></div>
+                  <div><span>score</span><strong>{p.score}</strong></div>
+                  {p.metrics.lcp !== undefined && <div><span>LCP</span><strong>{p.metrics.lcp}ms</strong></div>}
+                  {p.metrics.cls !== undefined && <div><span>CLS</span><strong>{p.metrics.cls.toFixed(3)}</strong></div>}
+                  {p.metrics.ttfb !== undefined && <div><span>TTFB</span><strong>{p.metrics.ttfb}ms</strong></div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {report.security && report.security.length > 0 && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Security</div>
+              <table className="data-table">
+                <thead><tr><th>check</th><th>status</th><th>details</th></tr></thead>
+                <tbody>
+                  {report.security.map((s, i) => (
+                    <tr key={i}>
+                      <td><Pill>{s.check}</Pill></td>
+                      <td><Pill color={s.passed ? "green" : "red"}>{s.passed ? "passed" : "failed"}</Pill></td>
+                      <td className="mono dim">{s.details}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {report.runtime && report.runtime.length > 0 && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Runtime</div>
+              <table className="data-table">
+                <thead><tr><th>endpoint</th><th>status</th><th>ok</th></tr></thead>
+                <tbody>
+                  {report.runtime.map((r, i) => (
+                    <tr key={i}>
+                      <td className="mono trunc">{r.endpoint}</td>
+                      <td><Pill>{r.statusCode || "timeout"}</Pill></td>
+                      <td><Pill color={r.ok ? "green" : "red"}>{r.ok ? "ok" : "failed"}</Pill></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {report.evidence.length > 0 && (
+            <div className="builder-detail-section">
+              <div className="builder-detail-section-title">Evidence</div>
+              <div className="builder-pill-row">
+                {report.evidence.map((e, i) => (
+                  <Pill key={i} color="gray">{e.label}</Pill>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BuilderPage() {
   const [selectedRoot, setSelectedRoot] = useState("/opt/opencode-control-surface");
   const [creating, setCreating] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedDoctorReport, setSelectedDoctorReport] = useState<BuilderDoctorReport | null>(null);
   const projectsApi = useAuthenticatedApi<BuilderProjectsResponse>("/api/builder/projects", 60_000);
   const discoverApi = useAuthenticatedApi<BuilderDiscovery>(
     `/api/builder/discover?root=${encodeURIComponent(selectedRoot)}`,
@@ -669,6 +807,7 @@ export function BuilderPage() {
   );
   const workflowsApi = useAuthenticatedApi<BuilderWorkflowsResponse>("/api/builder/workflows", 30_000);
   const runsApi = useAuthenticatedApi<BuilderRunsResponse>("/api/builder/runs", 15_000);
+  const doctorReportsApi = useAuthenticatedApi<BuilderDoctorReportsResponse>("/api/builder/doctor-reports?limit=100", 30_000);
   const runDetailUrl = selectedRunId ? `/api/builder/runs/${selectedRunId}` : "";
   const runDetailApi = useAuthenticatedApi<BuilderRunResponse>(runDetailUrl, 15_000);
 
@@ -676,6 +815,33 @@ export function BuilderPage() {
   const data = discoverApi.data;
   const workflows = workflowsApi.data?.workflows ?? [];
   const runs = runsApi.data?.runs ?? [];
+  const doctorReports = doctorReportsApi.data?.reports ?? [];
+
+  async function triggerDoctorReview(workflowId: string) {
+    try {
+      const response = await authFetch(`/api/builder/workflows/${workflowId}/doctor-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        console.error("doctor review failed", text);
+      }
+      runsApi.refresh();
+      workflowsApi.refresh();
+    } catch (err) {
+      console.error("trigger doctor review error", err);
+    }
+  }
+
+  function hasDoctorReportsForWorkflow(workflowId: string): boolean {
+    return doctorReports.some((r) => r.workflowId === workflowId);
+  }
+
+  function getLatestDoctorReport(workflowId: string): BuilderDoctorReport | undefined {
+    return doctorReports.find((r) => r.workflowId === workflowId);
+  }
 
   useEffect(() => {
     if (!projects.length) return;
@@ -786,27 +952,48 @@ export function BuilderPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>status</th><th>mode</th><th>name</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>actions</th>
+                      <th>status</th><th>mode</th><th>name</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {workflows.map((workflow) => (
-                      <tr key={workflow.id}>
-                        <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
-                        <td><Pill>{workflow.mode}</Pill></td>
-                        <td>{workflow.name}</td>
-                        <td className="mono trunc">{workflow.projectRoot}</td>
-                        <td className="mono trunc">{workflow.planFile}</td>
-                        <td>{workflow.config.agentOrder.join(" -> ")}</td>
-                        <td>{workflow.config.validationProfile.commands.length} checks</td>
-                        <td>
-                          <WorkflowActions
-                            workflow={workflow}
-                            onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
-                          />
-                        </td>
-                      </tr>
-                    ))}
+                    {workflows.map((workflow) => {
+                      const hasDoctor = hasDoctorReportsForWorkflow(workflow.id);
+                      const latestReport = getLatestDoctorReport(workflow.id);
+                      return (
+                        <tr key={workflow.id}>
+                          <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
+                          <td><Pill>{workflow.mode}</Pill></td>
+                          <td>{workflow.name}</td>
+                          <td className="mono trunc">{workflow.projectRoot}</td>
+                          <td className="mono trunc">{workflow.planFile}</td>
+                          <td>{workflow.config.agentOrder.join(" -> ")}</td>
+                          <td>{workflow.config.validationProfile.commands.length} checks</td>
+                          <td>
+                            {hasDoctor && latestReport ? (
+                              <button
+                                className="btn btn-xs btn-ghost"
+                                onClick={() => setSelectedDoctorReport(latestReport)}
+                                title="view doctor report"
+                              >
+                                <Pill color={latestReport.verdict === "ready" ? "green" : latestReport.verdict === "needs-work" ? "amber" : "red"}>
+                                  {latestReport.overallScore}
+                                </Pill>
+                              </button>
+                            ) : (
+                              <span className="mono dim">-</span>
+                            )}
+                          </td>
+                          <td>
+                            <WorkflowActions
+                              workflow={workflow}
+                              onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
+                              onDoctorReview={() => triggerDoctorReview(workflow.id)}
+                              hasDoctorReports={hasDoctor}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -964,6 +1151,16 @@ export function BuilderPage() {
             setSelectedRunId(null);
             runsApi.refresh();
             workflowsApi.refresh();
+          }}
+        />
+      )}
+
+      {selectedDoctorReport && (
+        <DoctorReportModal
+          report={selectedDoctorReport}
+          onClose={() => {
+            setSelectedDoctorReport(null);
+            doctorReportsApi.refresh();
           }}
         />
       )}

@@ -16,20 +16,22 @@ import {
   builderCancelRunHandler,
   builderCreateWorkflowHandler,
   builderDiscoverHandler,
+  builderDoctorReportsHandler,
   builderModelsHandler,
   builderPauseWorkflowHandler,
   builderProjectsHandler,
   builderResumeWorkflowHandler,
   builderRetryRunHandler,
-  builderRunnerDisabledHandler,
   builderRunHandler,
-  builderRunReconcileHandler,
   builderRunsHandler,
   builderStartWorkflowHandler,
   builderStopWorkflowHandler,
+  builderTriggerDoctorReviewHandler,
   builderUpdateWorkflowHandler,
   builderWorkflowHandler,
   builderWorkflowsHandler,
+  builderRunReconcileHandler,
+  builderRunnerDisabledHandler,
 } from "./builder.ts";
 import {
   codexListHandler, codexCreateHandler, codexGetHandler,
@@ -114,7 +116,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
     if (method === "GET") return builderWorkflowHandler(builderWorkflowMatch[1]);
     if (method === "PUT") return builderUpdateWorkflowHandler(req, builderWorkflowMatch[1]);
   }
-  const builderWorkflowActionMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/(start|pause|resume|stop|trigger-doctor)$/);
+  const builderWorkflowActionMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/(start|pause|resume|stop|doctor-review)$/);
   if (method === "POST" && builderWorkflowActionMatch) {
     const workflowId = builderWorkflowActionMatch[1];
     const action = builderWorkflowActionMatch[2];
@@ -122,8 +124,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
     if (action === "stop") return builderStopWorkflowHandler(workflowId, req);
     if (action === "pause") return builderPauseWorkflowHandler(workflowId);
     if (action === "resume") return builderResumeWorkflowHandler(workflowId);
+    if (action === "doctor-review") return builderTriggerDoctorReviewHandler(workflowId);
     return builderRunnerDisabledHandler(action);
   }
+  if (method === "GET" && pathname === "/api/builder/doctor-reports") return builderDoctorReportsHandler(url);
   if (method === "GET" && pathname === "/api/builder/runs") return builderRunsHandler(url);
   const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
   if (method === "GET" && builderRunMatch) {
