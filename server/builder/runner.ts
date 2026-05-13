@@ -477,7 +477,7 @@ async function startNextPass(
   const stderrArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stderr", path: join(runDir(run.id), `pass-${nextSequence}-stderr.log`) });
   updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
 
-  const session = tmuxSessionName(`${run.id}-p${nextSequence}`);
+  const session = tmuxSessionName(run.id, nextSequence);
   const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], { encoding: "utf8" });
   if (spawnResult.status !== 0) {
     const error = spawnResult.stderr || `tmux spawn failed (exit ${spawnResult.status})`;
@@ -742,6 +742,9 @@ function releaseProjectLock(projectRoot: string): void {
 function buildCodexPrompt(workflow: BuilderWorkflow, continuationContext?: string): string {
   const { planFile, projectRoot } = workflow;
   let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.`;
+  if (workflow.mode === "plan") {
+    base = `Research the project at ${projectRoot}, dynamically inspect existing plan files, AGENTS.md, README files, package metadata, and current git state, then create or update the plan file at ${planFile}. Do not implement product code in this pass. The output plan must include current facts, open gaps, proposed phases, validation commands, and the next manual test path. If ${planFile} does not exist, create it.`;
+  }
   if (continuationContext) {
     base = `${continuationContext}\n\n${base}`;
   }
@@ -771,7 +774,12 @@ function writePassScript(
   } else if (agent === "claude") {
     command = `claude --permission-mode dontAsk -d "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
   } else if (agent === "opencode") {
-    command = `opencode run --project "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+    const modelFlag = model ? `--model ${model} ` : "";
+    command = `opencode run --dir "${workflow.projectRoot}" --dangerously-skip-permissions ${modelFlag}"${prompt.replace(/"/g, '\\"')}"`;
+  } else if (agent === "gemini") {
+    const modelFlag = model ? `--model ${model} ` : "";
+    const approvalMode = (workflow.config as { geminiApprovalMode?: string }).geminiApprovalMode ?? "auto_edit";
+    command = `gemini --skip-trust --approval-mode ${approvalMode} ${modelFlag}--prompt "${prompt.replace(/"/g, '\\"')}"`;
   } else {
     command = `echo "Unsupported builder agent: ${agent}"`;
   }
@@ -807,7 +815,8 @@ export async function startWorkflowRun(
 ): Promise<BuilderRun> {
   const workflow = readBuilderWorkflow(workflowId);
   if (!workflow) throw new Error("workflow not found");
-  if (workflow.status !== "ready" && workflow.status !== "running" && workflow.status !== "paused") {
+  const STARTABLE_STATUSES = new Set(["ready", "draft", "paused", "done", "failed", "blocked"]);
+  if (!STARTABLE_STATUSES.has(workflow.status)) {
     throw new Error(`workflow cannot be started from status ${workflow.status}`);
   }
 
@@ -827,8 +836,8 @@ export async function startWorkflowRun(
     throw new Error("project is locked by another run");
   }
 
-  // Create pass - doctor mode uses "doctor" phase instead of "plan"
-  const phase = workflow.mode === "doctor" ? "doctor" : "plan";
+  // Create pass - specialized modes get explicit phases in the run ledger.
+  const phase = workflow.mode === "doctor" ? "doctor" : workflow.mode === "plan" ? "plan-file" : "plan";
   const passId = createBuilderPass({
     runId: run.id,
     workflowId,
@@ -1585,6 +1594,7 @@ try {
         encoding: "utf8",
         timeout: 30_000,
         cwd: projectRoot,
+        env: { ...process.env, NODE_PATH: "/usr/lib/node_modules" },
       });
       outputTail = (result.stdout ?? "").slice(-2000);
       if (result.stderr) outputTail += "\n" + result.stderr.slice(-1000);
