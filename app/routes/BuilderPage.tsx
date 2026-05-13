@@ -707,6 +707,22 @@ function RunDetailPanel({
   );
 }
 
+function CollapsibleSection({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="builder-detail-section" style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <div
+        style={{ display: "flex", alignItems: "center", padding: "10px 14px", cursor: "pointer", background: open ? "var(--bg-card-start)" : "transparent", borderBottom: open ? "1px solid var(--border)" : "none" }}
+        onClick={() => setOpen(!open)}
+      >
+        <span style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-dim)" }}>{title}</span>
+        <span style={{ marginLeft: "auto", color: "var(--text-dim)" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && <div style={{ padding: "12px 14px" }}>{children}</div>}
+    </div>
+  );
+}
+
 function DoctorReportModal({
   report,
   onClose,
@@ -714,122 +730,144 @@ function DoctorReportModal({
   report: BuilderDoctorReport;
   onClose: () => void;
 }) {
-  const verdictColor = report.verdict === "ready" ? "green" : report.verdict === "needs-work" ? "amber" : "red";
-
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box builder-detail-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-box builder-detail-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: "85vh", overflowY: "auto" }}>
         <div className="modal-title">
           Doctor Report
           <span className="mono dim" style={{ marginLeft: 12 }}>{report.id}</span>
           <button className="btn btn-xs btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button>
         </div>
         <div className="builder-detail-body">
-          <div className="builder-detail-meta builder-kv-grid">
-            <div><span>verdict</span><strong><Pill color={verdictColor}>{report.verdict}</Pill></strong></div>
-            <div><span>score</span><strong className="text-2xl">{report.overallScore}</strong></div>
-            <div><span>created</span><strong className="mono">{fmtTs(report.createdAt)}</strong></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
+            <div style={{ position: "relative", width: 80, height: 80 }}>
+              <svg viewBox="0 0 36 36" style={{ width: 80, height: 80 }}>
+                <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  fill="none" stroke="#e5e7eb" strokeWidth="3" />
+                <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  fill="none"
+                  stroke={report.overallScore >= 80 ? "#22c55e" : report.overallScore >= 50 ? "#f59e0b" : "#ef4444"}
+                  strokeWidth="3"
+                  strokeDasharray={`${report.overallScore}, 100`}
+                  strokeLinecap="round" />
+              </svg>
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700 }}>
+                {report.overallScore}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Overall Score</div>
+              <Pill color={report.verdict === "ready" ? "green" : report.verdict === "needs-work" ? "amber" : "red"}>
+                {report.verdict.replace("-", " ")}
+              </Pill>
+              <div className="text-xs dim" style={{ marginTop: 4 }}>
+                {report.createdAt ? fmtTs(report.createdAt) : "—"}
+              </div>
+            </div>
           </div>
 
-          {report.codeReview && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Code Review</div>
-              <div className="builder-kv-grid">
-                <div><span>changed files</span><strong>{report.codeReview.changedFiles}</strong></div>
-                <div><span>score</span><strong>{report.codeReview.score}</strong></div>
-                <div><span>issues</span><strong>{report.codeReview.issues.length}</strong></div>
+          <CollapsibleSection title={`Code Review — ${report.codeReview?.issues.length ?? 0} issues`} defaultOpen={true}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              {[
+                { label: "error", count: report.codeReview?.issues.filter(i => i.severity === "error").length ?? 0, color: "red" },
+                { label: "warning", count: report.codeReview?.issues.filter(i => i.severity === "warning").length ?? 0, color: "amber" },
+                { label: "info", count: report.codeReview?.issues.filter(i => i.severity === "info").length ?? 0, color: "gray" },
+              ].map(({ label, count, color }) => (
+                count > 0 && <Pill key={label} color={color}>{count} {label}</Pill>
+              ))}
+            </div>
+            {report.codeReview?.issues.map((issue, i) => (
+              <div key={i} style={{ marginBottom: 8, padding: "8px 10px", background: "var(--bg-card-start)", borderRadius: 6, border: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Pill color={issue.severity === "error" ? "red" : issue.severity === "warning" ? "amber" : "gray"}>{issue.severity}</Pill>
+                  <span className="mono" style={{ fontSize: 11, color: "var(--text-dim)" }}>{issue.file}{issue.line ? `:${issue.line}` : ""}</span>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 13 }}>{issue.message}</div>
               </div>
-              {report.codeReview.issues.length > 0 && (
-                <table className="data-table" style={{ marginTop: 8 }}>
-                  <thead><tr><th>severity</th><th>file</th><th>message</th></tr></thead>
-                  <tbody>
-                    {report.codeReview.issues.slice(0, 10).map((issue, i) => (
-                      <tr key={i}>
-                        <td><Pill color={issue.severity === "error" ? "red" : issue.severity === "warning" ? "amber" : "gray"}>{issue.severity}</Pill></td>
-                        <td className="mono trunc">{issue.file}</td>
-                        <td className="trunc">{issue.message.slice(0, 60)}</td>
-                      </tr>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title={`Accessibility — ${report.accessibility?.length ?? 0} URLs`} defaultOpen={true}>
+            {report.accessibility?.map((a, i) => (
+              <div key={i} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span className="mono trunc" style={{ fontSize: 12 }}>{a.url}</span>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: 12 }}>score</span>
+                    <span style={{ fontWeight: 600, color: a.score >= 80 ? "#22c55e" : a.score >= 50 ? "#f59e0b" : "#ef4444" }}>{a.score}</span>
+                  </div>
+                </div>
+                {a.issues.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {a.issues.map((issue, j) => (
+                      <div key={j} style={{ fontSize: 12, padding: "4px 8px", background: "var(--bg-card-start)", borderRadius: 4, borderLeft: "3px solid #f59e0b" }}>
+                        {issue}
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-
-          {report.accessibility && report.accessibility.length > 0 && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Accessibility</div>
-              {report.accessibility.map((a, i) => (
-                <div key={i} className="builder-kv-grid">
-                  <div><span>url</span><strong className="mono trunc">{a.url}</strong></div>
-                  <div><span>score</span><strong>{a.score}</strong></div>
-                  <div><span>issues</span><strong>{a.issues.length}</strong></div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {report.performance && report.performance.length > 0 && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Performance</div>
-              {report.performance.map((p, i) => (
-                <div key={i} className="builder-kv-grid">
-                  <div><span>url</span><strong className="mono trunc">{p.url}</strong></div>
-                  <div><span>score</span><strong>{p.score}</strong></div>
-                  {p.metrics.lcp !== undefined && <div><span>LCP</span><strong>{p.metrics.lcp}ms</strong></div>}
-                  {p.metrics.cls !== undefined && <div><span>CLS</span><strong>{p.metrics.cls.toFixed(3)}</strong></div>}
-                  {p.metrics.ttfb !== undefined && <div><span>TTFB</span><strong>{p.metrics.ttfb}ms</strong></div>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {report.security && report.security.length > 0 && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Security</div>
-              <table className="data-table">
-                <thead><tr><th>check</th><th>status</th><th>details</th></tr></thead>
-                <tbody>
-                  {report.security.map((s, i) => (
-                    <tr key={i}>
-                      <td><Pill>{s.check}</Pill></td>
-                      <td><Pill color={s.passed ? "green" : "red"}>{s.passed ? "passed" : "failed"}</Pill></td>
-                      <td className="mono dim">{s.details}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {report.runtime && report.runtime.length > 0 && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Runtime</div>
-              <table className="data-table">
-                <thead><tr><th>endpoint</th><th>status</th><th>ok</th></tr></thead>
-                <tbody>
-                  {report.runtime.map((r, i) => (
-                    <tr key={i}>
-                      <td className="mono trunc">{r.endpoint}</td>
-                      <td><Pill>{r.statusCode || "timeout"}</Pill></td>
-                      <td><Pill color={r.ok ? "green" : "red"}>{r.ok ? "ok" : "failed"}</Pill></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {report.evidence.length > 0 && (
-            <div className="builder-detail-section">
-              <div className="builder-detail-section-title">Evidence</div>
-              <div className="builder-pill-row">
-                {report.evidence.map((e, i) => (
-                  <Pill key={i} color="gray">{e.label}</Pill>
-                ))}
+                  </div>
+                ) : (
+                  <span className="text-xs" style={{ color: "#22c55e" }}>✓ no issues</span>
+                )}
               </div>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title={`Performance — ${report.performance?.length ?? 0} URLs`} defaultOpen={true}>
+            {report.performance?.map((p, i) => (
+              <div key={i} style={{ marginBottom: 14 }}>
+                <div className="mono" style={{ fontSize: 12, marginBottom: 8 }}>{p.url}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+                  {p.metrics.lcp !== undefined && (
+                    <div style={{ padding: 8, background: "var(--bg-card-start)", borderRadius: 6 }}>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase" }}>LCP</div>
+                      <div style={{ fontWeight: 600, fontSize: 16, color: p.metrics.lcp < 2500 ? "#22c55e" : p.metrics.lcp < 4000 ? "#f59e0b" : "#ef4444" }}>{p.metrics.lcp}ms</div>
+                    </div>
+                  )}
+                  {p.metrics.cls !== undefined && (
+                    <div style={{ padding: 8, background: "var(--bg-card-start)", borderRadius: 6 }}>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase" }}>CLS</div>
+                      <div style={{ fontWeight: 600, fontSize: 16, color: p.metrics.cls < 0.1 ? "#22c55e" : p.metrics.cls < 0.25 ? "#f59e0b" : "#ef4444" }}>{p.metrics.cls.toFixed(3)}</div>
+                    </div>
+                  )}
+                  {p.metrics.ttfb !== undefined && (
+                    <div style={{ padding: 8, background: "var(--bg-card-start)", borderRadius: 6 }}>
+                      <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase" }}>TTFB</div>
+                      <div style={{ fontWeight: 600, fontSize: 16, color: p.metrics.ttfb < 800 ? "#22c55e" : p.metrics.ttfb < 1800 ? "#f59e0b" : "#ef4444" }}>{p.metrics.ttfb}ms</div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  <Pill color={p.score >= 80 ? "green" : p.score >= 50 ? "amber" : "red"}>{p.score} score</Pill>
+                </div>
+              </div>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title={`Security — ${report.security?.filter(s => s.passed).length ?? 0}/${report.security?.length ?? 0} passed`} defaultOpen={true}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {report.security?.map((s, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: s.passed ? "rgba(34,197,94,0.05)" : "rgba(239,68,68,0.05)", borderRadius: 6, border: `1px solid ${s.passed ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}` }}>
+                  <span style={{ fontSize: 16 }}>{s.passed ? "✓" : "✗"}</span>
+                  <span style={{ fontWeight: 500, fontSize: 13 }}>{s.check}</span>
+                  <span className="text-xs dim" style={{ marginLeft: "auto" }}>{s.details}</span>
+                </div>
+              ))}
             </div>
-          )}
+          </CollapsibleSection>
+
+          <CollapsibleSection title={`Runtime — ${report.runtime?.filter(r => r.ok).length ?? 0}/${report.runtime?.length ?? 0} ok`} defaultOpen={true}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+              {report.runtime?.map((r, i) => (
+                <div key={i} style={{ padding: 10, background: r.ok ? "rgba(34,197,94,0.05)" : "rgba(239,68,68,0.05)", borderRadius: 6, border: `1px solid ${r.ok ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}` }}>
+                  <div className="mono" style={{ fontSize: 12, marginBottom: 4 }}>{r.endpoint}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Pill color={r.ok ? "green" : "red"}>{r.ok ? "ok" : "failed"}</Pill>
+                    <span className="text-xs dim">{r.statusCode || "timeout"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CollapsibleSection>
         </div>
       </div>
     </div>
