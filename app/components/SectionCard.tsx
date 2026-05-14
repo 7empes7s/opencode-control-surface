@@ -20,7 +20,7 @@ export function SectionCard({
 }: SectionCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="section-card" id={id} style={style}>
+    <div className={`section-card${open ? "" : " closed"}`} id={id} style={style}>
       <div className="section-card-header sc-header" onClick={() => setOpen((o) => !o)}>
         <span className="title">{title}</span>
         <div className="sc-right">

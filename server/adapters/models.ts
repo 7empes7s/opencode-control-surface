@@ -96,6 +96,14 @@ export interface ModelEntry {
   qualityStatus: "healthy" | "probation" | "degraded" | "blocked" | "unknown";
   recentFailures: number;
   consecutiveGarbage: number;
+  isFree: boolean;
+  isPaid: boolean;
+  isOpenCode: boolean;
+  isCli: boolean;
+  providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "other";
+  contextWindow: number | null;
+  params: number | null;
+  resolvedModel: string | null;
 }
 
 export interface CooldownEntry {
@@ -128,6 +136,41 @@ export interface ModelsDetailData {
   discoveryLog: DiscoveryLogEntry[];
 }
 
+function detectProviderType(name: string, provider: string): ModelEntry["providerType"] {
+  const n = name.toLowerCase();
+  if (n.includes("openrouter")) return "openrouter";
+  if (n.includes("groq")) return "groq";
+  if (n.includes("github")) return "github";
+  if (n.includes("cerebras")) return "cerebras";
+  if (n.includes("zen-") || n.includes("zen ")) return "zen";
+  if (provider === "local" || name.startsWith("editorial-") || name.startsWith("coding-") || name.startsWith("mimule-")) return "local";
+  return "other";
+}
+
+function detectPricing(name: string): { isFree: boolean; isPaid: boolean } {
+  const n = name.toLowerCase();
+  const freeKeywords = ["free", "trial", "-free", "no-cost", "openrouter-", "groq-", "github-", "cerebras-"];
+  const paidKeywords = ["paid", "pro", "premium", "zen-", "groq-", "-paid"];
+
+  const hasExplicitFree = freeKeywords.some(k => n.includes(k));
+  const hasExplicitPaid = paidKeywords.some(k => n.includes(k));
+
+  if (hasExplicitPaid) return { isFree: false, isPaid: true };
+  if (hasExplicitFree || n.includes("openrouter") || n.includes("github") || n.includes("cerebras") || n.includes("groq")) {
+    return { isFree: true, isPaid: false };
+  }
+  return { isFree: false, isPaid: true };
+}
+
+function detectCliRelated(name: string): boolean {
+  const cliModels = ["codex", "claude", "opencode", "gemini", "ollama"];
+  return cliModels.some(c => name.toLowerCase().includes(c));
+}
+
+function detectOpenCode(name: string): boolean {
+  return name.startsWith("opencode-") || name.includes("opencode");
+}
+
 export function getModelsDetail(): ModelsDetailData {
   const health = readJson<Record<string, unknown>>(MODEL_HEALTH_PATH);
   const cooldownsRaw = readJson<Record<string, { expiresAt?: number; startedAt?: number; reason?: string }>>(MODEL_COOLDOWNS_PATH) ?? {};
@@ -141,10 +184,13 @@ export function getModelsDetail(): ModelsDetailData {
   if (health && Array.isArray(health.models)) {
     for (const m of health.models as Array<Record<string, unknown>>) {
       const name = String(m.logicalName ?? "");
+      const provider = String(m.provider ?? "");
       const q = qualityModels[name];
+      const pricing = detectPricing(name);
+
       rawModels.push({
         logicalName: name,
-        provider: String(m.provider ?? ""),
+        provider,
         capability: String(m.capability ?? ""),
         available: Boolean(m.available),
         latency: typeof m.latency === "number" ? m.latency : null,
@@ -153,6 +199,14 @@ export function getModelsDetail(): ModelsDetailData {
         qualityStatus: (q?.status as ModelEntry["qualityStatus"]) ?? "unknown",
         recentFailures: q?.recentFailures?.length ?? 0,
         consecutiveGarbage: q?.consecutiveGarbage ?? 0,
+        isFree: pricing.isFree,
+        isPaid: pricing.isPaid,
+        isOpenCode: detectOpenCode(name),
+        isCli: detectCliRelated(name),
+        providerType: detectProviderType(name, provider),
+        contextWindow: typeof m.params === "number" && m.params >= 1000 ? m.params * 1000 : null,
+        params: typeof m.params === "number" ? m.params : null,
+        resolvedModel: typeof m.resolvedModel === "string" ? m.resolvedModel : null,
       });
     }
   }

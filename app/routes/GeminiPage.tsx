@@ -8,6 +8,8 @@ import {
 import { AgentDiscoveryStrip } from "../components/AgentDiscoveryStrip";
 import { AgentComposer } from "../components/AgentComposer";
 import { AgentVaultLogButton } from "../components/AgentVaultLogButton";
+import { AgentBuilderHandoffButton } from "../components/AgentBuilderHandoffButton";
+import { TranscriptControls, type ActionFilter, type TranscriptMode } from "../components/TranscriptControls";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 import { authFetch } from "../lib/authFetch";
 
@@ -140,6 +142,8 @@ export function GeminiPage() {
     { name: "gemini-1.5-flash", label: "gemini-1.5-flash" },
     { name: "gemini-1.5-pro", label: "gemini-1.5-pro" },
   ]);
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("all");
+  const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -387,6 +391,16 @@ export function GeminiPage() {
           <ChevronDown size={12} style={{ opacity: 0.3 }} />
         </span>
         {active && (
+          <AgentBuilderHandoffButton
+            agent="gemini"
+            sessionId={active.id}
+            title={active.title}
+            directory={active.directory}
+            messageCount={active.messages.length}
+            messages={sessionEndMessages}
+          />
+        )}
+        {active && (
           <AgentVaultLogButton
             agent="gemini"
             sessionId={active.id}
@@ -447,6 +461,15 @@ export function GeminiPage() {
 
       <main className="oc-main">
         <AgentDiscoveryStrip agent="gemini" onInsert={(t) => setInput((prev) => prev + t)} />
+        {active && (
+          <TranscriptControls
+            mode={transcriptMode}
+            actionFilter={actionFilter}
+            counts={{ messages: active.messages.length, actions: 0, thoughts: 0, errored: active.messages.filter((m) => m.role === "system").length, edits: 0, deletes: 0 }}
+            onModeChange={setTranscriptMode}
+            onActionFilterChange={setActionFilter}
+          />
+        )}
         {!active ? (
           <div className="oc-empty">
             <FileText size={32} strokeWidth={1.25} />
@@ -465,12 +488,14 @@ export function GeminiPage() {
               const isUser = m.role === "user";
               const isSystem = m.role === "system";
               if (isUser) {
+                if (transcriptMode === "actions") return null;
                 return (
                   <div key={m.id} className="msg-wrap">
                     <div className="msg-user"><div className="msg-user-bubble">{m.content}</div></div>
                   </div>
                 );
               }
+              if (transcriptMode === "actions" && isSystem) return null;
               return (
                 <div key={m.id} className="msg-wrap">
                   <div className="msg-assistant">

@@ -17,25 +17,36 @@ export function useApi<T>(path: string, intervalMs = 30_000): ApiResult<T> {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    let currentData: T | null = null;
 
-    fetch(path)
-      .then((r) => r.json())
-      .then((json: { data: T }) => {
-        if (!cancelled) {
-          setData(json.data);
-          setError(null);
-          setLoading(false);
-        }
-      })
-      .catch((e: unknown) => {
+    function setDataIfChanged(newData: T) {
+      const isSame = currentData !== null &&
+        JSON.stringify(currentData) === JSON.stringify(newData);
+      if (!isSame) {
+        currentData = newData;
+        setData(newData);
+      }
+      setError(null);
+      setLoading(false);
+    }
+
+    async function fetchData() {
+      try {
+        const r = await fetch(path);
+        const json = await r.json() as { data: T };
+        if (!cancelled) setDataIfChanged(json.data);
+      } catch (e: unknown) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e));
           setLoading(false);
         }
-      });
+      }
+    }
 
-    const timer = setInterval(refresh, intervalMs);
+    setLoading(true);
+    fetchData();
+
+    const timer = setInterval(fetchData, intervalMs);
     return () => { cancelled = true; clearInterval(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, intervalMs, tick]);

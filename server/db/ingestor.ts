@@ -20,13 +20,18 @@ export function startIngestor(options: { intervalMs?: number } = {}): IngestorCo
 
   const intervalMs = options.intervalMs ?? (Number(process.env.DASHBOARD_INGESTOR_INTERVAL_MS) || 30_000);
   let stopped = false;
+  let inFlight = false;
 
   async function tick(): Promise<void> {
+    if (inFlight) return;
+    inFlight = true;
     try {
       const { data } = await buildHomeDataImpl();
       runHomeSampler(data);
     } catch (err) {
       console.error("[ingestor] tick failed", err);
+    } finally {
+      inFlight = false;
     }
   }
 

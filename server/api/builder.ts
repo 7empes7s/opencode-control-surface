@@ -9,6 +9,7 @@ import {
 } from "../builder/discovery.ts";
 import {
   createBuilderWorkflow,
+  deleteBuilderWorkflow,
   readBuilderArtifacts,
   readBuilderDoctorReports,
   readBuilderPasses,
@@ -81,6 +82,7 @@ export type BuilderRunsResponse = {
 
 export type BuilderRunResponse = {
   run: BuilderRun | null;
+  workflow?: BuilderWorkflow | null;
   passes: BuilderPass[];
   artifacts: BuilderArtifact[];
   validations: BuilderValidation[];
@@ -104,6 +106,29 @@ export function builderDiscoverHandler(url: URL): Response {
   const discovered = discoverBuilderProject(root);
   if (discovered.ok === false) return apiError(discovered.error);
   return json<BuilderDiscovery>(ok(discovered.data, { builder: "ok" }));
+}
+
+export function builderArtifactContentHandler(url: URL): Response {
+  const reason = dbUnavailable();
+  if (reason) return apiError(reason, 503);
+  const runId = url.searchParams.get("runId");
+  const kind = url.searchParams.get("kind");
+  const passSeq = url.searchParams.get("pass");
+  if (!runId || !kind) return apiError("runId and kind are required");
+  const runDir = `/var/lib/control-surface/builder-runs/${runId}`;
+  const filename = passSeq ? `pass-${passSeq}-${kind}.log` : `pass-1-${kind}.log`;
+  const path = `${runDir}/${filename}`;
+  try {
+    const { readFileSync, existsSync } = require("node:fs") as typeof import("node:fs");
+    if (!existsSync(path)) return apiError("log not found", 404);
+    const content = readFileSync(path, "utf8");
+    return new Response(content, {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (err) {
+    return apiError(errorMessage(err), 500);
+  }
 }
 
 export function builderModelsHandler(): Response {
@@ -139,14 +164,32 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
     pausedReason: body.pausedReason ?? null,
     config: {
       projectRoot: String(body.projectRoot ?? body.config?.projectRoot ?? ""),
-      agentOrder: Array.isArray(body.config?.agentOrder) ? body.config.agentOrder : ["codex", "claude", "opencode"],
+      agentOrder: Array.isArray(body.config?.agentOrder) ? body.config.agentOrder : ["opencode", "gemini", "codex", "claude"],
       modelPolicy: {
         planner: body.config?.modelPolicy?.planner,
         builder: body.config?.modelPolicy?.builder,
         reviewer: body.config?.modelPolicy?.reviewer,
         fallbackTargets: Array.isArray(body.config?.modelPolicy?.fallbackTargets)
           ? body.config.modelPolicy.fallbackTargets
-          : [],
+          : [
+              "opencode-go/minimax-m2.7",
+              "opencode-go/kimi-k2.6",
+              "opencode-go/kimi-k2.5",
+              "opencode-go/minimax-m2.5",
+              "opencode/minimax-m2.7",
+              "opencode/kimi-k2.6",
+              "opencode/kimi-k2.5",
+              "opencode/minimax-m2.5",
+              "opencode/minimax-m2.5-free",
+              "opencode-go/deepseek-v4-pro",
+              "opencode-go/qwen3.6-plus",
+              "alibaba/qwen-plus",
+              "groq-llama4-scout",
+              "groq-llama70b",
+              "openrouter-nemotron-120b-free",
+              "openrouter-gemma4-31b-free",
+              "openrouter-qwen3-80b-free",
+            ],
       },
       validationProfile: {
         commands: Array.isArray(validationProfile.commands) ? validationProfile.commands : [],
@@ -171,8 +214,44 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
         maxPasses: Number.isFinite(body.config?.riskPolicy?.maxPasses)
           ? Number(body.config?.riskPolicy?.maxPasses)
           : 1,
+        passTimeoutSeconds: Number.isFinite(body.config?.riskPolicy?.passTimeoutSeconds)
+          ? Number(body.config?.riskPolicy?.passTimeoutSeconds)
+          : undefined,
       },
+      geminiApprovalMode: ["default", "auto_edit", "plan", "yolo"].includes(body.config?.geminiApprovalMode as string)
+        ? (body.config?.geminiApprovalMode as "default" | "auto_edit" | "plan" | "yolo")
+        : "auto_edit",
+      effortLevel: ["low", "medium", "high"].includes(body.config?.effortLevel as string)
+        ? (body.config?.effortLevel as "low" | "medium" | "high")
+        : "medium",
+      sourceSession: parseSourceSession(body.config?.sourceSession),
     },
+  };
+}
+
+function parseSourceSession(value: unknown): BuilderWorkflowInput["config"]["sourceSession"] {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const agent = typeof raw.agent === "string" ? raw.agent : "";
+  if (!["claude", "codex", "opencode", "gemini"].includes(agent)) return undefined;
+  const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
+  if (!sessionId) return undefined;
+  return {
+    agent: agent as "claude" | "codex" | "opencode" | "gemini",
+    sessionId,
+    title: typeof raw.title === "string" ? raw.title.slice(0, 240) : undefined,
+    directory: typeof raw.directory === "string" ? raw.directory.slice(0, 500) : undefined,
+    messageCount: Number.isFinite(raw.messageCount) ? Number(raw.messageCount) : undefined,
+    capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt.slice(0, 80) : undefined,
+    transcriptSummary: typeof raw.transcriptSummary === "string" ? raw.transcriptSummary.slice(0, 1000) : undefined,
+    latestUserPrompt: typeof raw.latestUserPrompt === "string" ? raw.latestUserPrompt.slice(0, 1000) : undefined,
+    touchedFiles: Array.isArray(raw.touchedFiles)
+      ? raw.touchedFiles
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim().slice(0, 500))
+          .filter(Boolean)
+          .slice(0, 40)
+      : undefined,
   };
 }
 
@@ -290,6 +369,37 @@ export async function builderUpdateWorkflowHandler(req: Request, id: string): Pr
   }
 }
 
+export async function builderDeleteWorkflowHandler(id: string): Promise<Response> {
+  try {
+    const workflow = readBuilderWorkflow(id);
+    if (!workflow) return apiError("not found", 404);
+
+    deleteBuilderWorkflow(id);
+    writeActionAudit({
+      actionKind: "builder.workflow.delete",
+      actionId: `builder-workflow:delete:${id}`,
+      targetType: "builder-workflow",
+      targetId: id,
+      risk: "medium",
+      result: `deleted ${workflow.name}`,
+      resultStatus: "success",
+      evidence: [{ label: "Builder workflow", kind: "db", ref: `builder_workflows:${id}` }],
+      rollbackHint: "Cannot undo - workflow and its runs are permanently deleted.",
+    });
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    writeActionAudit({
+      actionKind: "builder.workflow.delete",
+      targetType: "builder-workflow",
+      targetId: id,
+      risk: "medium",
+      resultStatus: "failed",
+      error: errorMessage(error),
+    });
+    return apiError(errorMessage(error), 400);
+  }
+}
+
 export function builderRunsHandler(url: URL): Response {
   const reason = dbUnavailable();
   if (reason) {
@@ -307,6 +417,7 @@ export function builderRunHandler(id: string): Response {
   if (reason) {
     return json(ok<BuilderRunResponse>({
       run: null,
+      workflow: null,
       passes: [],
       artifacts: [],
       validations: [],
@@ -319,6 +430,7 @@ export function builderRunHandler(id: string): Response {
   if (!run) return apiError("not found", 404);
   return json(ok<BuilderRunResponse>({
     run,
+    workflow: readBuilderWorkflow(run.workflowId),
     passes: readBuilderPasses(id),
     artifacts: readBuilderArtifacts(id),
     validations: readBuilderValidations(id),

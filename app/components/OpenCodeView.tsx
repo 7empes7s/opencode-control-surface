@@ -10,6 +10,7 @@ import { PartView } from "./PartView";
 import { AgentDiscoveryStrip } from "./AgentDiscoveryStrip";
 import { AgentComposer } from "./AgentComposer";
 import { AgentVaultLogButton } from "./AgentVaultLogButton";
+import { AgentBuilderHandoffButton } from "./AgentBuilderHandoffButton";
 import { TranscriptControls, type ActionFilter, type TranscriptMode } from "./TranscriptControls";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 
@@ -411,6 +412,16 @@ export function OpenCodeView() {
           <span className="oc-model-label">{modelLabel}</span>
           <ChevronDown size={12} />
         </button>
+        {activeSession && (
+          <AgentBuilderHandoffButton
+            agent="opencode"
+            sessionId={activeSession.id}
+            title={activeSession.title || activeSession.slug || "OpenCode session"}
+            directory={activeSession.directory}
+            messageCount={messageOrder.length}
+            messages={sessionEndMessages}
+          />
+        )}
         {activeSession && (
           <AgentVaultLogButton
             agent="opencode"

@@ -181,7 +181,7 @@ export function AutopipelinePage() {
                   <tr key={item.id}>
                     <td className="mono trunc">{item.slug ?? item.id}</td>
                     <td className="mono">{item.stage}</td>
-                    <td><div style={{ display: "flex", gap: 4 }}>
+                    <td><div style={{ display: "flex", gap: 4 }} className="queue-actions">
                         {item.stage === "publish" && item.waitingApproval && (
                           <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>
                         )}

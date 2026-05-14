@@ -22,6 +22,7 @@ import {
   Monitor,
   LayoutDashboard,
   Hammer,
+  Menu,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -51,6 +52,7 @@ const NAV: NavItem[] = [
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },
   { href: "/claude", label: "Claude Code", icon: Sparkles },
+  { href: "/gemini", label: "Gemini", icon: Sparkles },
 ];
 
 const PRIMARY_NAV: NavItem[] = [
@@ -119,10 +121,11 @@ function StackPill() {
 
 export function DashSidebar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [topnavExpanded, setTopnavExpanded] = useState(false);
   const [location] = useLocation();
   const { theme, setTheme, variant, setVariant } = usePreferences();
 
-  useEffect(() => { setDrawerOpen(false); }, [location]);
+  useEffect(() => { setDrawerOpen(false); setTopnavExpanded(false); }, [location]);
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -147,8 +150,8 @@ export function DashSidebar() {
           <span className="rail-brand-sub">Control</span>
         </div>
 
-        <nav className="topnav-links" aria-label="Main navigation">
-          {NAV.map(({ href, label, icon: Icon, match }) => {
+<nav className="topnav-links" aria-label="Main navigation">
+          {PRIMARY_NAV.map(({ href, label, icon: Icon, match }) => {
             const active = match ? match(location) : location.startsWith(href);
             return (
               <Link key={href} href={href} className={`topnav-link${active ? " active" : ""}`}>
@@ -159,8 +162,36 @@ export function DashSidebar() {
           })}
         </nav>
 
+        {topnavExpanded && (
+          <div className="topnav-links-expanded open" role="navigation" aria-label="All pages">
+            {NAV.map(({ href, label, icon: Icon, match }) => {
+              const active = match ? match(location) : location.startsWith(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`topnav-link${active ? " active" : ""}`}
+                  onClick={() => setTopnavExpanded(false)}
+                >
+                  <Icon size={15} strokeWidth={1.75} />
+                  <span>{label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
         <div className="topnav-right">
           <StackPill />
+          <button
+            type="button"
+            className="topnav-hamburger"
+            aria-label="Open navigation menu"
+            aria-expanded={topnavExpanded}
+            onClick={() => setTopnavExpanded((v) => !v)}
+          >
+            <Menu size={15} strokeWidth={1.75} />
+          </button>
           <div className="topnav-toggle-group" title="Theme">
             <button
               className={`topnav-mode-btn${theme === "dark" ? " active" : ""}`}

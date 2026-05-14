@@ -4,6 +4,8 @@ import { normalizeWorkspace } from "./api/workspaces.ts";
 import { initDashboardDb } from "./db/dashboard.ts";
 import { startIngestor } from "./db/ingestor.ts";
 import { startBuilderReconciler } from "./builder/runner.ts";
+import { createWorkflow, getWorkflow, listWorkflows, updateWorkflow, deleteWorkflow } from "./db/workflows.js";
+import { readFileSync } from "fs";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const PORT = parseInt(process.env.PORT || "3000");
@@ -30,13 +32,18 @@ function mimeFor(pathname: string): string {
 }
 
 async function serveStatic(pathname: string): Promise<Response> {
-  // Try exact path, then /index.html for SPA fallback
-  const candidates =
-    pathname === "/" || !pathname.includes(".")
-      ? ["/index.html"]
-      : [pathname, "/index.html"];
+  // Client-side routes should always receive the SPA shell.
+  if (pathname === "/" || !pathname.includes(".")) {
+    try {
+      return new Response(readFileSync(`${DIST_PATH}/index.html`), {
+        headers: { "Content-Type": mimeFor("/index.html") },
+      });
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+  }
 
-  for (const candidate of candidates) {
+  for (const candidate of [pathname, "/index.html"]) {
     const file = Bun.file(`${DIST_PATH}${candidate}`);
     if (await file.exists()) {
       return new Response(file, {
@@ -146,6 +153,49 @@ const server = Bun.serve({
       });
     }
 
+    if (pathname === "/api/workflows") {
+      if (req.method === "POST") {
+        const body = await req.json();
+        const wf = createWorkflow({ model: body.model, input: body.input });
+        return Response.json(wf, { status: 201 });
+      }
+      if (req.method === "GET") {
+        const limit = Number(new URL(req.url).searchParams.get("limit")) || 50;
+        const offset = Number(new URL(req.url).searchParams.get("offset")) || 0;
+        return Response.json(listWorkflows(limit, offset));
+      }
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    if (pathname.startsWith("/api/workflows/")) {
+      const id = pathname.split("/")[3];
+      if (!id) return new Response("Not found", { status: 404 });
+      if (req.method === "GET") {
+        const wf = getWorkflow(id);
+        if (!wf) return new Response("Not found", { status: 404 });
+        return Response.json(wf);
+      }
+      if (req.method === "PUT") {
+        const urlObj = new URL(req.url);
+        if (urlObj.pathname.endsWith("/rerun")) {
+          const wf = getWorkflow(id);
+          if (!wf) return new Response("Not found", { status: 404 });
+          updateWorkflow(id, { status: "pending", attempts: wf.attempts + 1 });
+          return Response.json({ ok: true, id });
+        }
+      }
+      if (req.method === "DELETE") {
+        deleteWorkflow(id);
+        return Response.json({ ok: true });
+      }
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    if (pathname === "/api/models") {
+      // Let the router handle this for proper formatting
+      return handleApi(req, url);
+    }
+
     if (pathname.startsWith("/api/")) {
       return handleApi(req, url);
     }
@@ -158,6 +208,15 @@ const server = Bun.serve({
         });
       }
       return proxyOpenCode(req, pathname, search);
+    }
+
+    if (pathname === "/models") {
+      const file = Bun.file("public/models.html");
+      if (await file.exists()) {
+        return new Response(file, {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
     }
 
     return serveStatic(pathname);

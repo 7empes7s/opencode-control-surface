@@ -223,6 +223,14 @@ export interface ModelsDetail {
     qualityStatus: string;
     recentFailures: number;
     consecutiveGarbage: number;
+    isFree: boolean;
+    isPaid: boolean;
+    isOpenCode: boolean;
+    isCli: boolean;
+    providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "other";
+    contextWindow: number | null;
+    params: number | null;
+    resolvedModel: string | null;
   }[];
   cooldowns: { model: string; startedAt: number | null; expiresAt: number; reason?: string }[];
   fallbacks: Record<string, string[]>;

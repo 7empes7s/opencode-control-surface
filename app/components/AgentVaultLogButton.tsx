@@ -3,7 +3,7 @@ import { BookOpen } from "lucide-react";
 import { AgentVaultLogModal, type VaultLogDraft } from "./AgentVaultLogModal";
 import { authFetch } from "../lib/authFetch";
 
-type AgentId = "claude" | "codex" | "opencode";
+type AgentId = "claude" | "codex" | "opencode" | "gemini";
 
 export function AgentVaultLogButton({
   agent,

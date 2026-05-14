@@ -1,14 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { relative, resolve, sep } from "node:path";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { redactForDashboard } from "../db/writer.ts";
 import { getBuilderProjects, type BuilderProject } from "./discovery.ts";
 import { isProjectRootAllowlisted } from "./provision.ts";
 
-export type BuilderWorkflowMode = "once" | "auto-continue" | "scheduled" | "permanent" | "doctor";
+export type BuilderWorkflowMode = "once" | "auto-continue" | "scheduled" | "permanent" | "doctor" | "plan";
 export type BuilderWorkflowStatus = "draft" | "ready" | "running" | "paused" | "blocked" | "done" | "failed" | "canceled";
 export type BuilderRunStatus = "queued" | "running" | "blocked" | "success" | "failed" | "canceled";
 export type BuilderPassStatus = "queued" | "running" | "success" | "failed" | "blocked" | "canceled";
+
+export type BuilderAgentEntry = {
+  raw: string;
+  agent: string;
+  model?: string;
+  effort?: string;
+};
+
+export function parseAgentEntry(entry: string): BuilderAgentEntry {
+  const parts = entry.split(":");
+  const agent = parts[0]?.trim() ?? entry;
+  const model = parts[1]?.trim() || undefined;
+  const effort = parts[2]?.trim() || undefined;
+  return { raw: entry, agent, model, effort };
+}
 
 export type BuilderWorkflowConfig = {
   projectRoot: string;
@@ -47,6 +63,20 @@ export type BuilderWorkflowConfig = {
   riskPolicy: {
     liveDeploys: "disabled" | "manual-approval";
     maxPasses: number;
+    passTimeoutSeconds?: number;
+  };
+  geminiApprovalMode?: "default" | "auto_edit" | "plan" | "yolo";
+  effortLevel?: "low" | "medium" | "high";
+  sourceSession?: {
+    agent: "claude" | "codex" | "opencode" | "gemini";
+    sessionId: string;
+    title?: string;
+    directory?: string;
+    messageCount?: number;
+    capturedAt?: string;
+    transcriptSummary?: string;
+    latestUserPrompt?: string;
+    touchedFiles?: string[];
   };
 };
 
@@ -141,7 +171,7 @@ export type BuilderValidation = {
   error: string | null;
 };
 
-const MODES: BuilderWorkflowMode[] = ["once", "auto-continue", "scheduled", "permanent", "doctor"];
+const MODES: BuilderWorkflowMode[] = ["once", "auto-continue", "scheduled", "permanent", "doctor", "plan"];
 const DRAFT_STATUSES: Array<BuilderWorkflowInput["status"]> = ["draft", "ready"];
 
 function stringifyJson(value: unknown): string {
@@ -165,6 +195,18 @@ function getAllowedProject(root: string): BuilderProject | null {
   return getBuilderProjects().find((project) => project.root === root) ?? null;
 }
 
+function isWithin(candidate: string, root: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+function isPlanModePlanPathAllowed(input: BuilderWorkflowInput): boolean {
+  if (!input.planFile.endsWith(".md")) return false;
+  const planPath = resolve(input.planFile);
+  const projectRoot = resolve(input.projectRoot);
+  return isWithin(planPath, projectRoot) || isWithin(planPath, "/root");
+}
+
 function requireDb() {
   if (!isDashboardDbEnabled()) {
     throw new Error("DASHBOARD_DB disabled");
@@ -183,10 +225,15 @@ function validateWorkflowInput(input: BuilderWorkflowInput): void {
   if (!MODES.includes(input.mode)) throw new Error("invalid workflow mode");
   if (!DRAFT_STATUSES.includes(input.status)) throw new Error("invalid draft workflow status");
   if (!getAllowedProject(input.projectRoot)) throw new Error("project root is not allowlisted");
-  if (!input.planFile || !existsSync(input.planFile)) throw new Error("PLAN_FILE_NOT_FOUND");
+  if (!input.planFile) throw new Error("PLAN_FILE_NOT_FOUND");
+  if (!existsSync(input.planFile) && !(input.mode === "plan" && isPlanModePlanPathAllowed(input))) {
+    throw new Error("PLAN_FILE_NOT_FOUND");
+  }
   const hasCommands = input.config.validationProfile.commands.length > 0;
   const hasInternal = input.config.validationProfile.internal.length > 0;
-  if (!hasCommands && !hasInternal) throw new Error("at least one validation command required (internal or commands field)");
+  if (input.mode !== "plan" && !hasCommands && !hasInternal) {
+    throw new Error("at least one validation command required (internal or commands field)");
+  }
 }
 
 function upsertBuilderProject(project: BuilderProject): string {
@@ -235,6 +282,7 @@ function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
     gitPolicy: { commit: "manual", push: "never" },
     backupPolicy: { enabled: false, beforeRun: false },
     riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+    geminiApprovalMode: "auto_edit",
   });
   return {
     id: row.id,
@@ -730,6 +778,7 @@ export function provisionProject(input: {
     gitPolicy: input.gitPolicy,
     backupPolicy: { enabled: true, beforeRun: true },
     riskPolicy: { liveDeploys: "disabled" as const, maxPasses: 1 },
+    geminiApprovalMode: "auto_edit",
   };
 
   db.query(`
@@ -759,4 +808,18 @@ export function provisionProject(input: {
     provisioned: scaffoldResult.provisioned,
     warnings: scaffoldResult.warnings,
   };
+}
+
+export function deleteBuilderWorkflow(id: string): boolean {
+  const db = requireDb();
+  const existing = readBuilderWorkflow(id);
+  if (!existing) return false;
+
+  if (existing.status === "running") {
+    throw new Error("cannot delete workflow while running");
+  }
+
+  db.query(`DELETE FROM builder_runs WHERE workflow_id = ?`).run(id);
+  db.query(`DELETE FROM builder_workflows WHERE id = ?`).run(id);
+  return true;
 }

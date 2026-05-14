@@ -16,6 +16,13 @@ function qualityColor(s: string): string {
   return "gray";
 }
 
+function fmtContextWindow(ctx: number | null): string {
+  if (!ctx) return "—";
+  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(0)}M`;
+  if (ctx >= 1000) return `${(ctx / 1000).toFixed(0)}K`;
+  return String(ctx);
+}
+
 type Modal =
   | { type: "block"; model: string }
   | { type: "unblock"; model: string }
@@ -128,9 +135,27 @@ export function ModelsPage() {
         right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.models.length} total</span>}
       >
         <div className="section-card-body table-wrap">
-          <table className="data-table">
+          <table className="data-table models-table">
+            <colgroup>
+              <col className="name-col" />
+              <col className="cap-col" />
+              <col className="quality-col" />
+              <col className="actions-col" />
+              <col className="price-col" />
+              <col className="type-col" />
+              <col className="cli-col" />
+              <col className="provider-col" />
+              <col className="ctx-col" />
+              <col className="rating-col" />
+              <col className="latency-col" />
+              <col className="json-col" />
+              <col className="fails-col" />
+            </colgroup>
             <thead><tr>
-              <th>logical name</th><th>cap</th><th>quality</th><th></th><th className="models-col-provider">provider</th><th className="models-col-latency">latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
+              <th>logical name</th><th>cap</th><th>quality</th><th></th>
+              <th>pricing</th><th>type</th><th>CLI</th>
+              <th className="models-col-provider">provider</th>
+              <th>ctx</th><th>rating</th><th>latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
             </tr></thead>
             <tbody>
               {d.models.map((m) => (
@@ -138,7 +163,7 @@ export function ModelsPage() {
                   <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
                   <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
                   <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                  <td style={{ display: "flex", gap: 4 }}>
+                  <td style={{ display: "flex", gap: 4 }} className="actions-col">
                     {m.qualityStatus === "blocked" ? (
                       <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
                     ) : m.qualityStatus === "probation" ? (
@@ -150,10 +175,21 @@ export function ModelsPage() {
                       <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
                     )}
                   </td>
+                  <td>
+                    {m.isFree && <Pill color="green">free</Pill>}
+                    {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
+                    {m.isOpenCode && <span className="text-xs" style={{ marginLeft: 4 }} title="OpenCode native">🔷</span>}
+                  </td>
+                  <td><Pill>{m.providerType}</Pill></td>
+                  <td>{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
                   <td className="dim mono models-col-provider">{m.provider}</td>
+                  <td className="mono dim">{fmtContextWindow(m.contextWindow)}</td>
+                  <td className="mono dim">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
                   <td className="mono dim models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
                   <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
-                  <td className="mono dim models-col-failures">{m.recentFailures}</td>
+                  <td className="mono dim models-col-failures">
+                    {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
+                  </td>
                 </tr>
               ))}
             </tbody>

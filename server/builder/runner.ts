@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
@@ -12,6 +12,7 @@ import {
   readBuilderValidations,
   readBuilderPasses,
   readBuilderArtifacts,
+  parseAgentEntry,
   type BuilderRun,
   type BuilderWorkflow,
 } from "./store.ts";
@@ -425,10 +426,16 @@ async function startNextPass(
   run: BuilderRun,
   nextSequence: number,
 ): Promise<void> {
-  const agent = workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex";
+  const entry = parseAgentEntry(workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex");
+  const agent = entry.agent;
+  const isCliAgent = ["codex", "claude", "gemini"].includes(agent);
+  const embeddedModel = entry.model;
+  const embeddedEffort = entry.effort;
 
   const role: ModelRole = nextSequence === 1 ? "planner" : nextSequence === 2 ? "builder" : "reviewer";
-  const selection = selectModelForRole(role, workflow.config, agent);
+  const selection = isCliAgent && embeddedModel
+    ? { model: embeddedModel, provider: agent, reason: `embedded:${agent}:${embeddedModel}`, role, capability: null, qualityStatus: "healthy" as const }
+    : selectModelForRole(role, workflow.config, agent);
   const { model, provider, reason: modelReason } = selection;
 
   const phase = nextSequence === 1 ? "plan" : nextSequence === 2 ? "implement" : "review";
@@ -454,7 +461,7 @@ async function startNextPass(
 
   // Build continuation context
   const continuationContext = buildContinuationContext(workflow, run, nextSequence);
-  const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext);
+  const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext, embeddedEffort);
 
   const jobId = `job_${randomUUID()}`;
   createJob({
@@ -466,7 +473,7 @@ async function startNextPass(
     targetType: "builder-run",
     targetId: run.id,
     command: scriptPath,
-    request: { workflowId: workflow.id, runId: run.id, passId, agent, model, continuation: true },
+    request: { workflowId: workflow.id, runId: run.id, passId, agent, model, effort: embeddedEffort, continuation: true },
     evidence: { planFile: workflow.planFile, projectRoot: workflow.projectRoot, passNumber: nextSequence },
   });
 
@@ -741,14 +748,37 @@ function releaseProjectLock(projectRoot: string): void {
 
 function buildCodexPrompt(workflow: BuilderWorkflow, continuationContext?: string): string {
   const { planFile, projectRoot } = workflow;
-  let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.`;
+  const orchestrationRules = `
+=== SUB-AGENT ORCHESTRATION CONTRACT ===
+You are a Builder pass supervisor. You may dispatch child agent tasks, but ONLY through the provided helper functions in this shell environment:
+
+1. builder_spawn_child <agent> <model> <task-description> — dispatches a single task to a child agent and returns its PID. Available agents: opencode, codex, claude, gemini. The model must be a valid ID (e.g. opencode-go/kimi-k2.6, codex:o4-mini).
+2. builder_child_status <pid> — returns RUNNING, DONE, FAILED, or TIMEOUT.
+3. builder_child_wait <pid> [timeout-seconds] — blocks until the child finishes or the timeout expires. Default timeout is 300s.
+4. builder_child_output <pid> — prints the child's stdout+stderr tail (last 200 lines).
+5. builder_child_kill <pid> — sends SIGTERM to a hung child.
+
+RULES:
+- Maximum 3 concurrent children per pass. Excess spawn calls are rejected.
+- Each child gets a fresh tmux session but shares the project directory.
+- Children inherit the current git state but MUST NOT commit or push.
+- If a child fails, you may retry ONCE with a different model/agent before giving up.
+- Always record the child PID and final status in the pass log.
+- Context handoff: write a brief context file at $BUILDER_DIR/child-context.txt before spawning children.
+- DO NOT use raw opencode/claude/codex/gemini commands directly — use builder_spawn_child.
+===========================`;
+  let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.${orchestrationRules}`;
   if (workflow.mode === "plan") {
-    base = `Research the project at ${projectRoot}, dynamically inspect existing plan files, AGENTS.md, README files, package metadata, and current git state, then create or update the plan file at ${planFile}. Do not implement product code in this pass. The output plan must include current facts, open gaps, proposed phases, validation commands, and the next manual test path. If ${planFile} does not exist, create it.`;
+    base = `Research the project at ${projectRoot}, dynamically inspect existing plan files, AGENTS.md, README files, package metadata, and current git state, then create or update the plan file at ${planFile}. Do not implement product code in this pass. The output plan must include current facts, open gaps, proposed phases, validation commands, and the next manual test path. If ${planFile} does not exist, create it.${orchestrationRules}`;
   }
   if (continuationContext) {
     base = `${continuationContext}\n\n${base}`;
   }
   return base;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function writePassScript(
@@ -758,29 +788,33 @@ function writePassScript(
   model: string | null,
   passNumber = 1,
   continuationContext?: string,
+  effort?: string,
 ): string {
   ensureRunsDir();
   const dir = runDir(runId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   const scriptPath = join(dir, `pass-${passNumber}.sh`);
-  const prompt = buildCodexPrompt(workflow, continuationContext);
+  let prompt = buildCodexPrompt(workflow, continuationContext);
+  if (effort) {
+    prompt = `[[Effort level: ${effort.toUpperCase()}]]\n${prompt}`;
+  }
 
-  let stdoutLog = `pass-${passNumber}-stdout.log`;
+  const stdoutLog = `pass-${passNumber}-stdout.log`;
+  const promptFile = `pass-${passNumber}-prompt.txt`;
   let command: string;
   if (agent === "codex") {
-    const modelFlag = model ? `--model ${model} ` : "";
-    command = `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never ${modelFlag}-o "${dir}/codex-output.txt" -C "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+    const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
+    command = `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never${modelFlag} -o "$BUILDER_DIR/codex-output.txt" -C "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "claude") {
-    command = `claude --permission-mode dontAsk -d "${workflow.projectRoot}" "${prompt.replace(/"/g, '\\"')}"`;
+    command = `claude --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "opencode") {
-    const modelFlag = model ? `--model ${model} ` : "";
-    command = `opencode run --dir "${workflow.projectRoot}" --dangerously-skip-permissions ${modelFlag}"${prompt.replace(/"/g, '\\"')}"`;
+    const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
+    command = `opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions${modelFlag} "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "gemini") {
-    const modelFlag = model ? `--model ${model} ` : "";
+    const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
     const approvalMode = (workflow.config as { geminiApprovalMode?: string }).geminiApprovalMode ?? "auto_edit";
-    const escapedPrompt = prompt.replace(/"/g, '\\"');
-    command = `printf '%s' "${escapedPrompt}" | gemini --skip-trust --approval-mode ${approvalMode} ${modelFlag}--prompt -`;
+    command = `gemini --skip-trust --approval-mode ${shellQuote(approvalMode)}${modelFlag} --prompt - < "$BUILDER_PROMPT_FILE"`;
   } else {
     command = `echo "Unsupported builder agent: ${agent}"`;
   }
@@ -795,18 +829,192 @@ echo "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/
 `
     : "";
 
+  const PASS_TIMEOUT_SECONDS = workflow.config.riskPolicy?.passTimeoutSeconds ?? 900;
+  const timedCommand = `timeout ${PASS_TIMEOUT_SECONDS}s bash -lc ${shellQuote(command)}`;
+
+  function buildChildHelpersScript(): string {
+    const projectRoot = workflow.projectRoot.replace(/"/g, '\\"');
+    return [
+      "# ── Sub-agent orchestration helpers ─────────────────────────────────────────",
+      'builder_child_id_for_pid() {',
+      '  local child_pid="$1"',
+      '  for pid_file in "$BUILDER_DIR"/children/*/pid; do',
+      '    [ -f "$pid_file" ] || continue',
+      '    if [ "$(cat "$pid_file" 2>/dev/null)" = "$child_pid" ]; then',
+      '      basename "$(dirname "$pid_file")"',
+      '      return 0',
+      '    fi',
+      '  done',
+      '  return 1',
+      '}',
+      "builder_spawn_child() {",
+      '  if [ "$#" -lt 3 ]; then',
+      '    echo "ERROR: usage builder_spawn_child <agent> <model> <task-description>" >&2',
+      '    return 1',
+      '  fi',
+      '  local child_agent="$1" child_model="$2"',
+      '  shift 2',
+      '  local child_task="$*"',
+      '  if [ ! -s "$BUILDER_DIR/child-context.txt" ]; then',
+      '    echo "ERROR: write $BUILDER_DIR/child-context.txt before spawning children" >&2',
+      '    return 1',
+      '  fi',
+      '  local active_children=0',
+      '  active_children=$(tmux list-sessions -F \'#{session_name}\' 2>/dev/null | grep -c "^builder-child-${RUN_ID}_" || true)',
+      '  if [ "$active_children" -ge 3 ]; then',
+      '    echo "ERROR: max 3 concurrent children allowed" >&2; return 1',
+      '  fi',
+      '  local child_id="${RUN_ID}_$(date +%s)_$(openssl rand -hex 4 2>/dev/null || head -c8 /dev/urandom | xxd -p)"',
+      '  local child_dir="$BUILDER_DIR/children/$child_id"',
+      '  mkdir -p "$child_dir"',
+      '  printf "%s\\n\\n=== Child Task ===\\n%s\\n" "$(cat "$BUILDER_DIR/child-context.txt")" "$child_task" > "$child_dir/task.txt"',
+      '  local child_script="$child_dir/run.sh"',
+      '  cat > "$child_script" << \'CHILD_EOF\'',
+      '#!/bin/bash',
+      'set -uo pipefail',
+      'run_child() {',
+      '  local task',
+      '  task="$(cat "$BUILDER_CHILD_DIR/task.txt")"',
+      '  if [ "$BUILDER_CHILD_AGENT" = "opencode" ]; then',
+      '    opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions --model "$BUILDER_CHILD_MODEL" "$task"',
+      '  elif [ "$BUILDER_CHILD_AGENT" = "codex" ]; then',
+      '    codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never --model "$BUILDER_CHILD_MODEL" -o "$BUILDER_CHILD_DIR/output.txt" -C "$BUILDER_PROJECT_ROOT" "$task"',
+      '  elif [ "$BUILDER_CHILD_AGENT" = "claude" ]; then',
+      '    claude --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$task"',
+      '  elif [ "$BUILDER_CHILD_AGENT" = "gemini" ]; then',
+      '    printf "%s" "$task" | gemini --skip-trust --approval-mode auto_edit --model "$BUILDER_CHILD_MODEL" --prompt -',
+      '  else',
+      '    echo "ERROR: unknown agent $BUILDER_CHILD_AGENT" >&2',
+      '    return 2',
+      '  fi',
+      '}',
+      'run_child > "$BUILDER_CHILD_DIR/stdout.log" 2> "$BUILDER_CHILD_DIR/stderr.log"',
+      'code=$?',
+      'echo "$code" > "$BUILDER_CHILD_DIR/exit.code"',
+      'status="FAILED"',
+      '[ "$code" = "0" ] && status="DONE"',
+      '[ "$code" = "124" ] && status="TIMEOUT"',
+      'echo "$status" > "$BUILDER_CHILD_DIR/status"',
+      'echo "[builder-child] $BUILDER_CHILD_ID status=$status exit=$code finished_at=$(date -Iseconds)" >> "$BUILDER_CHILD_PASS_LOG"',
+      'CHILD_EOF',
+      '  chmod +x "$child_script"',
+      `  tmux new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
+      '  local child_pid=$(tmux list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
+      '  echo "$child_pid" > "$child_dir/pid"',
+      '  echo "{\\"id\\":\\"$child_id\\",\\"agent\\":\\"$child_agent\\",\\"model\\":\\"$child_model\\",\\"pid\\":\\"$child_pid\\",\\"spawnedAt\\":\\"$(date -Iseconds)\\"}" >> "$BUILDER_DIR/children-manifest.jsonl"',
+      '  echo "[builder-child] $child_id pid=$child_pid agent=$child_agent model=$child_model spawned_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
+      '  echo "$child_pid"',
+      '}',
+      'builder_child_status() {',
+      '  local child_pid="$1"',
+      '  local child_id',
+      '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
+      '  [ -z "$child_id" ] && echo "NOT_FOUND" && return',
+      '  if tmux has-session -t "builder-child-$child_id" 2>/dev/null; then',
+      '    echo "RUNNING"',
+      '  elif [ -f "$BUILDER_DIR/children/$child_id/status" ]; then',
+      '    cat "$BUILDER_DIR/children/$child_id/status"',
+      '  elif [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then',
+      '    local code=$(cat "$BUILDER_DIR/children/$child_id/exit.code")',
+      '    if [ "$code" = "0" ]; then echo "DONE"; elif [ "$code" = "124" ]; then echo "TIMEOUT"; else echo "FAILED"; fi',
+      '  else',
+      '    echo "UNKNOWN"',
+      '  fi',
+      '}',
+      'builder_child_wait() {',
+      '  local child_pid="$1" wait_timeout="${2:-300}"',
+      '  local child_id',
+      '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
+      '  [ -z "$child_id" ] && echo "NOT_FOUND" && return 1',
+      '  local waited=0',
+      '  while [ $waited -lt $wait_timeout ]; do',
+      '    if ! tmux has-session -t "builder-child-$child_id" 2>/dev/null && [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then',
+      '      local status code',
+      '      status=$(builder_child_status "$child_pid")',
+      '      code=$(cat "$BUILDER_DIR/children/$child_id/exit.code")',
+      '      echo "$status"',
+      '      [ "$code" = "0" ] && return 0 || return 1',
+      '    fi',
+      '    sleep 5',
+      '    waited=$((waited + 5))',
+      '  done',
+      '  echo "TIMEOUT" > "$BUILDER_DIR/children/$child_id/status"',
+      '  echo "124" > "$BUILDER_DIR/children/$child_id/exit.code"',
+      '  tmux kill-session -t "builder-child-$child_id" 2>/dev/null || true',
+      '  echo "[builder-child] $child_id status=TIMEOUT exit=124 finished_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
+      '  echo "TIMEOUT"',
+      '  return 124',
+      '}',
+      'builder_child_output() {',
+      '  local child_pid="$1"',
+      '  local child_id',
+      '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
+      '  [ -z "$child_id" ] && echo "NOT_FOUND" && return',
+      '  tail -200 "$BUILDER_DIR/children/$child_id/stdout.log" "$BUILDER_DIR/children/$child_id/stderr.log" 2>/dev/null',
+      '}',
+      'builder_child_kill() {',
+      '  local child_pid="$1"',
+      '  local child_id',
+      '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
+      '  [ -n "$child_id" ] && tmux kill-session -t "builder-child-$child_id" 2>/dev/null || kill "$child_pid" 2>/dev/null',
+      '  if [ -n "$child_id" ]; then',
+      '    echo "FAILED" > "$BUILDER_DIR/children/$child_id/status"',
+      '    echo "143" > "$BUILDER_DIR/children/$child_id/exit.code"',
+      '    echo "[builder-child] $child_id status=FAILED exit=143 finished_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
+      '  fi',
+      '  echo "killed"',
+      '}',
+      '# ── End helpers ─────────────────────────────────────────────────────────────',
+    ].join("\n");
+  }
+
+  const childHelpers = buildChildHelpersScript();
+
   const script = `#!/bin/bash
 set -euo pipefail
 BUILDER_DIR="${dir}"
 RUN_ID="${runId}"
+BUILDER_PROJECT_ROOT="${workflow.projectRoot}"
+BUILDER_PROMPT_FILE="$BUILDER_DIR/${promptFile}"
+export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE
+EXIT_CODE=143
+trap 'echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"' EXIT
+mkdir -p "$BUILDER_DIR/children" "$BUILDER_DIR/bin"
+cat > "$BUILDER_PROMPT_FILE" << 'BUILDER_PROMPT_EOF'
+${prompt}
+BUILDER_PROMPT_EOF
 echo "[builder] Pass ${passNumber} starting at $(date -Iseconds)" | tee "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/${stdoutLog}"
-${continuationBlock}${command} >> "$BUILDER_DIR/${stdoutLog}" 2>> "$BUILDER_DIR/pass-${passNumber}-stderr.log"
+echo "[builder] Timeout: ${PASS_TIMEOUT_SECONDS}s" >> "$BUILDER_DIR/${stdoutLog}"
+cat > "$BUILDER_DIR/builder-child-helpers.sh" << 'BUILDER_HELPERS_EOF'
+${childHelpers}
+BUILDER_HELPERS_EOF
+source "$BUILDER_DIR/builder-child-helpers.sh"
+export -f builder_child_id_for_pid builder_spawn_child builder_child_status builder_child_wait builder_child_output builder_child_kill
+export BASH_ENV="$BUILDER_DIR/builder-child-helpers.sh"
+for helper in builder_spawn_child builder_child_status builder_child_wait builder_child_output builder_child_kill; do
+  cat > "$BUILDER_DIR/bin/$helper" << 'BUILDER_HELPER_WRAPPER_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$BUILDER_DIR/builder-child-helpers.sh"
+"$(basename "$0")" "$@"
+BUILDER_HELPER_WRAPPER_EOF
+  chmod +x "$BUILDER_DIR/bin/$helper"
+done
+export PATH="$BUILDER_DIR/bin:$PATH"
+echo "[builder] Child helper commands installed in $BUILDER_DIR/bin" >> "$BUILDER_DIR/${stdoutLog}"
+${continuationBlock}set +e
+${timedCommand} >> "$BUILDER_DIR/${stdoutLog}" 2>> "$BUILDER_DIR/pass-${passNumber}-stderr.log"
 EXIT_CODE=$?
+set -e
+if [ $EXIT_CODE -eq 124 ]; then
+  echo "[builder] Pass ${passNumber} TIMEOUT after ${PASS_TIMEOUT_SECONDS}s at $(date -Iseconds)" >> "$BUILDER_DIR/${stdoutLog}"
+else
+  echo "[builder] Pass ${passNumber} finished with exit code $EXIT_CODE at $(date -Iseconds)" >> "$BUILDER_DIR/${stdoutLog}"
+fi
 echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"
-echo "[builder] Pass ${passNumber} finished with exit code $EXIT_CODE at $(date -Iseconds)" >> "$BUILDER_DIR/${stdoutLog}"
 `;
 
   writeFileSync(scriptPath, script, { mode: 0o755 });
@@ -827,9 +1035,15 @@ export async function startWorkflowRun(
     throw new Error(`workflow cannot be started from status ${workflow.status}`);
   }
 
-  // Determine agent/model
-  const agent = workflow.config.agentOrder[0] ?? "codex";
-  const selection = selectModelForRole("planner", workflow.config, agent);
+  // Determine agent/model from first agent order entry
+  const entry = parseAgentEntry(workflow.config.agentOrder[0] ?? "codex");
+  const agent = entry.agent;
+  const isCliAgent = ["codex", "claude", "gemini"].includes(agent);
+  const embeddedModel = entry.model;
+  const embeddedEffort = entry.effort;
+  const selection = isCliAgent && embeddedModel
+    ? { model: embeddedModel, provider: agent, reason: `embedded:${agent}:${embeddedModel}`, role: "planner" as const, capability: null, qualityStatus: "healthy" as const }
+    : selectModelForRole("planner", workflow.config, agent);
   const { model, provider, reason: modelReason } = selection;
 
   // Create run
@@ -867,7 +1081,7 @@ export async function startWorkflowRun(
 
   // Create job
   const jobId = `job_${randomUUID()}`;
-  const scriptPath = writePassScript(run.id, workflow, agent, model);
+  const scriptPath = writePassScript(run.id, workflow, agent, model, 1, undefined, embeddedEffort);
   createJob({
     id: jobId,
     kind: "builder.agent-pass",
@@ -877,7 +1091,7 @@ export async function startWorkflowRun(
     targetType: "builder-run",
     targetId: run.id,
     command: scriptPath,
-    request: { workflowId, runId: run.id, passId, agent, model },
+    request: { workflowId, runId: run.id, passId, agent, model, effort: embeddedEffort },
     evidence: { planFile: workflow.planFile, projectRoot: workflow.projectRoot },
   });
 
@@ -941,6 +1155,15 @@ export async function stopWorkflowRun(
     if (tmuxExists(session)) {
       tmuxKill(session);
     }
+    // Kill child tmux sessions for this run only.
+    const childPattern = `builder-child-${runId}_`;
+    try {
+      const listResult = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
+      const childSessions = (listResult.stdout ?? "").split(/\r?\n/).filter((s) => s.startsWith(childPattern));
+      for (const childSession of childSessions) {
+        tmuxKill(childSession);
+      }
+    } catch { /* ignore */ }
   }
 
   const ts = now();
@@ -1018,16 +1241,102 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const currentPass = allPasses.find((p) => p.id === passId);
   const passSeq = currentPass?.sequence ?? 1;
 
+  const workflow = readBuilderWorkflow(run.workflowId);
+
   const session = tmuxSessionName(runId, passSeq);
   if (tmuxExists(session)) {
     const paneOutput = tmuxCapturePane(session);
     if (paneOutput) {
       updateJobOutputForRun(runId, paneOutput);
     }
+
+    // ── Stall detection ──────────────────────────────────────────────────
+    const stdoutPath = join(runDir(runId), `pass-${passSeq}-stdout.log`);
+    const stderrPath = join(runDir(runId), `pass-${passSeq}-stderr.log`);
+    const checkedAt = now();
+    const resultObj = typeof run.result === "object" && run.result
+      ? run.result as Record<string, unknown>
+      : {};
+    const monitor = typeof resultObj.runnerMonitor === "object" && resultObj.runnerMonitor
+      ? resultObj.runnerMonitor as Record<string, unknown>
+      : {};
+    const lastOutputSize = typeof monitor.lastOutputSize === "number"
+      ? monitor.lastOutputSize
+      : null;
+    const lastOutputAt = typeof monitor.lastOutputAt === "number"
+      ? monitor.lastOutputAt
+      : (run.startedAt ?? checkedAt);
+    let currentSize = 0;
+    try {
+      if (existsSync(stdoutPath)) currentSize += statSync(stdoutPath).size;
+      if (existsSync(stderrPath)) currentSize += statSync(stderrPath).size;
+    } catch { /* ignore */ }
+    const STALL_THRESHOLD_MS = (workflow?.config.riskPolicy?.passTimeoutSeconds ?? 900) * 1000;
+    const outputChanged = lastOutputSize === null || currentSize !== lastOutputSize;
+    const outputAgeMs = checkedAt - (outputChanged ? checkedAt : lastOutputAt);
+    if (!outputChanged && outputAgeMs > STALL_THRESHOLD_MS) {
+      // No output growth and past timeout — kill as stalled
+      console.error(`[builder] run ${runId} pass ${passSeq} STALLED (no output change for >${STALL_THRESHOLD_MS}ms, outputAge=${outputAgeMs}ms)`);
+      tmuxKill(session);
+      updateBuilderPass(passId!, { status: "failed", finishedAt: now(), failureClass: "agent-stalled", error: `Stalled: no output change for ${Math.round(STALL_THRESHOLD_MS / 1000)}s` });
+      updateBuilderRun(runId, { status: "failed", finishedAt: now(), error: `Stalled: no output change for ${Math.round(STALL_THRESHOLD_MS / 1000)}s`, currentPassId: null });
+      finishJobByRun(runId, "failed", { error: "stalled" });
+      if (workflow) {
+        releaseProjectLock(workflow.projectRoot);
+        updateBuilderWorkflowStatus(run.workflowId, "failed");
+      }
+      return readBuilderRun(runId);
+    }
+    // Persist size for next reconciliation check
+    try {
+      updateBuilderRun(runId, {
+        result: {
+          ...resultObj,
+          runnerMonitor: {
+            ...monitor,
+            lastOutputSize: currentSize,
+            lastOutputAt: outputChanged ? checkedAt : lastOutputAt,
+            passSeq,
+          },
+        },
+      });
+    } catch { /* ignore */ }
+
+    // ── Child agent reconciliation ────────────────────────────────────────
+    const manifestPath = join(runDir(runId), "children-manifest.jsonl");
+    if (existsSync(manifestPath)) {
+      try {
+        const manifestLines = readFileSync(manifestPath, "utf8").split(/\r?\n/).filter(Boolean);
+        for (const line of manifestLines) {
+          try {
+            const entry = JSON.parse(line) as { id: string; agent: string; model: string; pid: string; spawnedAt: string };
+            const childSession = `builder-child-${entry.id}`;
+            if (tmuxExists(childSession)) {
+              // Child still running — check for timeout
+              const childAgeMs = now() - new Date(entry.spawnedAt).getTime();
+              const childTimeoutMs = 600_000; // 10 min default child timeout
+              if (childAgeMs > childTimeoutMs) {
+                console.error(`[builder] child ${entry.id} timed out after ${childAgeMs}ms`);
+                tmuxKill(childSession);
+                const childDir = join(runDir(runId), "children", entry.id);
+                writeFileSync(join(childDir, "status"), "TIMEOUT");
+                writeFileSync(join(childDir, "exit.code"), "124");
+              }
+            }
+          } catch { /* ignore malformed line */ }
+        }
+      } catch { /* ignore missing manifest */ }
+    }
+
     return run;
   }
 
-  // Tmux session is gone — process finished
+  // Tmux session is gone — process finished.
+  // Re-read from DB: another reconciler tick may have already handled this run
+  // (race between concurrent ticks) and we must not overwrite its result.
+  const freshCheck = readBuilderRun(runId);
+  if (!freshCheck || freshCheck.status !== "running") return freshCheck;
+
   const exitCode = readExitCode(runId, passSeq);
   const ts = now();
 
@@ -1036,10 +1345,21 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const stderr = readLogFile(runId, `pass-${passSeq}-stderr.log`);
   const codexOutput = readLogFile(runId, "codex-output.txt");
 
+  // Detect codex exhaustion from stdout (codex CLI prints this to stdout)
+  const codexExhausted =
+    stdout.includes("hit your usage limit") || stdout.includes("usage limit") ||
+    stderr.includes("hit your usage limit");
+
   if (passId) {
     const passStatus = exitCode === 0 ? "success" : "failed";
     const summary = codexOutput || stdout.slice(-2000);
-    const failureClass = exitCode === null ? "unknown" : exitCode === 0 ? null : "unknown";
+    const failureClass = codexExhausted
+      ? "codex-exhausted"
+      : exitCode === null
+      ? "unknown"
+      : exitCode === 0
+      ? null
+      : "unknown";
     updateBuilderPass(passId, {
       status: passStatus,
       finishedAt: ts,
@@ -1049,7 +1369,6 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   }
 
   // Run validation commands if pass succeeded
-  const workflow = readBuilderWorkflow(run.workflowId);
   let validationIds: string[] = [];
   if (passId && workflow) {
     try {
@@ -1081,11 +1400,37 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     runStatus = !hasValidationConfig || allValidationsPassed ? "success" : "failed";
   }
 
+  // Build a human-readable error message (never raw stderr, which is agent terminal output)
+  let runError: string | null = null;
+  if (exitCode === null) {
+    runError = "Run killed before completing (no exit code written)";
+  } else if (codexExhausted) {
+    runError = "Codex usage limit reached — retry after limit resets";
+  } else if (exitCode !== 0) {
+    // Extract the last non-blank error-looking lines from stdout; fall back to exit code
+    const errorLines = stdout
+      .split("\n")
+      .filter((l) => /error|ERROR|Error|failed|FAILED|fatal|FATAL/i.test(l) && l.trim())
+      .slice(-3);
+    runError = errorLines.length > 0 ? errorLines.join("\n") : `Agent exited with code ${exitCode}`;
+  } else if (runStatus === "failed" && !allValidationsPassed && validationIds.length > 0) {
+    const failedVal = readBuilderValidations(runId).find(
+      (v) => v.status !== "success",
+    );
+    if (failedVal) {
+      const cmd = failedVal.command ?? "unknown command";
+      const out = failedVal.outputTail ?? "";
+      runError = `Validation failed: ${cmd}\n${out.slice(-300)}`;
+    } else {
+      runError = "Validation failed";
+    }
+  }
+
   updateBuilderRun(runId, {
     status: runStatus,
     finishedAt: ts,
     currentPassId: null,
-    error: stderr ? stderr.slice(-2000) : null,
+    error: runError,
   });
 
   // Finish jobs
@@ -1099,7 +1444,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     runStatus,
     ts,
     stdout ? stdout.slice(-8000) : null,
-    stderr ? stderr.slice(-2000) : null,
+    runError,
     exitCode,
     "builder-run",
     runId,
@@ -1217,6 +1562,24 @@ function updateJobOutputForRun(runId: string, output: string): void {
       "builder-run",
       runId,
       "running",
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function finishJobByRun(runId: string, status: "success" | "failed" | "canceled", input: { output?: string; error?: string } = {}): void {
+  const db = requireDb();
+  try {
+    db.query(`
+      UPDATE jobs
+      SET state = ?, status = ?, finished_at = ?, output_tail = COALESCE(?, output_tail), error = ?
+      WHERE target_type = ? AND target_id = ? AND state = ?
+    `).run(
+      status, status, Date.now(),
+      input.output === undefined ? null : input.output.slice(-8000),
+      input.error ? input.error.slice(-2000) : null,
+      "builder-run", runId, "running",
     );
   } catch {
     // ignore

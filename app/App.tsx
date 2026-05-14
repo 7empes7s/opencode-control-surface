@@ -16,6 +16,7 @@ import { AuditPage } from "./routes/AuditPage";
 import { TodayPage } from "./routes/TodayPage";
 import { SettingsPage } from "./routes/SettingsPage";
 import { BuilderPage } from "./routes/BuilderPage";
+import { GeminiPage } from "./routes/GeminiPage";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -57,6 +58,9 @@ export function App() {
         </Route>
         <Route path="/claude">
           <DashLayoutBare><ClaudePage /></DashLayoutBare>
+        </Route>
+        <Route path="/gemini">
+          <DashLayoutBare><GeminiPage /></DashLayoutBare>
         </Route>
 
         <Route path="/autopipeline">

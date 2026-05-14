@@ -10,7 +10,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { WORKSPACE_ROOTS } from "./workspaces.ts";
 
-type AgentId = "claude" | "codex" | "opencode";
+type AgentId = "claude" | "codex" | "opencode" | "gemini";
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
 
 type SkillItem = {
@@ -70,6 +70,7 @@ type DiscoveryData = {
     opencodeAgents: { count: number; names: string[]; status: DiscoveryStatus; evidence: string };
     opencodeModels: { sample: string[]; status: DiscoveryStatus; evidence: string };
     opencodeStats: { sample: string[]; status: DiscoveryStatus; evidence: string };
+    geminiSessions: { count: number; latestUpdatedAt: number | null };
     modelHealth: { status: DiscoveryStatus; path: string; updatedAt: number | null; bestCloudHeavy?: string; bestCloudFast?: string };
     gpuHealth: { status: DiscoveryStatus; path: string; updatedAt: number | null };
   };
@@ -79,16 +80,20 @@ type DiscoveryData = {
 const STATE_DIR = "/var/lib/control-surface";
 const CLAUDE_STATE = join(STATE_DIR, "claude-sessions.json");
 const CODEX_STATE = join(STATE_DIR, "codex-sessions.json");
+const GEMINI_STATE = join(STATE_DIR, "gemini-sessions.json");
 const MODEL_HEALTH = "/var/lib/mimule/model-health.json";
 const GPU_HEALTH = "/var/lib/mimule/gpu-health.json";
 const CLAUDE_BIN = "/root/.local/bin/claude";
 const CODEX_BIN = "/usr/bin/codex";
 const OPENCODE_BIN = "/root/.opencode/bin/opencode";
+const GEMINI_BIN = "/usr/bin/gemini";
 const QUICK_PROMPTS_FILE = "/opt/opencode-control-surface/config/agent-quick-prompts.json";
 const OPERATOR_QUICK_PROMPTS_FILE = join(STATE_DIR, "agent-quick-prompts.json");
 const DAILY_VAULT_DIR = "/opt/ai-vault/daily";
 const DASHBOARD_PROJECT_NOTE = "/opt/ai-vault/projects/2026-05-07-dashboard-v3-redesign.md";
 const MASTER_PLAN = "/home/agent/MIMULE_MASTER_PLAN_V3.md";
+
+const ALL_AGENTS: AgentId[] = ["claude", "codex", "opencode", "gemini"];
 
 const SKILL_SOURCES: Array<{
   id: string;
@@ -97,13 +102,13 @@ const SKILL_SOURCES: Array<{
   agents: AgentId[];
   mode: "children" | "file" | "recursive";
 }> = [
-  { id: "claude-user-skills", label: "Claude user skills", path: "/root/.claude/skills", agents: ["claude"], mode: "children" },
-  { id: "codex-user-skills", label: "Codex user skills", path: "/root/.codex/skills", agents: ["codex"], mode: "children" },
-  { id: "shared-user-skills", label: "Shared user skills", path: "/root/.agents/skills", agents: ["claude", "codex", "opencode"], mode: "children" },
-  { id: "opencode-project-skills", label: "OpenCode project skills", path: "/opt/opencode-control-surface/.opencode/skills", agents: ["opencode"], mode: "children" },
-  { id: "opencode-root-skill", label: "OpenCode root skill", path: "/opt/opencode-control-surface/.opencode/SKILL.md", agents: ["opencode"], mode: "file" },
-  { id: "codex-plugin-skills", label: "Codex plugin skills", path: "/root/.codex/plugins/cache", agents: ["codex"], mode: "recursive" },
-  { id: "claude-plugin-skills", label: "Claude plugin skills", path: "/root/.claude/plugins/cache", agents: ["claude"], mode: "recursive" },
+  { id: "claude-user-skills", label: "Claude user skills", path: "/root/.claude/skills", agents: ALL_AGENTS, mode: "children" },
+  { id: "codex-user-skills", label: "Codex user skills", path: "/root/.codex/skills", agents: ALL_AGENTS, mode: "children" },
+  { id: "shared-user-skills", label: "Shared user skills", path: "/root/.agents/skills", agents: ALL_AGENTS, mode: "children" },
+  { id: "opencode-project-skills", label: "OpenCode project skills", path: "/opt/opencode-control-surface/.opencode/skills", agents: ALL_AGENTS, mode: "children" },
+  { id: "opencode-root-skill", label: "OpenCode root skill", path: "/opt/opencode-control-surface/.opencode/SKILL.md", agents: ALL_AGENTS, mode: "file" },
+  { id: "codex-plugin-skills", label: "Codex plugin skills", path: "/root/.codex/plugins/cache", agents: ALL_AGENTS, mode: "recursive" },
+  { id: "claude-plugin-skills", label: "Claude plugin skills", path: "/root/.claude/plugins/cache", agents: ALL_AGENTS, mode: "recursive" },
 ];
 
 const COMMAND_SOURCES: Array<{
@@ -112,8 +117,8 @@ const COMMAND_SOURCES: Array<{
   path: string;
   agents: AgentId[];
 }> = [
-  { id: "claude-user-commands", label: "Claude user commands", path: "/root/.claude/commands", agents: ["claude"] },
-  { id: "claude-plugin-commands", label: "Claude plugin commands", path: "/root/.claude/plugins/cache", agents: ["claude"] },
+  { id: "claude-user-commands", label: "Claude user commands", path: "/root/.claude/commands", agents: ALL_AGENTS },
+  { id: "claude-plugin-commands", label: "Claude plugin commands", path: "/root/.claude/plugins/cache", agents: ALL_AGENTS },
 ];
 
 let discoveryCache: { at: number; data: DiscoveryData } | null = null;
@@ -276,10 +281,10 @@ function workspaceRootFor(cwd: string | null): string | null {
 }
 
 function normalizeAgents(value: unknown): AgentId[] {
-  if (!Array.isArray(value)) return ["claude", "codex", "opencode"];
+  if (!Array.isArray(value)) return ALL_AGENTS;
   const agents = value.filter((item): item is AgentId =>
-    item === "claude" || item === "codex" || item === "opencode");
-  return agents.length > 0 ? agents : ["claude", "codex", "opencode"];
+    item === "claude" || item === "codex" || item === "opencode" || item === "gemini");
+  return agents.length > 0 ? agents : ALL_AGENTS;
 }
 
 function normalizePrompt(raw: unknown, source: string, sourcePath: string, modifiedAt?: number): QuickPromptItem | null {
@@ -560,6 +565,7 @@ function summaryFrom(data: DiscoveryData): DiscoveryData {
       claude: { ...data.mcp.claude, stdout: undefined, stderr: undefined },
       codex: { ...data.mcp.codex, stdout: undefined, stderr: undefined },
       opencode: { ...data.mcp.opencode, stdout: undefined, stderr: undefined },
+      gemini: { ...data.mcp.gemini, stdout: undefined, stderr: undefined },
     },
     runtime: {
       ...data.runtime,
@@ -590,11 +596,13 @@ function buildCheapSummary(): DiscoveryData {
       claude: emptyProbe("full CLI probe deferred"),
       codex: emptyProbe("full CLI probe deferred"),
       opencode: emptyProbe("full CLI probe deferred"),
+      gemini: emptyProbe("full CLI probe deferred"),
     },
     mcp: {
       claude: emptyProbe("full MCP probe deferred"),
       codex: emptyProbe("full MCP probe deferred"),
       opencode: emptyProbe("full MCP probe deferred"),
+      gemini: emptyProbe("full MCP probe deferred"),
     },
     runtime: {
       claudeSessions: sessionSummary(CLAUDE_STATE),
@@ -603,6 +611,7 @@ function buildCheapSummary(): DiscoveryData {
       opencodeAgents: { count: 0, names: [], status: "degraded", evidence: "OpenCode agent probe deferred" },
       opencodeModels: { sample: [], status: "degraded", evidence: "OpenCode model probe deferred" },
       opencodeStats: { sample: [], status: "degraded", evidence: "OpenCode stats probe deferred" },
+      geminiSessions: sessionSummary(GEMINI_STATE),
       modelHealth: healthSummary(MODEL_HEALTH),
       gpuHealth: healthSummary(GPU_HEALTH),
     },
@@ -617,17 +626,23 @@ async function buildDiscovery(): Promise<DiscoveryData> {
   const [
     claudeVersion,
     codexVersion,
+    geminiVersion,
     claudeHelp,
     codexHelp,
+    geminiHelp,
     claudeMcp,
     codexMcp,
+    geminiMcp,
   ] = await Promise.all([
     probe(CLAUDE_BIN, ["--version"], 3000, 1200),
     probe(CODEX_BIN, ["--version"], 3000, 1200),
+    probe(GEMINI_BIN, ["--version"], 3000, 1200),
     probe(CLAUDE_BIN, ["--help"], 3000, 6000),
     probe(CODEX_BIN, ["--help"], 3000, 6000),
+    probe(GEMINI_BIN, ["--help"], 3000, 6000),
     probe(CLAUDE_BIN, ["mcp", "list"], 5000, 6000),
     probe(CODEX_BIN, ["mcp", "list"], 5000, 6000),
+    probe(GEMINI_BIN, ["mcp", "list"], 5000, 6000),
   ]);
 
   const opencodeVersion = await probe(OPENCODE_BIN, ["-v"], 5000, 1200);
@@ -642,6 +657,7 @@ async function buildDiscovery(): Promise<DiscoveryData> {
     ...parseCliCommands(claudeHelp.stdout ?? "", "Claude CLI", "claude"),
     ...parseCliCommands(codexHelp.stdout ?? "", "Codex CLI", "codex"),
     ...parseCliCommands(opencodeHelp.stdout ?? "", "OpenCode CLI", "opencode"),
+    ...parseCliCommands(geminiHelp.stdout ?? "", "Gemini CLI", "gemini"),
   ];
 
   let openCodeSessionItems: unknown[] = [];
@@ -662,11 +678,13 @@ async function buildDiscovery(): Promise<DiscoveryData> {
       claude: claudeVersion,
       codex: codexVersion,
       opencode: opencodeVersion,
+      gemini: geminiVersion,
     },
     mcp: {
       claude: claudeMcp,
       codex: codexMcp,
       opencode: opencodeMcp,
+      gemini: geminiMcp,
     },
     runtime: {
       claudeSessions: sessionSummary(CLAUDE_STATE),
@@ -693,6 +711,7 @@ async function buildDiscovery(): Promise<DiscoveryData> {
         status: opencodeStats.status,
         evidence: opencodeStats.evidence,
       },
+      geminiSessions: sessionSummary(GEMINI_STATE),
       modelHealth: healthSummary(MODEL_HEALTH),
       gpuHealth: healthSummary(GPU_HEALTH),
     },
@@ -711,7 +730,7 @@ async function getDiscovery(): Promise<DiscoveryData> {
 
 export async function agentsSkillsHandler(url: URL): Promise<Response> {
   const agentParam = url.searchParams.get("agent") ?? "all";
-  const agent = ["claude", "codex", "opencode", "all"].includes(agentParam)
+  const agent = ["claude", "codex", "opencode", "gemini", "all"].includes(agentParam)
     ? agentParam as AgentId | "all"
     : "all";
   const { skills, sources: skillSources } = scanSkills();
@@ -743,7 +762,7 @@ export async function agentsSkillsHandler(url: URL): Promise<Response> {
 
 export function agentsQuickPromptsHandler(url: URL): Response {
   const agentParam = url.searchParams.get("agent") ?? "all";
-  const agent = ["claude", "codex", "opencode", "all"].includes(agentParam)
+  const agent = ["claude", "codex", "opencode", "gemini", "all"].includes(agentParam)
     ? agentParam as AgentId | "all"
     : "all";
   const cwd = url.searchParams.get("cwd");
@@ -786,7 +805,9 @@ export async function agentsSummaryHandler(): Promise<Response> {
       ? data.runtime.claudeSessions.count
       : agent === "codex"
         ? data.runtime.codexSessions.count
-        : data.runtime.opencodeSessions.count,
+        : agent === "gemini"
+          ? data.runtime.geminiSessions.count
+          : data.runtime.opencodeSessions.count,
   });
   return json({
     generatedAt: new Date().toISOString(),
@@ -795,7 +816,10 @@ export async function agentsSummaryHandler(): Promise<Response> {
       claude: countFor("claude"),
       codex: countFor("codex"),
       opencode: countFor("opencode"),
+      gemini: countFor("gemini"),
     },
+    skills: data.skills,
+    commands: data.commands,
     cli: data.cli,
     mcp: data.mcp,
     runtime: {
@@ -810,6 +834,7 @@ export async function agentsSummaryHandler(): Promise<Response> {
         sample: data.runtime.opencodeModels.sample.slice(0, 5),
         status: data.runtime.opencodeModels.status,
       },
+      geminiSessions: data.runtime.geminiSessions,
       modelHealth: data.runtime.modelHealth,
       gpuHealth: data.runtime.gpuHealth,
     },
@@ -865,7 +890,7 @@ export async function agentsVaultLogHandler(req: Request): Promise<Response> {
     includeMasterPlan?: boolean;
   };
 
-  const agent = ["claude", "codex", "opencode"].includes(body.agent ?? "")
+  const agent = ["claude", "codex", "opencode", "gemini"].includes(body.agent ?? "")
     ? body.agent as AgentId
     : "opencode";
   const { date, time, stamp } = utcParts();

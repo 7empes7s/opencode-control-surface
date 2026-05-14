@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { CheckCircle2, ChevronRight, ExternalLink, Pause, Play, Plus, RefreshCw, Save, Square, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, GripVertical, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { authFetch } from "../lib/authFetch";
 import { SectionCard } from "../components/SectionCard";
@@ -10,7 +10,7 @@ import type {
   BuilderProject,
   BuilderSkillStatus,
 } from "../../server/builder/discovery";
-import type { BuilderWorkflowInput, BuilderDoctorReport } from "../../server/builder/store";
+import type { BuilderWorkflow, BuilderWorkflowInput, BuilderDoctorReport } from "../../server/builder/store";
 import type {
   BuilderProjectsResponse,
   BuilderDoctorReportsResponse,
@@ -33,7 +33,7 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
 function ModeBadge({ mode }: { mode: string }) {
   const colors: Record<string, string> = {
     "once": "gray", "auto-continue": "blue", "scheduled": "amber",
-    "permanent": "green", "doctor": "purple"
+    "permanent": "green", "doctor": "purple", "plan": "blue",
   };
   return <Pill color={colors[mode] ?? "gray"}>{mode}</Pill>;
 }
@@ -78,6 +78,44 @@ function ModelSummary({ models }: { models: BuilderModelsInventory }) {
   );
 }
 
+function fmtCtx(ctx: number | null): string {
+  if (!ctx) return "—";
+  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(0)}M`;
+  if (ctx >= 1000) return `${(ctx / 1000).toFixed(0)}K`;
+  return String(ctx);
+}
+
+function ButtonGroup<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: Array<{ value: T; label: string; title?: string }>;
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="modal-input-row">
+      <span className="modal-input-label">{label}</span>
+      <div className="builder-btn-group">
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            className={`builder-btn-group-item${value === opt.value ? " active" : ""}`}
+            title={opt.title}
+            onClick={() => onChange(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ModelSelect({
   label,
   value,
@@ -89,39 +127,259 @@ function ModelSelect({
   onChange: (v: string) => void;
   models: BuilderModelsInventory;
 }) {
-  const allModels = [...models.heavy, ...models.medium, ...models.light];
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const allModels = useMemo(() => [
+    { label: "heavy", items: models.heavy },
+    { label: "medium", items: models.medium },
+    { label: "light", items: models.light },
+    { label: "OpenCode native", items: models.opencode },
+    { label: "Zen", items: models.zen ?? [] },
+    { label: "Alibaba", items: models.alibaba ?? [] },
+  ], [models]);
+
+  const selectedModel = useMemo(() => {
+    for (const group of allModels) {
+      const found = group.items.find((m) => m.name === value);
+      if (found) return found;
+    }
+    return null;
+  }, [allModels, value]);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return allModels
+      .map((group) => ({
+        label: group.label,
+        items: q
+          ? group.items.filter((m) =>
+              m.name.toLowerCase().includes(q) ||
+              m.label.toLowerCase().includes(q) ||
+              m.provider.toLowerCase().includes(q)
+            )
+          : group.items,
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [allModels, filter]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
   return (
-    <label className="modal-input-row">
+    <div className="modal-input-row" ref={containerRef}>
       <span className="modal-input-label">{label}</span>
-      <select
-        className="audit-select"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+      <button
+        type="button"
+        className="builder-model-select-trigger"
+        onClick={() => { setOpen((o) => !o); setFilter(""); }}
       >
-        <option value="">auto (health-based)</option>
-        {models.heavy.length > 0 && (
-          <optgroup label="heavy">
-            {models.heavy.map((m) => (
-              <option key={m.name} value={m.name}>{m.label}</option>
-            ))}
-          </optgroup>
+        {value ? (
+          <span className="builder-model-select-current">
+            {selectedModel ? (
+              <>
+                <span className="builder-model-select-name">{selectedModel.name}</span>
+                <span className="builder-model-select-meta">
+                  {selectedModel.isFree && <span className="pill green">free</span>}
+                  {selectedModel.isPaid && !selectedModel.isFree && <span className="pill amber">paid</span>}
+                  {selectedModel.supportsImage && <span className="pill blue">img</span>}
+                  {selectedModel.supportsVideo && <span className="pill blue">vid</span>}
+                  {selectedModel.rating != null && <span className="pill gray">{selectedModel.rating.toFixed(0)}/100</span>}
+                </span>
+              </>
+            ) : (
+              value
+            )}
+          </span>
+        ) : (
+          <span className="builder-model-select-placeholder">auto (health-based)</span>
         )}
-        {models.medium.length > 0 && (
-          <optgroup label="medium">
-            {models.medium.map((m) => (
-              <option key={m.name} value={m.name}>{m.label}</option>
+        <ChevronDown size={14} className={open ? "rotated" : ""} />
+      </button>
+
+      {open && (
+        <div className="builder-model-select-dropdown">
+          <input
+            className="modal-input builder-model-select-filter"
+            placeholder="Filter models…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            autoFocus
+          />
+          <div className="builder-model-select-list">
+            <button
+              type="button"
+              className={`builder-model-select-row${!value ? " active" : ""}`}
+              onClick={() => { onChange(""); setOpen(false); }}
+            >
+              <span className="builder-model-select-row-name">auto (health-based)</span>
+            </button>
+            {filtered.map((group) => (
+              <div key={group.label} className="builder-model-select-group">
+                <div className="builder-model-select-group-label">{group.label}</div>
+                {group.items.map((m) => (
+                  <button
+                    type="button"
+                    key={m.name}
+                    className={`builder-model-select-row${value === m.name ? " active" : ""}`}
+                    onClick={() => { onChange(m.name); setOpen(false); }}
+                  >
+                    <div className="builder-model-select-row-main">
+                      <span className="builder-model-select-row-name">{m.name}</span>
+                      <span className="builder-model-select-row-badges">
+                        {m.isFree && <span className="pill green">free</span>}
+                        {m.isPaid && !m.isFree && <span className="pill amber">paid</span>}
+                        {m.supportsImage && <span className="pill blue" title="image">img</span>}
+                        {m.supportsVideo && <span className="pill blue" title="video">vid</span>}
+                        {m.supportsText && <span className="pill gray" title="text">txt</span>}
+                      </span>
+                    </div>
+                    <div className="builder-model-select-row-meta">
+                      <span>ctx {fmtCtx(m.contextWindow)}</span>
+                      {m.rating != null && <span>rating {m.rating.toFixed(0)}/100</span>}
+                      {m.latency != null && <span>{m.latency}ms</span>}
+                      <span className={`pill ${m.qualityStatus === "healthy" ? "green" : m.qualityStatus === "blocked" ? "red" : "amber"}`}>{m.qualityStatus}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             ))}
-          </optgroup>
-        )}
-        {models.light.length > 0 && (
-          <optgroup label="light">
-            {models.light.map((m) => (
-              <option key={m.name} value={m.name}>{m.label}</option>
+            {filtered.length === 0 && (
+              <div className="builder-model-select-empty">no models match</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type PickerOption = {
+  id: string;
+  label: string;
+  status?: string;
+};
+
+function uniqueList(items: string[]): string[] {
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
+}
+
+function OrderedPicker({
+  label,
+  value,
+  onChange,
+  options,
+  emptyText = "none selected",
+}: {
+  label: string;
+  value: string[];
+  onChange: (next: string[]) => void;
+  options: PickerOption[];
+  emptyText?: string;
+}) {
+  const normalized = uniqueList(value);
+  const known = new Map(options.map((option) => [option.id, option]));
+  const mergedOptions = [
+    ...options,
+    ...normalized.filter((id) => !known.has(id)).map((id) => ({ id, label: id, status: "saved" })),
+  ];
+  const [selectedToAdd, setSelectedToAdd] = useState("");
+  const [dragged, setDragged] = useState<string | null>(null);
+  const addable = mergedOptions.filter((option) => !normalized.includes(option.id));
+
+  function move(id: string, direction: -1 | 1) {
+    const index = normalized.indexOf(id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= normalized.length) return;
+    const next = [...normalized];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    onChange(next);
+  }
+
+  function remove(id: string) {
+    onChange(normalized.filter((item) => item !== id));
+  }
+
+  function add(id: string) {
+    if (!id) return;
+    onChange(uniqueList([...normalized, id]));
+    setSelectedToAdd("");
+  }
+
+  function dropOn(target: string) {
+    if (!dragged || dragged === target) return;
+    const sourceIndex = normalized.indexOf(dragged);
+    const targetIndex = normalized.indexOf(target);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const next = [...normalized];
+    const [item] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, item);
+    onChange(next);
+    setDragged(null);
+  }
+
+  return (
+    <div className="modal-input-row builder-form-wide">
+      <span className="modal-input-label">{label}</span>
+      <div className="builder-ordered-picker">
+        {normalized.length === 0 ? (
+          <div className="builder-picker-empty">{emptyText}</div>
+        ) : normalized.map((id, index) => {
+          const option = mergedOptions.find((item) => item.id === id) ?? { id, label: id };
+          return (
+            <div
+              key={id}
+              className="builder-picker-row"
+              draggable
+              onDragStart={() => setDragged(id)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => dropOn(id)}
+            >
+              <GripVertical size={14} className="builder-picker-grip" />
+              <div className="builder-picker-main">
+                <span>{option.label}</span>
+                <code>{id}</code>
+              </div>
+              {option.status && <Pill color={statusColor(option.status)}>{option.status}</Pill>}
+              <button className="btn btn-xs btn-ghost" type="button" title="move up" disabled={index === 0} onClick={() => move(id, -1)}>
+                <ArrowUp size={12} />
+              </button>
+              <button className="btn btn-xs btn-ghost" type="button" title="move down" disabled={index === normalized.length - 1} onClick={() => move(id, 1)}>
+                <ArrowDown size={12} />
+              </button>
+              <button className="btn btn-xs btn-danger" type="button" title="remove" onClick={() => remove(id)}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+          );
+        })}
+        <div className="builder-picker-add">
+          <select className="audit-select" value={selectedToAdd} onChange={(event) => setSelectedToAdd(event.target.value)}>
+            <option value="">add...</option>
+            {addable.map((option) => (
+              <option key={option.id} value={option.id}>{option.label}</option>
             ))}
-          </optgroup>
-        )}
-      </select>
-    </label>
+          </select>
+          <button className="btn btn-sm btn-ghost" type="button" disabled={!selectedToAdd} onClick={() => add(selectedToAdd)}>
+            <Plus size={14} /> add
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -129,6 +387,7 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
   const plan = data.planCandidates.find((item) => item.exists && item.kind === "builder")
     ?? data.planCandidates.find((item) => item.exists && item.kind === "canonical")
     ?? data.planCandidates.find((item) => item.exists);
+  const healthyAgents = data.agents.options.filter((agent) => agent.status === "ok").map((agent) => agent.id);
   return {
     name: `${data.project.label} builder pass`,
     projectRoot,
@@ -137,12 +396,22 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
     status: "draft",
     config: {
       projectRoot,
-      agentOrder: ["codex", "claude", "opencode"],
+      agentOrder: healthyAgents.length > 0
+        ? [
+            ...healthyAgents.filter((a) => a === "opencode"),
+            ...healthyAgents.filter((a) => a !== "opencode").map((a) => {
+              if (a === "gemini") return "gemini:gemini-2.5-flash:high";
+              if (a === "codex") return "codex:o4-mini:medium";
+              if (a === "claude") return "claude:claude-sonnet-4:medium";
+              return a;
+            }),
+          ]
+        : data.agents.options.map((agent) => agent.id),
       modelPolicy: {
         planner: data.models.bestCloudHeavy ?? undefined,
         builder: data.models.bestCloudFast ?? data.models.bestCloudHeavy ?? undefined,
         reviewer: data.models.bestCloudHeavy ?? undefined,
-        fallbackTargets: data.models.fallbackTargets.slice(0, 5),
+        fallbackTargets: data.models.fallbackTargets.slice(0, 8),
       },
       validationProfile: {
         commands: data.validation.commands,
@@ -156,47 +425,66 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
       gitPolicy: { commit: "manual", push: "never" },
       backupPolicy: { enabled: true, beforeRun: true },
       riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      geminiApprovalMode: "auto_edit",
     },
   };
 }
 
-function splitCsv(value: string): string[] {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+function workflowInputFromExisting(workflow: BuilderWorkflow): BuilderWorkflowInput {
+  return {
+    name: workflow.name,
+    projectRoot: workflow.projectRoot,
+    planFile: workflow.planFile,
+    mode: workflow.mode,
+    status: workflow.status === "ready" ? "ready" : "draft",
+    nextRunAt: workflow.nextRunAt,
+    pausedReason: workflow.pausedReason,
+    config: workflow.config,
+  };
 }
 
 function WorkflowModal({
   data,
   selectedRoot,
+  workflow,
   onClose,
   onSaved,
 }: {
   data: BuilderDiscovery;
   selectedRoot: string;
+  workflow?: BuilderWorkflow | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [draft, setDraft] = useState<BuilderWorkflowInput>(() => workflowDefaults(data, selectedRoot));
-  const [agentOrder, setAgentOrder] = useState(draft.config.agentOrder.join(", "));
-  const [fallbackTargets, setFallbackTargets] = useState(draft.config.modelPolicy.fallbackTargets.join(", "));
+  const [draft, setDraft] = useState<BuilderWorkflowInput>(() => workflow ? workflowInputFromExisting(workflow) : workflowDefaults(data, selectedRoot));
+  const [agentOrder, setAgentOrder] = useState<string[]>(draft.config.agentOrder);
+  const [fallbackTargets, setFallbackTargets] = useState<string[]>(draft.config.modelPolicy.fallbackTargets);
   const [internalCommands, setInternalCommands] = useState(draft.config.validationProfile.internal.join("\n"));
   const [runtimeCommands, setRuntimeCommands] = useState(draft.config.validationProfile.runtime.join("\n"));
   const [publicCommands, setPublicCommands] = useState(draft.config.validationProfile.public.join("\n"));
   const [playwrightEnabled, setPlaywrightEnabled] = useState(draft.config.validationProfile.playwright?.enabled ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const modelOptions: PickerOption[] = [...data.models.heavy, ...data.models.medium, ...data.models.light, ...data.models.opencode, ...(data.models.zen ?? []), ...(data.models.alibaba ?? [])]
+    .map((model) => ({ id: model.name, label: model.label, status: model.qualityStatus }));
+  const agentOptions: PickerOption[] = data.agents.options
+    .map((agent) => ({ id: agent.id, label: agent.label, status: agent.status }));
+  const selectablePlans = data.planCandidates.filter((plan) => plan.exists || draft.mode === "plan");
 
   async function save() {
     setSaving(true);
     setError(null);
+    const effectiveRoot = workflow?.projectRoot ?? selectedRoot;
     const payload: BuilderWorkflowInput = {
       ...draft,
+      projectRoot: effectiveRoot,
       config: {
         ...draft.config,
-        projectRoot: selectedRoot,
-        agentOrder: splitCsv(agentOrder),
+        projectRoot: effectiveRoot,
+        agentOrder: uniqueList(agentOrder),
         modelPolicy: {
           ...draft.config.modelPolicy,
-          fallbackTargets: splitCsv(fallbackTargets),
+          fallbackTargets: uniqueList(fallbackTargets),
         },
         validationProfile: {
           ...draft.config.validationProfile,
@@ -210,8 +498,8 @@ function WorkflowModal({
     };
 
     try {
-      const response = await authFetch("/api/builder/workflows", {
-        method: "POST",
+      const response = await authFetch(workflow ? `/api/builder/workflows/${workflow.id}` : "/api/builder/workflows", {
+        method: workflow ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -228,7 +516,7 @@ function WorkflowModal({
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
       <div className="modal-box builder-workflow-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-title">New workflow</div>
+        <div className="modal-title">{workflow ? "Edit workflow" : "New workflow"}</div>
         <div className="builder-form-grid">
           <label className="modal-input-row">
             <span className="modal-input-label">Name</span>
@@ -245,25 +533,26 @@ function WorkflowModal({
               value={draft.planFile}
               onChange={(event) => setDraft((prev) => ({ ...prev, planFile: event.target.value }))}
             >
-              {data.planCandidates.filter((plan) => plan.exists).map((plan) => (
-                <option key={plan.path} value={plan.path}>{plan.title} - {plan.path}</option>
+              {selectablePlans.map((plan) => (
+                <option key={plan.path} value={plan.path} disabled={!plan.exists && draft.mode !== "plan"}>
+                  {plan.exists ? "" : "create: "}{plan.title} - {plan.path}
+                </option>
               ))}
             </select>
           </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Mode</span>
-            <select
-              className="audit-select"
-              value={draft.mode}
-              onChange={(event) => setDraft((prev) => ({ ...prev, mode: event.target.value as BuilderWorkflowInput["mode"] }))}
-            >
-              <option value="once">once</option>
-              <option value="auto-continue">auto-continue</option>
-              <option value="scheduled">scheduled</option>
-              <option value="permanent">permanent</option>
-              <option value="doctor">doctor</option>
-            </select>
-          </label>
+          <ButtonGroup
+            label="Mode"
+            value={draft.mode}
+            onChange={(v) => setDraft((prev) => ({ ...prev, mode: v as BuilderWorkflowInput["mode"] }))}
+            options={[
+              { value: "once", label: "once" },
+              { value: "plan", label: "plan" },
+              { value: "auto-continue", label: "auto" },
+              { value: "scheduled", label: "sched" },
+              { value: "permanent", label: "perm" },
+              { value: "doctor", label: "doctor" },
+            ]}
+          />
           {(draft.mode === "scheduled" || draft.mode === "permanent") && (
             <>
               <label className="modal-input-row">
@@ -297,81 +586,44 @@ function WorkflowModal({
               </label>
             </>
           )}
-          <label className="modal-input-row">
-            <span className="modal-input-label">Status</span>
-            <select
-              className="audit-select"
-              value={draft.status}
-              onChange={(event) => setDraft((prev) => ({ ...prev, status: event.target.value as BuilderWorkflowInput["status"] }))}
-            >
-              <option value="draft">draft</option>
-              <option value="ready">ready</option>
-            </select>
-          </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Agent order</span>
-            <input className="modal-input" value={agentOrder} onChange={(event) => setAgentOrder(event.target.value)} />
-          </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Fallback targets</span>
-            <input className="modal-input" value={fallbackTargets} onChange={(event) => setFallbackTargets(event.target.value)} />
-          </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Planner</span>
-            <select
-              className="audit-select"
-              value={draft.config.modelPolicy.planner ?? ""}
-              onChange={(event) => setDraft((prev) => ({
-                ...prev,
-                config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, planner: event.target.value || undefined } },
-              }))}
-            >
-              <option value="">auto (health-based)</option>
-              {data.models.heavy.length > 0 && (
-                <optgroup label="heavy">
-                  {data.models.heavy.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-              {data.models.medium.length > 0 && (
-                <optgroup label="medium">
-                  {data.models.medium.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-              {data.models.light.length > 0 && (
-                <optgroup label="light">
-                  {data.models.light.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-            </select>
-          </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Builder</span>
-            <select
-              className="audit-select"
-              value={draft.config.modelPolicy.builder ?? ""}
-              onChange={(event) => setDraft((prev) => ({
-                ...prev,
-                config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, builder: event.target.value || undefined } },
-              }))}
-            >
-              <option value="">auto (health-based)</option>
-              {data.models.heavy.length > 0 && (
-                <optgroup label="heavy">
-                  {data.models.heavy.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-              {data.models.medium.length > 0 && (
-                <optgroup label="medium">
-                  {data.models.medium.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-              {data.models.light.length > 0 && (
-                <optgroup label="light">
-                  {data.models.light.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-                </optgroup>
-              )}
-            </select>
-          </label>
+          <ButtonGroup
+            label="Status"
+            value={draft.status}
+            onChange={(v) => setDraft((prev) => ({ ...prev, status: v as BuilderWorkflowInput["status"] }))}
+            options={[
+              { value: "draft", label: "draft" },
+              { value: "ready", label: "ready" },
+            ]}
+          />
+          <OrderedPicker label="Agent order" value={agentOrder} onChange={setAgentOrder} options={agentOptions} />
+          <OrderedPicker label="Fallback targets" value={fallbackTargets} onChange={setFallbackTargets} options={modelOptions} />
+          <ModelSelect
+            label="Planner"
+            value={draft.config.modelPolicy.planner ?? ""}
+            onChange={(value) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, planner: value || undefined } },
+            }))}
+            models={data.models}
+          />
+          <ModelSelect
+            label="Builder"
+            value={draft.config.modelPolicy.builder ?? ""}
+            onChange={(value) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, builder: value || undefined } },
+            }))}
+            models={data.models}
+          />
+          <ModelSelect
+            label="Reviewer"
+            value={draft.config.modelPolicy.reviewer ?? ""}
+            onChange={(value) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, modelPolicy: { ...prev.config.modelPolicy, reviewer: value || undefined } },
+            }))}
+            models={data.models}
+          />
           <label className="modal-input-row builder-form-wide">
             <span className="modal-input-label">internal</span>
             <textarea
@@ -407,41 +659,31 @@ function WorkflowModal({
             />
             playwright
           </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Commit</span>
-            <select
-              className="audit-select"
-              value={draft.config.gitPolicy.commit}
-              onChange={(event) => setDraft((prev) => ({
-                ...prev,
-                config: {
-                  ...prev.config,
-                  gitPolicy: { ...prev.config.gitPolicy, commit: event.target.value as BuilderWorkflowInput["config"]["gitPolicy"]["commit"] },
-                },
-              }))}
-            >
-              <option value="manual">manual</option>
-              <option value="after-validation">after-validation</option>
-            </select>
-          </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Push</span>
-            <select
-              className="audit-select"
-              value={draft.config.gitPolicy.push}
-              onChange={(event) => setDraft((prev) => ({
-                ...prev,
-                config: {
-                  ...prev.config,
-                  gitPolicy: { ...prev.config.gitPolicy, push: event.target.value as BuilderWorkflowInput["config"]["gitPolicy"]["push"] },
-                },
-              }))}
-            >
-              <option value="never">never</option>
-              <option value="workflow-branch">workflow-branch</option>
-              <option value="current-branch">current-branch</option>
-            </select>
-          </label>
+          <ButtonGroup
+            label="Commit"
+            value={draft.config.gitPolicy.commit}
+            onChange={(v) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, gitPolicy: { ...prev.config.gitPolicy, commit: v as BuilderWorkflowInput["config"]["gitPolicy"]["commit"] } },
+            }))}
+            options={[
+              { value: "manual", label: "manual" },
+              { value: "after-validation", label: "auto" },
+            ]}
+          />
+          <ButtonGroup
+            label="Push"
+            value={draft.config.gitPolicy.push}
+            onChange={(v) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, gitPolicy: { ...prev.config.gitPolicy, push: v as BuilderWorkflowInput["config"]["gitPolicy"]["push"] } },
+            }))}
+            options={[
+              { value: "never", label: "never" },
+              { value: "workflow-branch", label: "wf branch" },
+              { value: "current-branch", label: "curr branch" },
+            ]}
+          />
           <label className="modal-input-row">
             <span className="modal-input-label">Max passes</span>
             <input
@@ -459,23 +701,45 @@ function WorkflowModal({
               }))}
             />
           </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Live deploys</span>
-            <select
-              className="audit-select"
-              value={draft.config.riskPolicy.liveDeploys}
-              onChange={(event) => setDraft((prev) => ({
-                ...prev,
-                config: {
-                  ...prev.config,
-                  riskPolicy: { ...prev.config.riskPolicy, liveDeploys: event.target.value as BuilderWorkflowInput["config"]["riskPolicy"]["liveDeploys"] },
-                },
-              }))}
-            >
-              <option value="disabled">disabled</option>
-              <option value="manual-approval">manual-approval</option>
-            </select>
-          </label>
+          <ButtonGroup
+            label="Live deploys"
+            value={draft.config.riskPolicy.liveDeploys}
+            onChange={(v) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, riskPolicy: { ...prev.config.riskPolicy, liveDeploys: v as BuilderWorkflowInput["config"]["riskPolicy"]["liveDeploys"] } },
+            }))}
+            options={[
+              { value: "disabled", label: "disabled" },
+              { value: "manual-approval", label: "manual" },
+            ]}
+          />
+          <ButtonGroup
+            label="Approval mode"
+            value={(draft.config as { geminiApprovalMode?: string }).geminiApprovalMode ?? "auto_edit"}
+            onChange={(v) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, geminiApprovalMode: v as "default" | "auto_edit" | "plan" | "yolo" },
+            }))}
+            options={[
+              { value: "auto_edit", label: "safe", title: "auto_edit — safe (Gemini)" },
+              { value: "plan", label: "plan", title: "plan — read-only (Gemini)" },
+              { value: "default", label: "default", title: "default agent behavior" },
+              { value: "yolo", label: "yolo", title: "yolo — unrestricted (Gemini)" },
+            ]}
+          />
+          <ButtonGroup
+            label="Effort"
+            value={(draft.config as { effortLevel?: string }).effortLevel ?? "medium"}
+            onChange={(v) => setDraft((prev) => ({
+              ...prev,
+              config: { ...prev.config, effortLevel: v as "low" | "medium" | "high" },
+            }))}
+            options={[
+              { value: "low", label: "low", title: "Low effort — faster, cheaper (not all models support this)" },
+              { value: "medium", label: "med", title: "Medium effort — balanced (default)" },
+              { value: "high", label: "high", title: "High effort — deeper reasoning (not all models support this)" },
+            ]}
+          />
           <label className="builder-checkbox">
             <input
               type="checkbox"
@@ -520,13 +784,13 @@ function WorkflowModal({
 function WorkflowActions({
   workflow,
   onMutated,
+  onEdit,
   onDoctorReview,
-  hasDoctorReports,
 }: {
   workflow: { id: string; status: string };
   onMutated: () => void;
+  onEdit: () => void;
   onDoctorReview: () => void;
-  hasDoctorReports: boolean;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -548,13 +812,35 @@ function WorkflowActions({
     }
   }
 
-  const canStart = workflow.status === "ready" || workflow.status === "draft";
+  const canStart = workflow.status === "ready" || workflow.status === "draft" || workflow.status === "done" || workflow.status === "failed";
   const canStop = workflow.status === "running";
   const canPause = workflow.status === "running" || workflow.status === "ready";
-  const canResume = workflow.status === "paused";
+  const canResume = workflow.status === "paused" || workflow.status === "blocked";
+  const canEdit = workflow.status !== "running";
+  const canDelete = workflow.status !== "running";
+
+  async function deleteWorkflow() {
+    if (!confirm(`Delete workflow? This will remove the workflow but keep the project files.`)) return;
+    setLoading(true);
+    try {
+      const response = await authFetch(`/api/builder/workflows/${workflow.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const text = await response.text();
+        console.error("delete failed", text);
+      }
+    } finally {
+      setLoading(false);
+      onMutated();
+    }
+  }
 
   return (
     <div className="builder-action-row">
+      {canEdit && (
+        <button className="btn btn-xs btn-ghost" onClick={onEdit} disabled={loading} title="edit workflow">
+          <Pencil size={12} />
+        </button>
+      )}
       {canStart && (
         <button className="btn btn-xs btn-primary" onClick={() => act("start")} disabled={loading} title="start run">
           <Play size={12} />
@@ -578,6 +864,11 @@ function WorkflowActions({
       <button className="btn btn-xs btn-ghost" onClick={onDoctorReview} disabled={loading} title="run doctor review" style={{ marginLeft: 4 }}>
         <RefreshCw size={12} />
       </button>
+      {canDelete && (
+        <button className="btn btn-xs btn-danger" onClick={deleteWorkflow} disabled={loading} title="delete workflow" style={{ marginLeft: 4 }}>
+          <Trash2 size={12} />
+        </button>
+      )}
     </div>
   );
 }
@@ -607,21 +898,125 @@ function ValidationRow({ validation }: { validation: BuilderValidation }) {
   );
 }
 
+type BuilderSourceSession = NonNullable<BuilderWorkflow["config"]["sourceSession"]>;
+
+function SourceSessionMini({ source }: { source?: BuilderSourceSession }) {
+  if (!source) return <span className="mono dim">-</span>;
+  return (
+    <div>
+      <Pill color="blue">{source.agent}</Pill>
+      <div className="mono dim" style={{ marginTop: 4 }}>{source.title || source.sessionId}</div>
+      {source.messageCount !== undefined && (
+        <div className="text-xs text-dim">{source.messageCount} messages</div>
+      )}
+    </div>
+  );
+}
+
+function SourceSessionDetail({ source }: { source?: BuilderSourceSession }) {
+  if (!source) return null;
+  return (
+    <div className="builder-detail-section">
+      <div className="builder-detail-section-title">source session</div>
+      <div className="builder-kv-grid">
+        <div><span>agent</span><strong><Pill color="blue">{source.agent}</Pill></strong></div>
+        <div><span>session</span><strong className="mono">{source.sessionId}</strong></div>
+        <div><span>title</span><strong>{source.title ?? "-"}</strong></div>
+        <div><span>messages</span><strong>{source.messageCount ?? "-"}</strong></div>
+        <div><span>directory</span><strong className="mono">{source.directory ?? "-"}</strong></div>
+        <div><span>captured</span><strong className="mono">{source.capturedAt ?? "-"}</strong></div>
+      </div>
+      {source.latestUserPrompt && (
+        <div className="builder-detail-log" style={{ marginTop: 10 }}>
+          <div className="builder-detail-log-header"><span>latest ask</span></div>
+          <div className="builder-detail-log-content"><pre>{source.latestUserPrompt}</pre></div>
+        </div>
+      )}
+      {source.transcriptSummary && (
+        <div className="builder-detail-log" style={{ marginTop: 10 }}>
+          <div className="builder-detail-log-header"><span>handoff summary</span></div>
+          <div className="builder-detail-log-content"><pre>{source.transcriptSummary}</pre></div>
+        </div>
+      )}
+      {source.touchedFiles && source.touchedFiles.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+          {source.touchedFiles.slice(0, 30).map((file) => (
+            <span className="pill gray mono" key={file}>{file}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleLog({ label, content }: { label: string; content: string }) {
+  const [open, setOpen] = useState(false);
+  if (!content) return null;
+  return (
+    <div className="builder-detail-log">
+      <div className="builder-detail-log-header" onClick={() => setOpen(!open)}>
+        <span>{label}</span>
+        <span className="builder-log-toggle">{open ? "▲ collapse" : "▼ expand"}</span>
+      </div>
+      {open && (
+        <div className="builder-detail-log-content">
+          <pre>{content}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RunDetailPanel({
   runDetail,
   loading,
   error,
   onClose,
+  onOpen,
 }: {
   runDetail: BuilderRunResponse | undefined;
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  onOpen: () => void;
 }) {
   const run = runDetail?.run;
+  const workflow = runDetail?.workflow;
   const passes = runDetail?.passes ?? [];
   const artifacts = runDetail?.artifacts ?? [];
   const validations = runDetail?.validations ?? [];
+  const [passLogs, setPassLogs] = useState<Record<string, { stdout: string; stderr: string }>>({});
+  const [expandedLogs, setExpandedLogs] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!runDetail?.run) return;
+    onOpen();
+    const runId = runDetail.run.id;
+    const fetchLogs = async () => {
+      const logs: Record<string, { stdout: string; stderr: string }> = {};
+      for (const pass of passes) {
+        try {
+          const params = new URLSearchParams({ runId, kind: "stdout", pass: String(pass.sequence) });
+          const stdoutRes = await authFetch(`/api/builder/log?${params}`);
+          const stderrParams = new URLSearchParams({ runId, kind: "stderr", pass: String(pass.sequence) });
+          const stderrRes = await authFetch(`/api/builder/log?${stderrParams}`);
+          logs[pass.id] = {
+            stdout: stdoutRes.ok ? await stdoutRes.text() : "",
+            stderr: stderrRes.ok ? await stderrRes.text() : "",
+          };
+        } catch {
+          logs[pass.id] = { stdout: "", stderr: "" };
+        }
+      }
+      setPassLogs(logs);
+    };
+    fetchLogs();
+    setExpandedLogs({});
+  }, [runDetail?.run, passes]);
+
+  function toggleLog(passId: string) {
+    setExpandedLogs((prev) => ({ ...prev, [passId]: !prev[passId] }));
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -647,10 +1042,43 @@ function RunDetailPanel({
               </div>
             )}
 
+            <SourceSessionDetail source={workflow?.config.sourceSession} />
+
             {passes.length > 0 && (
               <div className="builder-detail-section">
                 <div className="builder-detail-section-title">passes</div>
-                <table className="data-table">
+                {passes.length > 1 && (
+                  <div className="builder-pass-steps">
+                    {passes.map((pass: BuilderPass, i: number) => {
+                      const isCurrent = pass.status === "running";
+                      const isDone = pass.status === "success" || pass.status === "failed" || pass.status === "canceled";
+                      return (
+                        <div key={pass.id} style={{ display: "flex", alignItems: "center", flex: i < passes.length - 1 ? 1 : "none" }}>
+                          <div className="builder-pass-step">
+                            <div className={`builder-pass-step-dot ${isCurrent ? "current" : isDone && pass.status === "success" ? "success" : isDone ? "failed" : ""}`}>
+                              {pass.sequence}
+                            </div>
+                            <div className="builder-pass-step-label">{pass.phase ?? pass.agent ?? `pass ${pass.sequence}`}</div>
+                          </div>
+                          {i < passes.length - 1 && (
+                            <div className={`builder-pass-step-connector ${pass.status === "success" ? "done" : ""}`} />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="table-wrap">
+                <table className="data-table run-passes-table">
+                  <colgroup>
+                    <col className="seq-col" />
+                    <col className="phase-col" />
+                    <col className="agent-col" />
+                    <col className="model-col" />
+                    <col className="status-col" />
+                    <col className="started-col" />
+                    <col className="finished-col" />
+                  </colgroup>
                   <thead><tr><th>seq</th><th>phase</th><th>agent</th><th>model</th><th>status</th><th>started</th><th>finished</th></tr></thead>
                   <tbody>
                     {passes.map((pass: BuilderPass) => (
@@ -666,12 +1094,57 @@ function RunDetailPanel({
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
+
+            {passes.map((pass: BuilderPass) => {
+              const logs = passLogs[pass.id];
+              const isOpen = expandedLogs[pass.id] ?? false;
+              return (
+                <div key={pass.id} style={{ marginTop: 12, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", cursor: "pointer", background: isOpen ? "var(--bg-card-start)" : "transparent" }}
+                    onClick={() => toggleLog(pass.id)}
+                  >
+                    <Pill color={statusColor(pass.status)}>pass {pass.sequence}</Pill>
+                    <span className="mono dim" style={{ fontSize: 11 }}>{pass.agent ?? "-"} / {pass.model ?? "-"}</span>
+                    <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 11 }}>
+                      {logs ? (logs.stdout.length + logs.stderr.length) + " chars" : "loading..."}
+                    </span>
+                    <span style={{ color: "var(--text-dim)" }}>{isOpen ? "▲" : "▼"}</span>
+                  </div>
+                  {isOpen && logs && (
+                    <div style={{ borderTop: "1px solid var(--border)" }}>
+                      {logs.stdout && (
+                        <div>
+                          <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-dim)", background: "color-mix(in oklch, white 2%, transparent)", borderBottom: "1px solid var(--border)" }}>
+                            stdout
+                          </div>
+                          <pre style={{ padding: "10px 14px", fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.5, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-all", background: "color-mix(in oklch, black 15%, transparent)", maxHeight: 200, overflowY: "auto", margin: 0 }}>{logs.stdout}</pre>
+                        </div>
+                      )}
+                      {logs.stderr && (
+                        <div>
+                          <div style={{ padding: "6px 14px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-dim)", background: "color-mix(in oklch, white 2%, transparent)", borderBottom: "1px solid var(--border)" }}>
+                            stderr
+                          </div>
+                          <pre style={{ padding: "10px 14px", fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.5, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-all", background: "color-mix(in oklch, black 15%, transparent)", maxHeight: 200, overflowY: "auto", margin: 0 }}>{logs.stderr}</pre>
+                        </div>
+                      )}
+                      {!logs.stdout && !logs.stderr && (
+                        <div style={{ padding: "12px 14px", color: "var(--text-dim)", fontSize: 12 }}>no logs captured</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {artifacts.length > 0 && (
               <div className="builder-detail-section">
                 <div className="builder-detail-section-title">artifacts</div>
+                <div className="table-wrap">
                 <table className="data-table">
                   <thead><tr><th>kind</th><th>path</th><th>created</th></tr></thead>
                   <tbody>
@@ -680,13 +1153,23 @@ function RunDetailPanel({
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
 
             {validations.length > 0 && (
               <div className="builder-detail-section">
                 <div className="builder-detail-section-title">validation results</div>
-                <table className="data-table">
+                <div className="table-wrap">
+                <table className="data-table run-validations-table">
+                  <colgroup>
+                    <col className="status-col" />
+                    <col className="kind-col" />
+                    <col className="command-col" />
+                    <col className="started-col" />
+                    <col className="finished-col" />
+                    <col className="error-col" />
+                  </colgroup>
                   <thead><tr><th>status</th><th>kind</th><th>command/url</th><th>started</th><th>finished</th><th>error</th></tr></thead>
                   <tbody>
                     {validations.map((validation: BuilderValidation) => (
@@ -694,6 +1177,7 @@ function RunDetailPanel({
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
 
@@ -710,7 +1194,7 @@ function RunDetailPanel({
 function CollapsibleSection({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="builder-detail-section" style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+    <div className={`builder-detail-section${open ? "" : " closed"}${open ? " open" : ""}`} style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
       <div
         style={{ display: "flex", alignItems: "center", padding: "10px 14px", cursor: "pointer", background: open ? "var(--bg-card-start)" : "transparent", borderBottom: open ? "1px solid var(--border)" : "none" }}
         onClick={() => setOpen(!open)}
@@ -724,9 +1208,11 @@ function CollapsibleSection({ title, children, defaultOpen = false }: { title: s
 }
 
 function ProvisionModal({
+  data,
   onClose,
   onProvisioned,
 }: {
+  data: BuilderDiscovery;
   onClose: () => void;
   onProvisioned: () => void;
 }) {
@@ -737,12 +1223,18 @@ function ProvisionModal({
   const [tags, setTags] = useState("");
   const [owner, setOwner] = useState("");
   const [planFile, setPlanFile] = useState("");
-  const [agentOrder, setAgentOrder] = useState("codex, claude, opencode");
+  const [agentOrder, setAgentOrder] = useState<string[]>(
+    data.agents.options.filter((agent) => agent.status === "ok").map((agent) => agent.id),
+  );
+  const [fallbackTargets, setFallbackTargets] = useState<string[]>(data.models.fallbackTargets.slice(0, 5));
   const [internalUrl, setInternalUrl] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const agentOptions: PickerOption[] = data.agents.options.map((agent) => ({ id: agent.id, label: agent.label, status: agent.status }));
+  const modelOptions: PickerOption[] = [...data.models.heavy, ...data.models.medium, ...data.models.light, ...data.models.opencode, ...(data.models.zen ?? []), ...(data.models.alibaba ?? [])]
+    .map((model) => ({ id: model.name, label: model.label, status: model.qualityStatus }));
 
   async function provision() {
     if (!name.trim()) { setError("name required"); return; }
@@ -762,7 +1254,8 @@ function ProvisionModal({
           tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
           owner: owner.trim() || undefined,
           planFile: planFile.trim() || undefined,
-          agentOrder: agentOrder.split(",").map((a) => a.trim()).filter(Boolean),
+          agentOrder: uniqueList(agentOrder),
+          fallbackTargets: uniqueList(fallbackTargets),
           internalUrl: internalUrl.trim() || undefined,
           publicUrl: publicUrl.trim() || undefined,
           gitPolicy: { commit: "manual", push: "never" },
@@ -822,10 +1315,8 @@ function ProvisionModal({
             <span className="modal-input-label">Plan file path</span>
             <input className="modal-input" value={planFile} onChange={(e) => setPlanFile(e.target.value)} placeholder="Leave blank to auto-detect or create stub PLAN.md" />
           </label>
-          <label className="modal-input-row">
-            <span className="modal-input-label">Agent order</span>
-            <input className="modal-input" value={agentOrder} onChange={(e) => setAgentOrder(e.target.value)} placeholder="codex, claude, opencode" />
-          </label>
+          <OrderedPicker label="Agent order" value={agentOrder} onChange={setAgentOrder} options={agentOptions} />
+          <OrderedPicker label="Fallback targets" value={fallbackTargets} onChange={setFallbackTargets} options={modelOptions} />
           <label className="modal-input-row">
             <span className="modal-input-label">Internal URL</span>
             <input className="modal-input" value={internalUrl} onChange={(e) => setInternalUrl(e.target.value)} placeholder="http://127.0.0.1:3000 (optional)" />
@@ -1002,8 +1493,10 @@ function DoctorReportModal({
 export function BuilderPage() {
   const [selectedRoot, setSelectedRoot] = useState("/opt/opencode-control-surface");
   const [creating, setCreating] = useState(false);
+  const [editingWorkflow, setEditingWorkflow] = useState<BuilderWorkflow | null>(null);
   const [showProvision, setShowProvision] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [viewingRunDetail, setViewingRunDetail] = useState(false);
   const [selectedDoctorReport, setSelectedDoctorReport] = useState<BuilderDoctorReport | null>(null);
   const projectsApi = useAuthenticatedApi<BuilderProjectsResponse>("/api/builder/projects", 60_000);
   const discoverApi = useAuthenticatedApi<BuilderDiscovery>(
@@ -1055,16 +1548,17 @@ export function BuilderPage() {
     }
   }, [projects, selectedRoot]);
 
-  // Poll runs when any workflow is running
+  // Poll runs when any workflow is running — but skip while user is reading run detail
   useEffect(() => {
     const anyRunning = workflows.some((w) => w.status === "running");
     if (!anyRunning) return;
+    if (viewingRunDetail) return;
     const interval = setInterval(() => {
       runsApi.refresh();
       workflowsApi.refresh();
     }, 5000);
     return () => clearInterval(interval);
-  }, [workflows, runsApi, workflowsApi]);
+  }, [workflows, runsApi, workflowsApi, viewingRunDetail]);
 
   const stats = useMemo(() => ({
     plans: data?.planCandidates.filter((plan) => plan.exists).length ?? 0,
@@ -1124,6 +1618,7 @@ export function BuilderPage() {
         <>
           {showProvision && (
             <ProvisionModal
+              data={data}
               onClose={() => setShowProvision(false)}
               onProvisioned={() => {
                 setShowProvision(false);
@@ -1136,10 +1631,24 @@ export function BuilderPage() {
             <WorkflowModal
               data={data}
               selectedRoot={selectedRoot}
+              workflow={null}
               onClose={() => setCreating(false)}
               onSaved={() => {
                 setCreating(false);
                 workflowsApi.refresh();
+              }}
+            />
+          )}
+          {editingWorkflow && (
+            <WorkflowModal
+              data={data}
+              selectedRoot={editingWorkflow.projectRoot}
+              workflow={editingWorkflow}
+              onClose={() => setEditingWorkflow(null)}
+              onSaved={() => {
+                setEditingWorkflow(null);
+                workflowsApi.refresh();
+                runsApi.refresh();
               }}
             />
           )}
@@ -1170,7 +1679,7 @@ export function BuilderPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>status</th><th>mode</th><th>name</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
+                      <th>status</th><th>mode</th><th>name</th><th>source</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1187,6 +1696,7 @@ export function BuilderPage() {
                             )}
                           </td>
                           <td>{workflow.name}</td>
+                          <td><SourceSessionMini source={workflow.config.sourceSession} /></td>
                           <td className="mono trunc">{workflow.projectRoot}</td>
                           <td className="mono trunc">{workflow.planFile}</td>
                           <td>{workflow.config.agentOrder.join(" -> ")}</td>
@@ -1210,8 +1720,8 @@ export function BuilderPage() {
                             <WorkflowActions
                               workflow={workflow}
                               onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
+                              onEdit={() => setEditingWorkflow(workflow)}
                               onDoctorReview={() => triggerDoctorReview(workflow.id)}
-                              hasDoctorReports={hasDoctor}
                             />
                           </td>
                         </tr>
@@ -1249,7 +1759,26 @@ export function BuilderPage() {
                         <td className="mono dim">{fmtTs(run.finishedAt)}</td>
                         <td className="mono trunc">{run.currentPassId ?? "-"}</td>
                         <td className="mono trunc">{run.error ? run.error.slice(0, 60) : "-"}</td>
-                        <td><ChevronRight size={14} className="row-chevron" /></td>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          {(run.status === "failed" || run.status === "success" || run.status === "canceled") && (
+                            <button
+                              className="btn btn-xs btn-ghost"
+                              onClick={async () => {
+                                try {
+                                  await authFetch(`/api/builder/runs/${run.id}/retry`, { method: "POST" });
+                                  runsApi.refresh();
+                                  workflowsApi.refresh();
+                                } catch (err) {
+                                  console.error("retry failed", err);
+                                }
+                              }}
+                              title="retry run"
+                            >
+                              <RefreshCw size={12} />
+                            </button>
+                          )}
+                          <ChevronRight size={14} className="row-chevron" />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1334,9 +1863,9 @@ export function BuilderPage() {
             <SectionCard title="agents and models" defaultOpen={true}>
               <div className="section-card-body">
                 <div className="builder-pill-row">
-                  <AgentPill label="codex" status={data.agents.codex} />
-                  <AgentPill label="claude" status={data.agents.claude} />
-                  <AgentPill label="opencode" status={data.agents.opencode} />
+                  {data.agents.options.map((agent) => (
+                    <AgentPill key={agent.id} label={agent.id} status={agent.status} />
+                  ))}
                 </div>
                 <ModelSummary models={data.models} />
                 {data.models.sample.length > 0 && (
@@ -1372,9 +1901,11 @@ export function BuilderPage() {
           error={runDetailApi.error}
           onClose={() => {
             setSelectedRunId(null);
+            setViewingRunDetail(false);
             runsApi.refresh();
             workflowsApi.refresh();
           }}
+          onOpen={() => setViewingRunDetail(true)}
         />
       )}
 

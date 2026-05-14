@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 const execAsync = promisify(exec);
 const STRIP_ANSI = /\x1b\[[0-9;]*m/g;
 const GPU_HEALTH_PATH = "/var/lib/mimule/gpu-health.json";
+const CACHE_TTL_MS = 60_000;
 
 export interface VastInstance {
   id: string;
@@ -29,13 +30,40 @@ export interface VastAccount {
   userId: string;
 }
 
+let instanceCache: { value: VastInstance | null; ts: number } | null = null;
+let instanceInFlight: Promise<VastInstance | null> | null = null;
+let accountCache: { value: VastAccount | null; ts: number } | null = null;
+let accountInFlight: Promise<VastAccount | null> | null = null;
+
+function fresh<T>(cache: { value: T; ts: number } | null): T | null {
+  if (!cache) return null;
+  return Date.now() - cache.ts < CACHE_TTL_MS ? cache.value : null;
+}
+
 // vastai show instances returns 3 multi-line rows per instance:
 //  Row A: # ID  Machine  Status   Num  Model  Util.%  vCPUs  RAM  Storage
 //  Row B: # SSH_Addr  SSH_Port  $/hr  Image  Net_up
 //  Row C: # Net_down  R  Label  age(h)  uptime(m)
 export async function getVastInstance(): Promise<VastInstance | null> {
+  const cached = fresh(instanceCache);
+  if (cached !== null || (instanceCache && Date.now() - instanceCache.ts < CACHE_TTL_MS)) {
+    return instanceCache.value;
+  }
+  if (instanceInFlight) return instanceInFlight;
+
+  instanceInFlight = readVastInstance();
   try {
-    const { stdout } = await execAsync("vastai show instances", { timeout: 8000 });
+    const value = await instanceInFlight;
+    instanceCache = { value, ts: Date.now() };
+    return value;
+  } finally {
+    instanceInFlight = null;
+  }
+}
+
+async function readVastInstance(): Promise<VastInstance | null> {
+  try {
+    const { stdout } = await execAsync("vastai show instances", { timeout: 2000 });
     const lines = stdout.split("\n").map((l) => l.replace(STRIP_ANSI, "").trim()).filter(Boolean);
 
     let rowA: string[] | null = null;
@@ -80,11 +108,28 @@ export async function getVastInstance(): Promise<VastInstance | null> {
 
 // vastai show user returns 400 with newer CLI — use the REST API directly
 export async function getVastAccount(): Promise<VastAccount | null> {
+  const cached = fresh(accountCache);
+  if (cached !== null || (accountCache && Date.now() - accountCache.ts < CACHE_TTL_MS)) {
+    return accountCache.value;
+  }
+  if (accountInFlight) return accountInFlight;
+
+  accountInFlight = readVastAccount();
+  try {
+    const value = await accountInFlight;
+    accountCache = { value, ts: Date.now() };
+    return value;
+  } finally {
+    accountInFlight = null;
+  }
+}
+
+async function readVastAccount(): Promise<VastAccount | null> {
   try {
     const apiKey = readFileSync("/root/.config/vastai/vast_api_key", "utf8").trim();
     const res = await fetch(
       `https://console.vast.ai/api/v0/users/current/?api_key=${apiKey}`,
-      { signal: AbortSignal.timeout(6000) }
+      { signal: AbortSignal.timeout(2000) }
     );
     if (!res.ok) return null;
     const json = await res.json() as {

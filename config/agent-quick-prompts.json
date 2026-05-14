@@ -109,6 +109,26 @@
       "agents": ["claude", "codex", "opencode"],
       "risk": "low",
       "priority": 30
+    },
+    {
+      "id": "gemini-image-gen",
+      "name": "imagen",
+      "description": "Generate an image using Gemini's imagen capability. Describe what you need visually.",
+      "insertText": "Use Gemini's imagen to generate an image. Describe the scene, style, composition, and any text requirements precisely.",
+      "targetRoots": [],
+      "agents": ["gemini"],
+      "risk": "medium",
+      "priority": 20
+    },
+    {
+      "id": "gemini-video-gen",
+      "name": "video",
+      "description": "Generate a video using Gemini's Veo capability. Describe motion, scene, and duration.",
+      "insertText": "Use Gemini's video generation to create a video clip. Describe the scene, motion, camera work, and duration precisely.",
+      "targetRoots": [],
+      "agents": ["gemini"],
+      "risk": "medium",
+      "priority": 20
     }
   ]
 }

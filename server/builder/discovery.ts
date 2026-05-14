@@ -37,6 +37,13 @@ export type BuilderSkillStatus = {
   modifiedAt: number | null;
 };
 
+export type BuilderAgentOption = {
+  id: string;
+  label: string;
+  status: DiscoveryStatus;
+  evidence: string;
+};
+
 export type BuilderGitSummary = {
   root: string | null;
   branch: string | null;
@@ -73,6 +80,8 @@ export type BuilderDiscovery = {
     codex: DiscoveryStatus;
     claude: DiscoveryStatus;
     opencode: DiscoveryStatus;
+    gemini: DiscoveryStatus;
+    options: BuilderAgentOption[];
     evidence: Record<string, string>;
   };
   models: BuilderModelsInventory;
@@ -87,6 +96,13 @@ export type BuilderModelEntry = {
   latency: number | null;
   qualityStatus: string;
   label: string;
+  isFree: boolean;
+  isPaid: boolean;
+  contextWindow: number | null;
+  rating: number | null;
+  supportsImage: boolean;
+  supportsVideo: boolean;
+  supportsText: boolean;
 };
 
 export type BuilderModelsInventory = {
@@ -100,6 +116,9 @@ export type BuilderModelsInventory = {
   heavy: BuilderModelEntry[];
   medium: BuilderModelEntry[];
   light: BuilderModelEntry[];
+  opencode: BuilderModelEntry[];
+  zen: BuilderModelEntry[];
+  alibaba: BuilderModelEntry[];
   byProvider: Record<string, BuilderModelEntry[]>;
 };
 
@@ -177,18 +196,18 @@ function fileModifiedAt(path: string): number | null {
   }
 }
 
-function commandStatus(command: string, args: string[], cwd?: string): { status: DiscoveryStatus; output: string } {
+function commandStatus(command: string, args: string[], cwd?: string, timeout = 5000): { status: DiscoveryStatus; output: string } {
   try {
     const result = spawnSync(command, args, {
       cwd,
       encoding: "utf8",
-      timeout: 5000,
+      timeout,
       maxBuffer: 64 * 1024,
     });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     if (result.error) return { status: "error", output: result.error.message };
-    if (result.status === 0) return { status: "ok", output: output.slice(0, 800) };
-    return { status: "degraded", output: output.slice(0, 800) || `exit ${result.status}` };
+    if (result.status === 0) return { status: "ok", output: output.slice(0, 16_384) };
+    return { status: "degraded", output: output.slice(0, 16_384) || `exit ${result.status}` };
   } catch (error) {
     return { status: "error", output: error instanceof Error ? error.message : String(error) };
   }
@@ -266,22 +285,58 @@ function scanProjectPlanFiles(projectRoot: string): BuilderPlanCandidate[] {
   const candidates: BuilderPlanCandidate[] = [];
   if (!existsSync(projectRoot)) return candidates;
 
+  const ignoredDirs = new Set([".git", "node_modules", "dist", ".next", "build", "coverage", "backups"]);
+  const pending: Array<{ dir: string; depth: number }> = [{ dir: projectRoot, depth: 0 }];
+  let visited = 0;
+
   try {
-    for (const entry of readdirSync(projectRoot, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-      if (!/(PLAN|ROADMAP|AGENT|CLAUDE|README)/i.test(entry.name)) continue;
-      const path = join(projectRoot, entry.name);
-      candidates.push({
-        path,
-        title: readTitle(path),
-        kind: "project",
-        exists: true,
-        modifiedAt: fileModifiedAt(path),
-        relevance: "Project-local planning or operating document.",
-      });
+    while (pending.length > 0 && visited < 500) {
+      const current = pending.shift()!;
+      visited += 1;
+      for (const entry of readdirSync(current.dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (current.depth < 2 && !ignoredDirs.has(entry.name)) {
+            pending.push({ dir: join(current.dir, entry.name), depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+        if (!/(PLAN|ROADMAP|AGENT|CLAUDE|README)/i.test(entry.name)) continue;
+        const path = join(current.dir, entry.name);
+        candidates.push({
+          path,
+          title: readTitle(path),
+          kind: "project",
+          exists: true,
+          modifiedAt: fileModifiedAt(path),
+          relevance: current.depth === 0
+            ? "Project-local planning or operating document."
+            : "Dynamically discovered nested planning or operating document.",
+        });
+      }
     }
   } catch {}
 
+  return candidates;
+}
+
+function scanRootPlanFiles(): BuilderPlanCandidate[] {
+  const candidates: BuilderPlanCandidate[] = [];
+  try {
+    for (const entry of readdirSync("/root", { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      if (!/(PLAN|ROADMAP|AGENT|CLAUDE|README)/i.test(entry.name)) continue;
+      const path = join("/root", entry.name);
+      candidates.push({
+        path,
+        title: readTitle(path),
+        kind: entry.name === "DASHBOARD_V4_SCHEDULER_PLAN.md" ? "builder" : "context",
+        exists: true,
+        modifiedAt: fileModifiedAt(path),
+        relevance: "Dynamically discovered root workspace plan or operating document.",
+      });
+    }
+  } catch {}
   return candidates;
 }
 
@@ -292,10 +347,20 @@ function discoverPlanCandidates(projectRoot: string): BuilderPlanCandidate[] {
     exists: existsSync(candidate.path),
     modifiedAt: fileModifiedAt(candidate.path),
   }));
+  const rootPlans = scanRootPlanFiles();
   const project = scanProjectPlanFiles(projectRoot);
+  const newProjectPlan = join(projectRoot, "BUILDER_PLAN.md");
+  project.push({
+    path: newProjectPlan,
+    title: "New Builder Plan",
+    kind: "builder",
+    exists: existsSync(newProjectPlan),
+    modifiedAt: fileModifiedAt(newProjectPlan),
+    relevance: "Plan mode can create this project-local Builder plan file after researching the current project.",
+  });
   const byPath = new Map<string, BuilderPlanCandidate>();
 
-  for (const item of [...known, ...project]) {
+  for (const item of [...known, ...rootPlans, ...project]) {
     byPath.set(item.path, item);
   }
 
@@ -398,32 +463,84 @@ function inferValidationProfile(projectRoot: string): BuilderValidationProfile {
 
 function discoverAgents(): BuilderDiscovery["agents"] {
   const bins = {
-    codex: commandStatus("codex", ["--version"]),
-    claude: commandStatus("claude", ["--version"]),
-    opencode: commandStatus("opencode", ["--version"]),
+    codex: commandStatus("sh", ["-lc", "command -v codex"], undefined, 400),
+    claude: commandStatus("sh", ["-lc", "command -v claude"], undefined, 400),
+    opencode: commandStatus("sh", ["-lc", "command -v opencode"], undefined, 400),
+    gemini: commandStatus("sh", ["-lc", "command -v gemini"], undefined, 400),
   };
+  const labels: Record<string, string> = {
+    codex: "Codex CLI",
+    claude: "Claude Code CLI",
+    opencode: "OpenCode CLI",
+    gemini: "Gemini CLI",
+  };
+  const options = Object.entries(bins).map(([id, status]) => ({
+    id,
+    label: labels[id] ?? id,
+    status: status.status,
+    evidence: status.output,
+  }));
   return {
     codex: bins.codex.status,
     claude: bins.claude.status,
     opencode: bins.opencode.status,
+    gemini: bins.gemini.status,
+    options,
     evidence: {
       codex: bins.codex.output,
       claude: bins.claude.output,
       opencode: bins.opencode.output,
+      gemini: bins.gemini.output,
     },
   };
+}
+
+let opencodeModelCache: { ts: number; models: string[] } | null = null;
+
+function getOpenCodeModelNames(): string[] {
+  if (opencodeModelCache && Date.now() - opencodeModelCache.ts < 5 * 60_000) {
+    return opencodeModelCache.models;
+  }
+
+  const result = commandStatus("timeout", ["5", "opencode", "models"], undefined, 6000);
+  const lines = result.output.split(/\r?\n/);
+  const models = lines
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^(Available|Model|总计|Total|---)/i.test(line)) return false;
+      if (/^\d+\s/.test(line)) return false;
+      return line.length > 2 && !line.includes("...") && !line.includes("loading");
+    });
+  opencodeModelCache = { ts: Date.now(), models };
+  return models;
+}
+
+function capabilityForModel(name: string): string {
+  const lowered = name.toLowerCase();
+  if (/(opus|gpt-5\.5|gpt-5\.4|gpt-5\.3|gpt-5\.2|codex|max|pro|large|120b|235b)/.test(lowered)) return "heavy";
+  if (/(mini|flash|haiku|small|nano|lite|8b|3b)/.test(lowered)) return "light";
+  return "medium";
 }
 
 export function getBuilderModelsInventory(): BuilderModelsInventory {
   const detail = getModelsDetail();
   const categorized = getCategorizedModels();
-  const fallbackTargets = Object.keys(detail.fallbacks).sort();
+  const fallbackTargets = [
+    detail.summary.bestCloudHeavy,
+    detail.summary.bestCloudFast,
+    ...Object.values(detail.fallbacks).flat(),
+  ].filter((model): model is string => Boolean(model));
+  const uniqueFallbackTargets = [...new Set(fallbackTargets)];
   const availableModels = detail.models.filter((model) => model.available);
 
-  function modelEntry(m: { logicalName: string; provider: string; capability: string; available: boolean; latency: number | null; qualityStatus: string }): BuilderModelEntry {
+  function modelEntry(m: { logicalName: string; provider: string; capability: string; available: boolean; latency: number | null; qualityStatus: string; isFree?: boolean; isPaid?: boolean; contextWindow?: number | null; params?: number | null }): BuilderModelEntry {
     const providerTag = m.provider === "local" ? "GPU" : m.provider || "cloud";
     const capTag = m.capability || "unknown";
     const healthSuffix = m.qualityStatus !== "healthy" ? ` [${m.qualityStatus}]` : "";
+    const lowered = m.logicalName.toLowerCase();
+    const ctx = m.contextWindow ?? (typeof m.params === "number" && m.params >= 1000 ? m.params * 1000 : null);
+    const rating = m.latency != null ? Math.round((10000 / Math.max(m.latency, 50)) * 10) / 10 : null;
     return {
       name: m.logicalName,
       provider: m.provider,
@@ -432,8 +549,40 @@ export function getBuilderModelsInventory(): BuilderModelsInventory {
       latency: m.latency,
       qualityStatus: m.qualityStatus,
       label: `${m.logicalName} (${providerTag}/${capTag})${healthSuffix}`,
+      isFree: m.isFree ?? !/(zen-|paid|pro|premium)/.test(lowered),
+      isPaid: m.isPaid ?? /(zen-|paid|pro|premium)/.test(lowered),
+      contextWindow: ctx,
+      rating: rating != null ? Math.min(rating, 100) : null,
+      supportsImage: /(gemini|gpt-4|claude|llava|vision|qwen|minimax|image)/.test(lowered),
+      supportsVideo: /(gemini|sora|video|luma|runway|kling|veo)/.test(lowered),
+      supportsText: true,
     };
   }
+
+  const opencodeModels: BuilderModelEntry[] = getOpenCodeModelNames().map((name) => {
+    const lowered = name.toLowerCase();
+    return {
+      name,
+      provider: "opencode",
+      capability: capabilityForModel(name),
+      available: true,
+      latency: null,
+      qualityStatus: "healthy",
+      label: `${name} (OpenCode/native)`,
+      isFree: !/(zen-|paid|pro|premium)/.test(lowered),
+      isPaid: /(zen-|paid|pro|premium)/.test(lowered),
+      contextWindow: null,
+      rating: null,
+      supportsImage: /(gemini|gpt-4|claude|llava|vision|qwen|minimax|image)/.test(lowered),
+      supportsVideo: /(gemini|sora|video|luma|runway|kling|veo)/.test(lowered),
+      supportsText: true,
+    };
+  });
+
+  const opencodeFallbacks = opencodeModels
+    .filter((model) => model.capability === "heavy" || model.name.includes("minimax") || model.name.includes("codex"))
+    .slice(0, 8)
+    .map((model) => model.name);
 
   return {
     bestLocal: detail.summary.bestLocal,
@@ -441,13 +590,19 @@ export function getBuilderModelsInventory(): BuilderModelsInventory {
     bestCloudFast: detail.summary.bestCloudFast,
     available: availableModels.length,
     blocked: detail.summary.qualitySummary.blocked,
-    fallbackTargets,
-    sample: availableModels.slice(0, 8).map((model) => model.logicalName),
+    fallbackTargets: [...new Set([...uniqueFallbackTargets, ...opencodeFallbacks])],
+    sample: [...availableModels.slice(0, 8).map((model) => model.logicalName), ...opencodeModels.slice(0, 4).map((model) => model.name)],
     heavy: categorized.heavy.map(modelEntry),
     medium: categorized.medium.map(modelEntry),
     light: categorized.light.map(modelEntry),
+    opencode: opencodeModels,
+    zen: (categorized.byProvider["zen"] || []).map(modelEntry),
+    alibaba: (categorized.byProvider["alibaba"] || []).map(modelEntry),
     byProvider: Object.fromEntries(
-      Object.entries(categorized.byProvider).map(([prov, models]) => [prov, models.map(modelEntry)])
+      [
+        ...Object.entries(categorized.byProvider).map(([prov, models]) => [prov, models.map(modelEntry)] as const),
+        ["opencode", opencodeModels] as const,
+      ]
     ),
   };
 }
@@ -477,7 +632,7 @@ export function discoverBuilderProject(rootInput: string): { ok: true; data: Bui
     validation.commands.length === 0 ? "validation commands" : null,
     git.status !== "ok" ? "git repository" : null,
     !project.internalUrl ? "internal URL target" : null,
-    agents.codex !== "ok" && agents.claude !== "ok" && agents.opencode !== "ok" ? "agent CLI" : null,
+    agents.options.every((agent) => agent.status !== "ok") ? "agent CLI" : null,
   ].filter(Boolean) as string[];
 
   return {

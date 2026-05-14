@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Mic, MicOff, Send, Square } from "lucide-react";
 import { useVoice } from "../hooks/useVoice";
 
-type AgentId = "claude" | "codex" | "opencode";
+type AgentId = "claude" | "codex" | "opencode" | "gemini";
 
 type CatalogItem = {
   kind: "skill" | "command" | "prompt";

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Boxes, ChevronRight, PlugZap, Search, TerminalSquare, X } from "lucide-react";
 
-type AgentId = "claude" | "codex" | "opencode";
+type AgentId = "claude" | "codex" | "opencode" | "gemini";
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
 
 type SkillItem = {
@@ -33,6 +33,7 @@ type DiscoveryData = {
     opencodeSessions: { count: number; status: DiscoveryStatus };
     opencodeAgents: { count: number; names: string[]; status: DiscoveryStatus };
     opencodeModels: { sample: string[]; status: DiscoveryStatus };
+    geminiSessions: { count: number };
   };
 };
 
@@ -205,6 +206,7 @@ export function AgentDiscoveryStrip({
     const sessions =
       agent === "claude" ? data?.runtime.claudeSessions.count :
       agent === "codex" ? data?.runtime.codexSessions.count :
+      agent === "gemini" ? data?.runtime.geminiSessions.count :
       data?.runtime.opencodeSessions.count;
     return { skills, commands, sessions: sessions ?? 0 };
   }, [agent, data]);

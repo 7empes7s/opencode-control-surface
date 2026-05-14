@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { AgentVaultLogModal, type VaultLogDraft, type VaultLogDismissReason } from "../components/AgentVaultLogModal";
 import { authFetch } from "../lib/authFetch";
 
-type AgentId = "claude" | "codex" | "opencode";
+type AgentId = "claude" | "codex" | "opencode" | "gemini";
 
 export type SessionEndMessage = {
   role: string;

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, initDashboardDb } from "../db/dashboard.ts";
@@ -11,6 +12,7 @@ import {
   builderModelsHandler,
   builderPauseWorkflowHandler,
   builderProjectsHandler,
+  builderRunHandler,
   builderResumeWorkflowHandler,
   builderRunnerDisabledHandler,
   builderStartWorkflowHandler,
@@ -23,6 +25,7 @@ import {
 } from "./builder.ts";
 import type { BuilderDiscovery, BuilderModelsInventory } from "../builder/discovery.ts";
 import { readBuilderRuns, readBuilderWorkflow } from "../builder/store.ts";
+import { selectModelForRole } from "../builder/modelSelector.ts";
 
 let tempDir: string;
 let previousDashboardDb: string | undefined;
@@ -88,6 +91,37 @@ test("builder model inventory returns stable summary fields", async () => {
   expect(envelope.data).toHaveProperty("bestCloudHeavy");
   expect(envelope.data).toHaveProperty("bestCloudFast");
   expect(Array.isArray(envelope.data.fallbackTargets)).toBe(true);
+  expect(Array.isArray(envelope.data.opencode)).toBe(true);
+});
+
+test("opencode agent model selection uses native provider/model ids", () => {
+  const native = selectModelForRole("builder", {
+    projectRoot: "/opt/opencode-control-surface",
+    agentOrder: ["opencode"],
+    modelPolicy: {
+      builder: "opencode/minimax-m2.7",
+      fallbackTargets: ["zen-minimax", "opencode/gpt-5.4-mini"],
+    },
+    validationProfile: { commands: [], internal: [], runtime: [], public: [] },
+    gitPolicy: { commit: "manual", push: "never" },
+    backupPolicy: { enabled: false, beforeRun: false },
+    riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+  }, "opencode");
+  expect(native.model).toBe("opencode/minimax-m2.7");
+
+  const fallback = selectModelForRole("builder", {
+    projectRoot: "/opt/opencode-control-surface",
+    agentOrder: ["opencode"],
+    modelPolicy: {
+      builder: "zen-minimax",
+      fallbackTargets: ["zen-minimax", "opencode/gpt-5.4-mini"],
+    },
+    validationProfile: { commands: [], internal: [], runtime: [], public: [] },
+    gitPolicy: { commit: "manual", push: "never" },
+    backupPolicy: { enabled: false, beforeRun: false },
+    riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+  }, "opencode");
+  expect(fallback.model).toBe("opencode/gpt-5.4-mini");
 });
 
 test("builder workflow draft survives through SQLite read model and audit", async () => {
@@ -97,7 +131,7 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
     projectRoot: "/opt/opencode-control-surface",
     planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
     mode: "once",
-    status: "ready",
+    status: "draft",
     config: {
       projectRoot: "/opt/opencode-control-surface",
       agentOrder: ["codex", "claude", "opencode"],
@@ -110,6 +144,17 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
       gitPolicy: { commit: "manual", push: "never" },
       backupPolicy: { enabled: true, beforeRun: true },
       riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      sourceSession: {
+        agent: "codex",
+        sessionId: "cdx_test",
+        title: "Dashboard chat handoff",
+        directory: "/opt/opencode-control-surface",
+        messageCount: 3,
+        capturedAt: "2026-05-14T00:00:00.000Z",
+        transcriptSummary: "Started: continue Dashboard V4\nTouched files: app/routes/BuilderPage.tsx",
+        latestUserPrompt: "Continue development from the current session.",
+        touchedFiles: ["app/routes/BuilderPage.tsx", "server/api/builder.ts"],
+      },
     },
   };
 
@@ -121,8 +166,13 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
   expect(createResponse.status).toBe(201);
 
   const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
-  expect(created.data.workflow?.status).toBe("ready");
+  expect(created.data.workflow?.status).toBe("draft");
   expect(created.data.workflow?.config.validationProfile.commands).toContain("bun run build");
+  expect(created.data.workflow?.config.sourceSession?.agent).toBe("codex");
+  expect(created.data.workflow?.config.sourceSession?.sessionId).toBe("cdx_test");
+  expect(created.data.workflow?.config.sourceSession?.transcriptSummary).toContain("Dashboard V4");
+  expect(created.data.workflow?.config.sourceSession?.latestUserPrompt).toContain("Continue development");
+  expect(created.data.workflow?.config.sourceSession?.touchedFiles).toContain("server/api/builder.ts");
 
   closeDashboardDb();
   process.env.DASHBOARD_DB = "1";
@@ -153,7 +203,7 @@ test("builder workflow start creates run pass job and artifact rows", async () =
     projectRoot: "/opt/opencode-control-surface",
     planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
     mode: "once",
-    status: "ready",
+    status: "draft",
     config: {
       projectRoot: "/opt/opencode-control-surface",
       agentOrder: ["codex"],
@@ -177,6 +227,7 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   expect(createResponse.status).toBe(201);
   const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
   const workflowId = created.data.workflow!.id;
+  expect(created.data.workflow!.status).toBe("draft");
 
   const startResponse = await builderStartWorkflowHandler(workflowId, new Request("http://localhost", {
     method: "POST",
@@ -190,6 +241,26 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   expect(started.data.run!.status).toBe("running");
   expect(started.data.passes.length).toBeGreaterThan(0);
   expect(started.data.artifacts.length).toBeGreaterThan(0);
+  const scriptArtifact = started.data.artifacts.find((artifact) => artifact.kind === "command-script");
+  expect(scriptArtifact).toBeTruthy();
+  const script = readFileSync(scriptArtifact!.path, "utf8");
+  expect(script).toContain("builder_child_id_for_pid()");
+  expect(script).toContain("write $BUILDER_DIR/child-context.txt before spawning children");
+  expect(script).toContain("builder-child-${RUN_ID}_");
+  expect(script).toContain("BUILDER_CHILD_PASS_LOG");
+  expect(script).toContain("builder-child-helpers.sh");
+  expect(script).toContain("export BASH_ENV=");
+  expect(script).toContain('export PATH="$BUILDER_DIR/bin:$PATH"');
+  expect(script).toContain('set +e');
+  expect(script).toContain('echo "$EXIT_CODE" > "$BUILDER_DIR/pass-1-exit.code"');
+  expect(script).not.toContain("${child_cmd}");
+  const bashCheck = spawnSync("bash", ["-n", scriptArtifact!.path], { encoding: "utf8" });
+  expect(bashCheck.status).toBe(0);
+
+  const detailResponse = builderRunHandler(started.data.run!.id);
+  expect(detailResponse.status).toBe(200);
+  const detail = await detailResponse.json() as ApiEnvelope<BuilderRunResponse>;
+  expect(detail.data.workflow?.id).toBe(workflowId);
 
   // Stop immediately to clean up
   const stopResponse = await builderStopWorkflowHandler(workflowId, new Request("http://localhost", {

@@ -12,27 +12,29 @@ import { eventsHandler } from "./events.ts";
 import { jobHandler, jobsHandler } from "./jobs.ts";
 import { metricsHandler } from "./metrics.ts";
 import {
-  builderArtifactsHandler,
-  builderCancelRunHandler,
-  builderCreateWorkflowHandler,
-  builderDiscoverHandler,
-  builderDoctorReportsHandler,
-  builderModelsHandler,
-  builderPauseWorkflowHandler,
   builderProjectsHandler,
-  builderProvisionHandler,
-  builderResumeWorkflowHandler,
-  builderRetryRunHandler,
-  builderRunHandler,
+  builderDiscoverHandler,
+  builderModelsHandler,
+  builderWorkflowsHandler,
+  builderWorkflowHandler,
+  builderCreateWorkflowHandler,
+  builderUpdateWorkflowHandler,
+  builderDeleteWorkflowHandler,
   builderRunsHandler,
+  builderRunHandler,
+  builderArtifactsHandler,
+  builderRetryRunHandler,
+  builderCancelRunHandler,
   builderStartWorkflowHandler,
   builderStopWorkflowHandler,
+  builderPauseWorkflowHandler,
+  builderResumeWorkflowHandler,
+  builderDoctorReportsHandler,
   builderTriggerDoctorReviewHandler,
-  builderUpdateWorkflowHandler,
-  builderWorkflowHandler,
-  builderWorkflowsHandler,
   builderRunReconcileHandler,
   builderRunnerDisabledHandler,
+  builderProvisionHandler,
+  builderArtifactContentHandler,
 } from "./builder.ts";
 import {
   codexListHandler, codexCreateHandler, codexGetHandler,
@@ -43,6 +45,11 @@ import {
   claudeListHandler, claudeCreateHandler, claudeGetHandler,
   claudeDeleteHandler, claudeStreamHandler, claudeStopHandler,
 } from "./claude.ts";
+import {
+  geminiHealthHandler,
+  geminiListHandler, geminiCreateHandler, geminiGetHandler,
+  geminiDeleteHandler, geminiStreamHandler, geminiStopHandler,
+} from "./gemini.ts";
 import {
   agentsDiscoveryHandler,
   agentsQuickPromptsHandler,
@@ -116,6 +123,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   if (builderWorkflowMatch) {
     if (method === "GET") return builderWorkflowHandler(builderWorkflowMatch[1]);
     if (method === "PUT") return builderUpdateWorkflowHandler(req, builderWorkflowMatch[1]);
+    if (method === "DELETE") return builderDeleteWorkflowHandler(builderWorkflowMatch[1]);
   }
   const builderWorkflowActionMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/(start|pause|resume|stop|doctor-review)$/);
   if (method === "POST" && builderWorkflowActionMatch) {
@@ -133,7 +141,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
   if (method === "GET" && builderRunMatch) {
     // Reconcile running status on every GET
-    builderRunReconcileHandler(builderRunMatch[1]);
+    await builderRunReconcileHandler(builderRunMatch[1]);
     return builderRunHandler(builderRunMatch[1]);
   }
   const builderRunActionMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/(retry|cancel)$/);
@@ -145,6 +153,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
     return builderRunnerDisabledHandler(action);
   }
   if (method === "GET" && pathname === "/api/builder/artifacts") return builderArtifactsHandler(url);
+  if (method === "GET" && pathname === "/api/builder/log") return builderArtifactContentHandler(url);
   if (method === "POST" && pathname === "/api/builder/provision") {
     if (!checkToken(req)) return unauthorized();
     return builderProvisionHandler(req);
@@ -214,6 +223,21 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   if (method === "POST" && claudeStreamMatch) return claudeStreamHandler(req, claudeStreamMatch[1]);
   const claudeStopMatch = pathname.match(/^\/api\/claude\/sessions\/([^/]+)\/stop$/);
   if (method === "POST" && claudeStopMatch) return claudeStopHandler(claudeStopMatch[1]);
+
+  // ── Gemini tab ──────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/gemini/health") return geminiHealthHandler();
+  if (pathname.startsWith("/api/gemini/") && !checkToken(req)) return unauthorized();
+  if (method === "GET" && pathname === "/api/gemini/sessions") return geminiListHandler();
+  if (method === "POST" && pathname === "/api/gemini/sessions") return geminiCreateHandler(req);
+  const geminiSessionMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)$/);
+  if (geminiSessionMatch) {
+    if (method === "GET") return geminiGetHandler(geminiSessionMatch[1]);
+    if (method === "DELETE") return geminiDeleteHandler(geminiSessionMatch[1]);
+  }
+  const geminiStreamMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stream$/);
+  if (method === "POST" && geminiStreamMatch) return geminiStreamHandler(req, geminiStreamMatch[1]);
+  const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$/);
+  if (method === "POST" && geminiStopMatch) return geminiStopHandler(geminiStopMatch[1]);
 
   return new Response(JSON.stringify({ error: "not found" }), {
     status: 404,

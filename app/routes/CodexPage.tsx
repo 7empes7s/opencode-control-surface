@@ -8,6 +8,7 @@ import {
 import { AgentDiscoveryStrip } from "../components/AgentDiscoveryStrip";
 import { AgentComposer } from "../components/AgentComposer";
 import { AgentVaultLogButton } from "../components/AgentVaultLogButton";
+import { AgentBuilderHandoffButton } from "../components/AgentBuilderHandoffButton";
 import { TranscriptControls, type ActionFilter, type TranscriptMode } from "../components/TranscriptControls";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 import { authFetch } from "../lib/authFetch";
@@ -365,6 +366,16 @@ export function CodexPage() {
           <span className="oc-model-label">codex-cli</span>
           <ChevronDown size={12} style={{ opacity: 0.3 }} />
         </span>
+        {active && (
+          <AgentBuilderHandoffButton
+            agent="codex"
+            sessionId={active.id}
+            title={active.title}
+            directory={active.directory}
+            messageCount={active.messages.length}
+            messages={sessionEndMessages}
+          />
+        )}
         {active && (
           <AgentVaultLogButton
             agent="codex"
