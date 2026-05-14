@@ -1,12 +1,16 @@
 import { readFileSync } from 'fs';
 
-function detectProviderType(modelName: string, provider: string): "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "other" {
+function detectProviderType(modelName: string, provider: string): "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "nvidia" | "cloudflare" | "opencode" | "alibaba" | "other" {
   const n = modelName.toLowerCase();
   const p = provider?.toLowerCase() ?? "";
   if (p === "zen") return "zen";
   if (p === "github") return "github";
   if (p === "groq") return "groq";
   if (p === "cerebras") return "cerebras";
+  if (p === "alibaba" || n.startsWith("alibaba/")) return "alibaba";
+  if (p === "opencode" || n.startsWith("opencode-go/")) return "opencode";
+  if (p === "nvidia" || n.includes("nvidia")) return "nvidia";
+  if (p === "cloudflare" || n.includes("cf-") || n.includes("cloudflare")) return "cloudflare";
   if (p === "local" || modelName.startsWith("editorial-") || modelName.startsWith("coding-") || modelName.startsWith("mimule-")) return "local";
   if (n.includes("openrouter")) return "openrouter";
   return "other";
@@ -19,7 +23,7 @@ function detectIsCli(modelName: string): boolean {
 
 function detectIsOpenCode(modelName: string): boolean {
   const n = modelName.toLowerCase();
-  return n.includes("opencode") || n.startsWith("oc-");
+  return n.includes("opencode") || n.startsWith("oc-") || n.startsWith("alibaba/");
 }
 
 function computeQualityStatus(available: boolean, hasError: boolean): "healthy" | "probation" | "degraded" | "blocked" | "unknown" {
@@ -36,8 +40,11 @@ export function modelsHandler(): Response {
 
     const models = health.models.map((m: any) => {
       const providerType = detectProviderType(m.logicalName, m.provider);
-      const isFree = m.modelId?.includes('free') || m.provider === 'openrouter' || m.provider === 'groq' || m.provider === 'cerebras';
-      const isPaid = !isFree;
+      const hasExplicitFree = m.modelId?.includes('free') || m.logicalName?.includes('free');
+      const isFree = hasExplicitFree || m.provider === 'openrouter' || m.provider === 'groq' || m.provider === 'cerebras';
+      // Alibaba and OpenCode-native models are subscription/included — neither free nor pay-per-use
+      const isSubscription = m.provider === 'alibaba' || m.provider === 'opencode' || m.logicalName?.startsWith('alibaba/') || m.logicalName?.startsWith('opencode-go/');
+      const isPaid = !isFree && !isSubscription;
       const isCli = detectIsCli(m.logicalName);
       const isOpenCode = detectIsOpenCode(m.logicalName);
       const hasError = !!m.error;

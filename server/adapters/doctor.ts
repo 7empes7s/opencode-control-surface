@@ -132,7 +132,10 @@ export function getDoctorStats(): DoctorStats {
     if (e.action) actionMap.set(e.action, (actionMap.get(e.action) ?? 0) + 1);
   }
 
-  const success = deduped.filter((e) => e.action === "requeued" || e.action === "promoted").length;
+  // LLM doctor uses: retry, retry_escalate, skip_stage (positive), kill, no_action, dead_content (negative)
+  // Rule-based doctor uses: requeued, promoted (positive), dead-content, escalate (negative)
+  const SUCCESS_ACTIONS = new Set(["requeued", "promoted", "retry", "retry_escalate", "skip_stage"]);
+  const success = deduped.filter((e) => e.action && SUCCESS_ACTIONS.has(e.action) && e.applied !== false).length;
   const last = deduped[deduped.length - 1] ?? null;
 
   return {

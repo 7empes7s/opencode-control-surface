@@ -13,9 +13,9 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
 }
 
 function verdictColor(action: string): string {
-  if (action === "requeued" || action === "promoted") return "green";
-  if (action === "abandoned") return "red";
-  if (action === "cooldown") return "amber";
+  if (["requeued", "promoted", "retry", "retry_escalate", "skip_stage"].includes(action)) return "green";
+  if (["kill", "dead-content", "dead_content", "abandoned"].includes(action)) return "red";
+  if (["cooldown", "reroute_provider", "escalate", "waiting-quota", "waiting-gpu"].includes(action)) return "amber";
   return "gray";
 }
 

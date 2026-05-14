@@ -100,7 +100,7 @@ export interface ModelEntry {
   isPaid: boolean;
   isOpenCode: boolean;
   isCli: boolean;
-  providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "other";
+  providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "nvidia" | "cloudflare" | "opencode" | "alibaba" | "other";
   contextWindow: number | null;
   params: number | null;
   resolvedModel: string | null;
@@ -143,6 +143,10 @@ function detectProviderType(name: string, provider: string): ModelEntry["provide
   if (n.includes("github")) return "github";
   if (n.includes("cerebras")) return "cerebras";
   if (n.includes("zen-") || n.includes("zen ")) return "zen";
+  if (n.includes("nvidia")) return "nvidia";
+  if (n.includes("cf-") || n.includes("cloudflare")) return "cloudflare";
+  if (provider === "opencode" || n.startsWith("opencode-go/")) return "opencode";
+  if (provider === "alibaba" || n.startsWith("alibaba/")) return "alibaba";
   if (provider === "local" || name.startsWith("editorial-") || name.startsWith("coding-") || name.startsWith("mimule-")) return "local";
   return "other";
 }
@@ -159,6 +163,11 @@ function detectPricing(name: string): { isFree: boolean; isPaid: boolean } {
   if (hasExplicitFree || n.includes("openrouter") || n.includes("github") || n.includes("cerebras") || n.includes("groq")) {
     return { isFree: true, isPaid: false };
   }
+  // Alibaba and OpenCode-native models are accessible through the subscription;
+  // they are neither explicitly free nor pay-per-use paid.
+  if (n.startsWith("alibaba/") || n.startsWith("opencode-go/") || n.startsWith("opencode/")) {
+    return { isFree: false, isPaid: false };
+  }
   return { isFree: false, isPaid: true };
 }
 
@@ -168,7 +177,7 @@ function detectCliRelated(name: string): boolean {
 }
 
 function detectOpenCode(name: string): boolean {
-  return name.startsWith("opencode-") || name.includes("opencode");
+  return name.startsWith("opencode-") || name.includes("opencode") || name.startsWith("alibaba/");
 }
 
 export function getModelsDetail(): ModelsDetailData {

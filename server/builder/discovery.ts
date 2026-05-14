@@ -133,6 +133,7 @@ const PROJECT_TARGETS: Record<string, Partial<BuilderProject>> = {
     service: "newsbites.service",
     internalUrl: "http://127.0.0.1:3001",
     publicUrl: "https://news.techinsiderbytes.com",
+    defaultPlan: "/opt/newsbites/plans/v2-02-markets-platform.md",
   },
   "/opt/paperclip": {
     internalUrl: "http://127.0.0.1:3100",
@@ -159,6 +160,16 @@ const KNOWN_PLAN_FILES: Array<Omit<BuilderPlanCandidate, "exists" | "modifiedAt"
     path: "/root/DASHBOARD_V4_AGENT_PAGES_PLAN.md",
     kind: "context",
     relevance: "Agent page roadmap that intersects with Builder execution.",
+  },
+  {
+    path: "/root/DASHBOARD_V4_GEMINI_PAGE_PLAN.md",
+    kind: "context",
+    relevance: "Gemini agent page plan.",
+  },
+  {
+    path: "/root/NEWSBITES_LEVELING_PLAN_V1.md",
+    kind: "canonical",
+    relevance: "NewsBites V1 feature leveling plan.",
   },
   {
     path: "/home/agent/MIMULE_MASTER_PLAN_V3.md",
@@ -281,21 +292,65 @@ function findProjectForPath(path: string): BuilderProject | null {
   return getBuilderProjects().find((project) => isWithin(resolved, project.root)) ?? null;
 }
 
+// Directories that contain user/generated content, not planning docs.
+// Scanning these produces false positives (e.g. article filenames containing "agent").
+const CONTENT_DIRS = new Set([
+  "content", "public", "assets", "static", "images", "fixtures",
+  "data", "uploads", "media", "out", "tmp", "temp",
+]);
+
+// If a project has a dedicated plans/ directory, include ALL .md files from it —
+// no filename filtering needed since every file there is a plan by convention.
+function scanPlansDirFiles(projectRoot: string): BuilderPlanCandidate[] {
+  const plansDir = join(projectRoot, "plans");
+  if (!existsSync(plansDir)) return [];
+
+  const candidates: BuilderPlanCandidate[] = [];
+  try {
+    for (const entry of readdirSync(plansDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const path = join(plansDir, entry.name);
+      candidates.push({
+        path,
+        title: readTitle(path),
+        kind: "project",
+        exists: true,
+        modifiedAt: fileModifiedAt(path),
+        relevance: "Project plan file.",
+      });
+    }
+  } catch {}
+
+  // Sort newest-modified first so the builder defaults to the latest plan
+  return candidates.sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
+}
+
 function scanProjectPlanFiles(projectRoot: string): BuilderPlanCandidate[] {
   const candidates: BuilderPlanCandidate[] = [];
   if (!existsSync(projectRoot)) return candidates;
 
-  const ignoredDirs = new Set([".git", "node_modules", "dist", ".next", "build", "coverage", "backups"]);
+  // Always include the dedicated plans/ directory (all files, no filter)
+  candidates.push(...scanPlansDirFiles(projectRoot));
+  const alreadyFound = new Set(candidates.map(c => c.path));
+
+  // Scan only the project root level (depth 0) and one level of non-content subdirs
+  // for pattern-matched operating docs (CLAUDE.md, README.md, etc.).
+  // Explicitly skip content directories to avoid matching article filenames.
+  const ignoredDirs = new Set([
+    ".git", "node_modules", "dist", ".next", "build", "coverage", "backups",
+    "plans", // already handled above
+    ...CONTENT_DIRS,
+  ]);
   const pending: Array<{ dir: string; depth: number }> = [{ dir: projectRoot, depth: 0 }];
   let visited = 0;
 
   try {
-    while (pending.length > 0 && visited < 500) {
+    while (pending.length > 0 && visited < 200) {
       const current = pending.shift()!;
       visited += 1;
       for (const entry of readdirSync(current.dir, { withFileTypes: true })) {
         if (entry.isDirectory()) {
-          if (current.depth < 2 && !ignoredDirs.has(entry.name)) {
+          if (current.depth < 1 && !ignoredDirs.has(entry.name)) {
             pending.push({ dir: join(current.dir, entry.name), depth: current.depth + 1 });
           }
           continue;
@@ -303,6 +358,8 @@ function scanProjectPlanFiles(projectRoot: string): BuilderPlanCandidate[] {
         if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
         if (!/(PLAN|ROADMAP|AGENT|CLAUDE|README)/i.test(entry.name)) continue;
         const path = join(current.dir, entry.name);
+        if (alreadyFound.has(path)) continue;
+        alreadyFound.add(path);
         candidates.push({
           path,
           title: readTitle(path),
