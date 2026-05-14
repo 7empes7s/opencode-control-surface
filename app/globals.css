@@ -1474,6 +1474,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 /* ── Rich Model Select (Builder workflow modal) ─────────────────────────── */
@@ -1640,8 +1641,7 @@ body {
 .builder-detail-panel {
   max-width: 720px;
   width: 95vw;
-  max-height: 85vh;
-  overflow-y: auto;
+  /* max-height and overflow handled by .structured layout or base modal-box */
 }
 .builder-detail-body {
   display: flex;
@@ -1886,9 +1886,11 @@ body {
 }
 .modal-box.builder-workflow-modal {
   max-width: min(880px, calc(100vw - 24px));
+  max-height: min(88vh, 820px);
 }
 .modal-box.builder-detail-panel {
   max-width: min(900px, calc(100vw - 24px));
+  max-height: min(88vh, 820px);
 }
 .modal-title { font-size: 15px; font-weight: 600; color: var(--text-bright); display: flex; align-items: center; }
 .modal-message { font-size: 13px; color: var(--text-dim); line-height: 1.55; }
@@ -1908,6 +1910,50 @@ body {
 .modal-error { font-family: var(--sans); font-size: 12px; color: var(--red); }
 .modal-success { font-family: var(--sans); font-size: 12px; color: var(--accent); }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* ── Structured modal (sticky header / scrollable body / sticky footer) ── */
+.modal-box.structured {
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-width: 0;
+}
+.modal-header .modal-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 16px 20px;
+}
+.modal-footer {
+  flex-shrink: 0;
+  padding: 10px 20px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-close {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .oc-vault-btn { color: var(--accent); border-color: var(--accent-dim); }
 .oc-vault-modal { max-width: 620px; }
@@ -2008,6 +2054,7 @@ body {
   .modal-box.builder-detail-panel {
     max-width: calc(100vw - 32px);
     width: calc(100vw - 32px);
+    max-height: min(88vh, 820px);
   }
 }
 
@@ -2093,21 +2140,35 @@ body {
   .dash-header-link { min-height: 44px; }
   .page-header .btn-sm,
   .audit-select { min-height: 44px; }
+  /* Modal overlay — sandwiched between topnav (44px) and bottomnav (~56px) */
   .modal-overlay {
-    align-items: flex-start;
+    inset: 44px 0 calc(56px + env(safe-area-inset-bottom, 0px)) 0;
     padding: 8px;
+    align-items: flex-start;
+    overflow-y: auto;
   }
   .modal-box {
     max-width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
-    padding: 16px;
-    border-radius: 4px;
+    max-height: calc(100svh - 44px - 56px - env(safe-area-inset-bottom, 0px) - 16px);
+    padding: 14px;
+    border-radius: 6px;
+  }
+  /* Structured modals fill the overlay area and let modal-body scroll */
+  .modal-box.structured {
+    height: calc(100svh - 44px - 56px - env(safe-area-inset-bottom, 0px) - 16px);
+    max-height: none;
   }
   .modal-box.builder-workflow-modal,
   .modal-box.builder-detail-panel {
     max-width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
+    max-height: calc(100svh - 44px - 56px - env(safe-area-inset-bottom, 0px) - 16px);
+    width: 100%;
   }
+  .modal-header { padding: 12px 14px; }
+  .modal-body { padding: 12px 14px; }
+  .modal-footer { padding: 8px 14px 12px; }
+
+  /* Builder workflow form — single column */
   .builder-form-grid {
     grid-template-columns: 1fr;
   }
@@ -2117,6 +2178,80 @@ body {
   .builder-picker-row .pill {
     display: none;
   }
+
+  /* Builder page header — wrap buttons below title on mobile */
+  .builder-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .builder-header > div:first-child { flex: 1 1 100%; }
+
+  /* Workflows table — hide low-priority columns on mobile */
+  .workflows-table th:nth-child(4),
+  .workflows-table td:nth-child(4),
+  .workflows-table th:nth-child(5),
+  .workflows-table td:nth-child(5),
+  .workflows-table th:nth-child(6),
+  .workflows-table td:nth-child(6),
+  .workflows-table th:nth-child(7),
+  .workflows-table td:nth-child(7),
+  .workflows-table th:nth-child(8),
+  .workflows-table td:nth-child(8),
+  .workflows-table th:nth-child(9),
+  .workflows-table td:nth-child(9) {
+    display: none;
+  }
+
+  /* Runs table — hide finished/pass columns on mobile */
+  .runs-table th:nth-child(4),
+  .runs-table td:nth-child(4),
+  .runs-table th:nth-child(5),
+  .runs-table td:nth-child(5) {
+    display: none;
+  }
+
+  /* Run passes table — fix column hiding (needs class on th/td) */
+  .run-passes-table th.started-col,
+  .run-passes-table td.started-col,
+  .run-passes-table th.finished-col,
+  .run-passes-table td.finished-col,
+  .run-passes-table th.model-col,
+  .run-passes-table td.model-col { display: none; }
+
+  /* Run validations — card-style responsive layout on mobile */
+  .run-validations-table { border-collapse: separate; border-spacing: 0; }
+  .run-validations-table thead tr { display: none; }
+  .run-validations-table tbody { display: block; }
+  .run-validations-table tr {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: 8px;
+    row-gap: 3px;
+    padding: 10px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card-start);
+  }
+  .run-validations-table tr:last-child { margin-bottom: 0; }
+  .run-validations-table td {
+    display: block;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 11.5px;
+  }
+  /* Row 1: status | kind | command */
+  .run-validations-table td.val-status-col { grid-column: 1; grid-row: 1; }
+  .run-validations-table td.val-kind-col   { grid-column: 2; grid-row: 1; }
+  .run-validations-table td.val-cmd-col    { grid-column: 3; grid-row: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+  /* Row 2: error spans full width */
+  .run-validations-table td.val-error-col  { grid-column: 1 / -1; grid-row: 2; font-size: 11px; }
+  .run-validations-table td.val-error-col:empty { display: none; }
+  /* Hide started/finished */
+  .run-validations-table td.val-started-col,
+  .run-validations-table td.val-finished-col { display: none; }
 
   .dash-page { padding: 14px; }
   .dash-section { margin-bottom: 18px; }

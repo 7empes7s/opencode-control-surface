@@ -515,8 +515,12 @@ function WorkflowModal({
 
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="modal-box builder-workflow-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-title">{workflow ? "Edit workflow" : "New workflow"}</div>
+      <div className="modal-box builder-workflow-modal structured" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{workflow ? "Edit workflow" : "New workflow"}</div>
+          <button className="btn btn-xs btn-ghost modal-close" onClick={onClose} disabled={saving} aria-label="close">✕</button>
+        </div>
+        <div className="modal-body">
         <div className="builder-form-grid">
           <label className="modal-input-row">
             <span className="modal-input-label">Name</span>
@@ -769,12 +773,15 @@ function WorkflowModal({
             before run
           </label>
         </div>
-        {error && <div className="modal-error">{error}</div>}
-        <div className="modal-actions">
-          <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn btn-sm btn-primary" onClick={save} disabled={saving}>
-            <Save size={14} /> Save
-          </button>
+        </div>
+        <div className="modal-footer">
+          {error && <div className="modal-error">{error}</div>}
+          <div className="modal-actions">
+            <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+            <button className="btn btn-sm btn-primary" onClick={save} disabled={saving}>
+              <Save size={14} /> Save
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -886,13 +893,13 @@ function ArtifactRow({ artifact }: { artifact: BuilderArtifact }) {
 function ValidationRow({ validation }: { validation: BuilderValidation }) {
   return (
     <tr>
-      <td><Pill color={statusColor(validation.status)}>{validation.status}</Pill></td>
-      <td><Pill>{validation.kind}</Pill></td>
-      <td className="mono trunc">{validation.command ?? (validation.url ?? "-")}</td>
-      <td className="mono dim">{validation.startedAt ? fmtTs(validation.startedAt) : "-"}</td>
-      <td className="mono dim">{validation.finishedAt ? fmtTs(validation.finishedAt) : "-"}</td>
-      <td className="mono trunc">
-        {validation.error ? <span className="text-red">{validation.error.slice(0, 80)}</span> : "-"}
+      <td className="val-status-col"><Pill color={statusColor(validation.status)}>{validation.status}</Pill></td>
+      <td className="val-kind-col"><Pill>{validation.kind}</Pill></td>
+      <td className="mono trunc val-cmd-col">{validation.command ?? (validation.url ?? "-")}</td>
+      <td className="mono dim val-started-col">{validation.startedAt ? fmtTs(validation.startedAt) : "-"}</td>
+      <td className="mono dim val-finished-col">{validation.finishedAt ? fmtTs(validation.finishedAt) : "-"}</td>
+      <td className="mono trunc val-error-col">
+        {validation.error ? <span className="text-red">{validation.error.slice(0, 80)}</span> : ""}
       </td>
     </tr>
   );
@@ -1020,12 +1027,15 @@ function RunDetailPanel({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box builder-detail-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-title">
-          Run detail
-          {run && <span className="mono dim" style={{ marginLeft: 12 }}>{run.id}</span>}
-          <button className="btn btn-xs btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button>
+      <div className="modal-box builder-detail-panel structured" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            Run detail
+            {run && <span className="mono dim" style={{ marginLeft: 8, fontSize: 11 }}>{run.id.slice(0, 16)}…</span>}
+          </div>
+          <button className="btn btn-xs btn-ghost modal-close" onClick={onClose} aria-label="close">✕</button>
         </div>
+        <div className="modal-body">
 
         {loading && !runDetail && <div className="loading-dim">loading...</div>}
         {error && !runDetail && <div className="loading-dim error">error: {error}</div>}
@@ -1079,17 +1089,17 @@ function RunDetailPanel({
                     <col className="started-col" />
                     <col className="finished-col" />
                   </colgroup>
-                  <thead><tr><th>seq</th><th>phase</th><th>agent</th><th>model</th><th>status</th><th>started</th><th>finished</th></tr></thead>
+                  <thead><tr><th className="seq-col">seq</th><th>phase</th><th>agent</th><th className="model-col">model</th><th>status</th><th className="started-col">started</th><th className="finished-col">finished</th></tr></thead>
                   <tbody>
                     {passes.map((pass: BuilderPass) => (
                       <tr key={pass.id}>
-                        <td>{pass.sequence}</td>
+                        <td className="seq-col">{pass.sequence}</td>
                         <td><Pill>{pass.phase}</Pill></td>
                         <td><Pill>{pass.agent ?? "-"}</Pill></td>
-                        <td className="mono dim">{pass.model ?? "-"}</td>
+                        <td className="mono dim model-col">{pass.model ?? "-"}</td>
                         <td><Pill color={statusColor(pass.status)}>{pass.status}</Pill></td>
-                        <td className="mono dim">{fmtTs(pass.startedAt)}</td>
-                        <td className="mono dim">{fmtTs(pass.finishedAt)}</td>
+                        <td className="mono dim started-col">{fmtTs(pass.startedAt)}</td>
+                        <td className="mono dim finished-col">{fmtTs(pass.finishedAt)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1170,7 +1180,7 @@ function RunDetailPanel({
                     <col className="finished-col" />
                     <col className="error-col" />
                   </colgroup>
-                  <thead><tr><th>status</th><th>kind</th><th>command/url</th><th>started</th><th>finished</th><th>error</th></tr></thead>
+                  <thead><tr><th className="val-status-col">status</th><th className="val-kind-col">kind</th><th className="val-cmd-col">command/url</th><th className="val-started-col">started</th><th className="val-finished-col">finished</th><th className="val-error-col">error</th></tr></thead>
                   <tbody>
                     {validations.map((validation: BuilderValidation) => (
                       <ValidationRow key={validation.id} validation={validation} />
@@ -1186,6 +1196,7 @@ function RunDetailPanel({
             )}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -1284,9 +1295,13 @@ function ProvisionModal({
 
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="modal-box builder-workflow-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-title">Bootstrap New Project</div>
-        <div className="builder-form-grid" style={{ maxHeight: "70vh", overflowY: "auto" }}>
+      <div className="modal-box builder-workflow-modal structured" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Bootstrap New Project</div>
+          <button className="btn btn-xs btn-ghost modal-close" onClick={onClose} disabled={saving} aria-label="close">✕</button>
+        </div>
+        <div className="modal-body">
+        <div className="builder-form-grid">
           <label className="modal-input-row">
             <span className="modal-input-label">Project name <span className="text-red">*</span></span>
             <input className="modal-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My New Project" />
@@ -1326,13 +1341,16 @@ function ProvisionModal({
             <input className="modal-input" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://myapp.example.com (optional)" />
           </label>
         </div>
-        {result && <div className="modal-success">{result.message}</div>}
-        {error && <div className="modal-error">{error}</div>}
-        <div className="modal-actions">
-          <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn btn-sm btn-primary" onClick={provision} disabled={saving || Boolean(result)}>
-            {saving ? "Provisioning..." : "Bootstrap Project"}
-          </button>
+        </div>
+        <div className="modal-footer">
+          {result && <div className="modal-success">{result.message}</div>}
+          {error && <div className="modal-error">{error}</div>}
+          <div className="modal-actions">
+            <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+            <button className="btn btn-sm btn-primary" onClick={provision} disabled={saving || Boolean(result)}>
+              {saving ? "Provisioning..." : "Bootstrap Project"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1348,12 +1366,12 @@ function DoctorReportModal({
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box builder-detail-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: "85vh", overflowY: "auto" }}>
-        <div className="modal-title">
-          Doctor Report
-          <span className="mono dim" style={{ marginLeft: 12 }}>{report.id}</span>
-          <button className="btn btn-xs btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button>
+      <div className="modal-box builder-detail-panel structured" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 900 }}>
+        <div className="modal-header">
+          <div className="modal-title">Doctor Report</div>
+          <button className="btn btn-xs btn-ghost modal-close" onClick={onClose} aria-label="close">✕</button>
         </div>
+        <div className="modal-body">
         <div className="builder-detail-body">
           <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid var(--border)" }}>
             <div style={{ position: "relative", width: 80, height: 80 }}>
@@ -1484,6 +1502,7 @@ function DoctorReportModal({
               ))}
             </div>
           </CollapsibleSection>
+        </div>
         </div>
       </div>
     </div>
@@ -1676,7 +1695,7 @@ export function BuilderPage() {
               ) : workflows.length === 0 ? (
                 <div className="loading-dim">no workflows</div>
               ) : (
-                <table className="data-table">
+                <table className="data-table workflows-table">
                   <thead>
                     <tr>
                       <th>status</th><th>mode</th><th>name</th><th>source</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
@@ -1744,10 +1763,10 @@ export function BuilderPage() {
               ) : runs.length === 0 ? (
                 <div className="loading-dim">no runs yet</div>
               ) : (
-                <table className="data-table">
+                <table className="data-table runs-table">
                   <thead>
                     <tr>
-                      <th>status</th><th>trigger</th><th>started</th><th>finished</th><th>pass</th><th>error</th><th></th>
+                      <th>status</th><th>trigger</th><th>started</th><th className="finished-col">finished</th><th className="pass-col">pass</th><th>error</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1756,8 +1775,8 @@ export function BuilderPage() {
                         <td><Pill color={statusColor(run.status)}>{run.status}</Pill></td>
                         <td><Pill>{run.trigger}</Pill></td>
                         <td className="mono dim">{fmtTs(run.startedAt)}</td>
-                        <td className="mono dim">{fmtTs(run.finishedAt)}</td>
-                        <td className="mono trunc">{run.currentPassId ?? "-"}</td>
+                        <td className="mono dim finished-col">{fmtTs(run.finishedAt)}</td>
+                        <td className="mono trunc pass-col">{run.currentPassId ?? "-"}</td>
                         <td className="mono trunc">{run.error ? run.error.slice(0, 60) : "-"}</td>
                         <td onClick={(e) => e.stopPropagation()}>
                           {(run.status === "failed" || run.status === "success" || run.status === "canceled") && (
