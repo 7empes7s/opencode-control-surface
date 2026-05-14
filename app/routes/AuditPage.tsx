@@ -170,17 +170,17 @@ export function AuditPage() {
           {rows.length === 0 ? (
             <div className="loading-dim">no audit records</div>
           ) : (
-            <table className="data-table">
-              <thead><tr><th>when</th><th>result</th><th>risk</th><th>action</th><th>target</th><th>actor</th><th></th></tr></thead>
+            <table className="data-table audit-entries-table">
+              <thead><tr><th className="audit-when-col">when</th><th>result</th><th>risk</th><th>action</th><th>target</th><th className="audit-actor-col">actor</th><th></th></tr></thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.id}>
-                    <td className="mono dim">{fmtTs(row.ts)}</td>
+                    <td className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
                     <td><Pill color={statusColor(row.resultStatus)}>{row.resultStatus ?? "-"}</Pill></td>
                     <td><Pill color={riskColor(row.risk)}>{row.risk ?? "-"}</Pill></td>
                     <td className="mono">{row.actionKind}</td>
                     <td className="mono trunc">{row.targetId ?? row.target ?? row.targetType ?? "-"}</td>
-                    <td className="mono dim">{row.actor ?? "-"}</td>
+                    <td className="mono dim audit-actor-col">{row.actor ?? "-"}</td>
                     <td style={{ textAlign: "right" }}>
                       <button className="btn btn-sm btn-ghost" onClick={() => setSelected(row)}>details</button>
                     </td>

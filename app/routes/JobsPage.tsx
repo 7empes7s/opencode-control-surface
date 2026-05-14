@@ -167,17 +167,17 @@ export function JobsPage() {
           {jobs.length === 0 ? (
             <div className="loading-dim">no jobs</div>
           ) : (
-            <table className="data-table">
-              <thead><tr><th>started</th><th>status</th><th>kind</th><th>target</th><th>duration</th><th>actor</th><th></th></tr></thead>
+            <table className="data-table jobs-table">
+              <thead><tr><th className="job-date-col">started</th><th>status</th><th>kind</th><th>target</th><th className="job-dur-col">duration</th><th className="job-actor-col">actor</th><th></th></tr></thead>
               <tbody>
                 {jobs.map((job) => (
                   <tr key={job.id}>
-                    <td className="mono dim">{fmtTs(job.startedAt)}</td>
+                    <td className="mono dim job-date-col">{fmtTs(job.startedAt)}</td>
                     <td><Pill color={statusColor(job.status)}>{job.status}</Pill></td>
                     <td className="mono">{job.kind}</td>
                     <td className="mono trunc">{job.targetId ?? job.targetType ?? "-"}</td>
-                    <td className="mono dim">{fmtDuration(job.startedAt, job.finishedAt)}</td>
-                    <td className="mono dim">{job.actor ?? "-"}</td>
+                    <td className="mono dim job-dur-col">{fmtDuration(job.startedAt, job.finishedAt)}</td>
+                    <td className="mono dim job-actor-col">{job.actor ?? "-"}</td>
                     <td style={{ textAlign: "right" }}>
                       <button className="btn btn-sm btn-ghost" onClick={() => setSelected(job)}>details</button>
                     </td>

@@ -2336,6 +2336,15 @@ body {
     display: none;
   }
 
+  /* Jobs table — hide started/duration/actor on mobile */
+  .jobs-table th.job-date-col,  .jobs-table td.job-date-col,
+  .jobs-table th.job-dur-col,   .jobs-table td.job-dur-col,
+  .jobs-table th.job-actor-col, .jobs-table td.job-actor-col { display: none; }
+
+  /* Audit table — hide when/actor on mobile */
+  .audit-entries-table th.audit-when-col,  .audit-entries-table td.audit-when-col,
+  .audit-entries-table th.audit-actor-col, .audit-entries-table td.audit-actor-col { display: none; }
+
   /* Queue action buttons — compact row with wrap on mobile */
   .queue-actions {
     display: flex;
