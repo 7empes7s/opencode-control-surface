@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -244,11 +244,9 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   const scriptArtifact = started.data.artifacts.find((artifact) => artifact.kind === "command-script");
   expect(scriptArtifact).toBeTruthy();
   const script = readFileSync(scriptArtifact!.path, "utf8");
-  expect(script).toContain("builder_child_id_for_pid()");
-  expect(script).toContain("write $BUILDER_DIR/child-context.txt before spawning children");
-  expect(script).toContain("builder-child-${RUN_ID}_");
-  expect(script).toContain("BUILDER_CHILD_PASS_LOG");
+  // Script-level assertions: helpers are sourced, not embedded
   expect(script).toContain("builder-child-helpers.sh");
+  expect(script).toContain("source \"$BUILDER_DIR/builder-child-helpers.sh\"");
   expect(script).toContain("export BASH_ENV=");
   expect(script).toContain('export PATH="$BUILDER_DIR/bin:$PATH"');
   expect(script).toContain('set +e');
@@ -256,6 +254,17 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   expect(script).not.toContain("${child_cmd}");
   const bashCheck = spawnSync("bash", ["-n", scriptArtifact!.path], { encoding: "utf8" });
   expect(bashCheck.status).toBe(0);
+  // Helpers file assertions: sub-agent functions live in the sourced helpers file
+  const helpersPath = scriptArtifact!.path.replace(/pass-\d+\.sh$/, "builder-child-helpers.sh");
+  const helpers = existsSync(helpersPath) ? readFileSync(helpersPath, "utf8") : "";
+  expect(helpers).toContain("builder_child_id_for_pid()");
+  expect(helpers).toContain("builder-child-${RUN_ID}_");
+  expect(helpers).toContain("BUILDER_CHILD_PASS_LOG");
+  // Prompt file assertions: orchestration contract and context guidance live in the prompt
+  const promptPath = scriptArtifact!.path.replace(/pass-\d+\.sh$/, "pass-1-prompt.txt");
+  const promptContent = existsSync(promptPath) ? readFileSync(promptPath, "utf8") : "";
+  expect(promptContent).toContain("child-context.txt");
+  expect(promptContent).toContain("PLAN FILE NAVIGATION");
 
   const detailResponse = builderRunHandler(started.data.run!.id);
   expect(detailResponse.status).toBe(200);

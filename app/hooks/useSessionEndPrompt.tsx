@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
-import { AgentVaultLogModal, type VaultLogDraft, type VaultLogDismissReason } from "../components/AgentVaultLogModal";
 import { authFetch } from "../lib/authFetch";
+import type { ReactNode } from "react";
+
+// Re-export types for backward compatibility with any callers
+export type { VaultLogDraft, VaultLogDismissReason } from "../components/AgentVaultLogModal";
 
 type AgentId = "claude" | "codex" | "opencode" | "gemini";
 
@@ -24,6 +27,9 @@ type SessionEndReason = "new-session" | "clear-session" | "end-session" | "navig
 
 const MIN_LOGGABLE_MESSAGES = 6;
 
+// The vault-log dialog has been removed. All agent sessions are now logged
+// automatically and silently once they reach the minimum message threshold.
+// The manual AgentVaultLogButton remains available in agent topbars.
 export function useSessionEndPrompt({
   agent,
   sessionId,
@@ -31,103 +37,71 @@ export function useSessionEndPrompt({
   directory,
   messages,
 }: SessionEndPromptProps) {
-  const [location, setLocation] = useLocation();
-  const [draft, setDraft] = useState<VaultLogDraft | null>(null);
+  const [location] = useLocation();
   const askedRef = useRef<Set<string>>(new Set());
-  const afterRef = useRef<(() => void) | null>(null);
   const latestRef = useRef({ agent, sessionId, title, directory, messages });
+  const prevLocationRef = useRef(location);
 
   useEffect(() => {
     latestRef.current = { agent, sessionId, title, directory, messages };
   }, [agent, sessionId, title, directory, messages]);
 
-  const triggerSessionEnd = useCallback((reason: SessionEndReason, after?: () => void) => {
+  const silentLog = useCallback((reason: SessionEndReason) => {
     const current = latestRef.current;
-    if (!current.sessionId || current.messages.length < MIN_LOGGABLE_MESSAGES) return false;
-    if (askedRef.current.has(current.sessionId)) return false;
-
+    if (!current.sessionId || current.messages.length < MIN_LOGGABLE_MESSAGES) return;
+    if (askedRef.current.has(current.sessionId)) return;
     askedRef.current.add(current.sessionId);
-    afterRef.current = after ?? null;
-    setDraft(makeDraft(current.agent, current.title, current.directory, current.messages, reason));
-    return true;
-  }, []);
 
-  useEffect(() => {
-    const onClick = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const target = event.target as Element | null;
-      const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
-      if (!anchor || anchor.target && anchor.target !== "_self") return;
-      const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin) return;
-      const next = `${url.pathname}${url.search}${url.hash}`;
-      if (next === location) return;
-      const prompted = triggerSessionEnd("navigate-away", () => setLocation(next));
-      if (prompted) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    };
-    document.addEventListener("click", onClick, true);
-    return () => {
-      document.removeEventListener("click", onClick, true);
-      triggerSessionEnd("navigate-away");
-    };
-  }, [location, setLocation, triggerSessionEnd]);
+    const draft = makeDraft(current.agent, current.title, current.directory, current.messages, reason);
+    const files = draft.filePaths.trim();
 
-  const submit = useCallback(async (nextDraft: VaultLogDraft) => {
-    const current = latestRef.current;
-    const sessionTitle = current.title || `${current.agent} session`;
-    const files = nextDraft.filePaths.trim();
-    const evidence = [
-      `Dashboard ${current.agent} session ${current.sessionId ?? "unknown-session"}; end-of-session log prompt.`,
-      files ? `Edited files: ${files.replace(/\n+/g, ", ")}` : "",
-    ].filter(Boolean).join(" ");
-
-    const res = await authFetch("/api/agents/vault-log", {
+    authFetch("/api/agents/vault-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         agent: current.agent,
         sessionId: current.sessionId,
-        title: sessionTitle,
+        title: current.title || `${current.agent} session`,
         directory: current.directory,
         messageCount: current.messages.length,
-        goal: nextDraft.title,
-        changed: files ? `${nextDraft.body}\n\nEdited files:\n${files}` : nextDraft.body,
-        evidence,
-        next: nextDraft.next,
-        includeVault: nextDraft.includeVault,
-        includeProject: nextDraft.includeProject,
-        includeMasterPlan: nextDraft.includeMasterPlan,
+        goal: draft.title,
+        changed: files ? `${draft.body}\n\nEdited files:\n${files}` : draft.body,
+        evidence: `${current.agent} session auto-logged on ${reason}.`,
+        next: draft.next,
+        includeVault: true,
+        includeProject: false,
+        includeMasterPlan: false,
       }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const json = await res.json() as { written: string[] };
-    return json.written;
+    }).catch(() => {}); // fire-and-forget — errors are silent
   }, []);
 
-  const dismiss = useCallback((_: VaultLogDismissReason) => {
-    setDraft(null);
-    const after = afterRef.current;
-    afterRef.current = null;
+  // Passive location-change log — no navigation blocking
+  useEffect(() => {
+    if (location !== prevLocationRef.current) {
+      prevLocationRef.current = location;
+      silentLog("navigate-away");
+    }
+  }, [location, silentLog]);
+
+  // Log on unmount (component removed from tree)
+  useEffect(() => {
+    return () => { silentLog("navigate-away"); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const triggerSessionEnd = useCallback((reason: SessionEndReason, after?: () => void) => {
+    silentLog(reason);
     if (after) requestAnimationFrame(after);
-  }, []);
+    return false; // Never blocks — caller should always proceed
+  }, [silentLog]);
 
-  const modal = useMemo(() => draft ? (
-    <AgentVaultLogModal
-      heading="Log this run?"
-      message="This session has enough context to preserve. Review the generated summary, choose targets, or dismiss without writing anything."
-      initial={draft}
-      confirmLabel="Confirm"
-      showDontAsk
-      onConfirm={submit}
-      onDismiss={dismiss}
-    />
-  ) : null, [dismiss, draft, submit]);
-
-  return { triggerSessionEnd, sessionEndPromptModal: modal };
+  return {
+    triggerSessionEnd,
+    sessionEndPromptModal: null as ReactNode,
+  };
 }
+
+// ── Draft builders (retained for log content generation) ──────────────────────
 
 function makeDraft(
   agent: AgentId,
@@ -135,7 +109,7 @@ function makeDraft(
   directory: string | undefined,
   messages: SessionEndMessage[],
   reason: SessionEndReason,
-): VaultLogDraft {
+) {
   const firstUser = messages.find((m) => m.role === "user" && textOf(m)) ?? messages[0];
   const lastUser = [...messages].reverse().find((m) => m.role === "user" && textOf(m));
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && textOf(m));
@@ -152,7 +126,7 @@ function makeDraft(
     filePaths,
     next: "Continue from the relevant dashboard or stack plan.",
     includeVault: true,
-    includeProject: true,
+    includeProject: false,
     includeMasterPlan: false,
   };
 }

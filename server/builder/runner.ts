@@ -48,6 +48,42 @@ function now(): number {
   return Date.now();
 }
 
+// Reads the live model-health file to produce a concise briefing for agents.
+// Fails silently — a missing health file is not fatal.
+function readModelBriefing(selectedModel: string | null, agent: string): string {
+  try {
+    const healthPath = "/var/lib/mimule/model-health.json";
+    if (!existsSync(healthPath)) return "";
+    const health = JSON.parse(readFileSync(healthPath, "utf8")) as {
+      bestCloudHeavy?: string;
+      bestCloudFast?: string;
+      bestLocal?: string;
+      ranked?: { heavy?: string[]; medium?: string[] };
+    };
+    const heavy = health.bestCloudHeavy ?? "editorial-cloud-heavy";
+    const fast  = health.bestCloudFast  ?? "editorial-cloud-fast";
+    const local = health.bestLocal;
+    const topHeavy = (health.ranked?.heavy  ?? []).slice(0, 4).join(", ");
+    const topFast  = (health.ranked?.medium ?? []).slice(0, 3).join(", ");
+    return [
+      "=== MODEL BRIEFING (live from /var/lib/mimule/model-health.json) ===",
+      `This pass: ${agent}${selectedModel ? `/${selectedModel}` : " (agent default)"}`,
+      `  Best heavy (complex coding / research): ${heavy}`,
+      `  Best fast  (single-file edits / prep): ${fast}`,
+      local ? `  Best local GPU (lowest latency):       ${local}` : "",
+      topHeavy ? `  Heavy pool (fastest first): ${topHeavy}` : "",
+      topFast  ? `  Fast pool  (fastest first): ${topFast}`  : "",
+      "",
+      "Use LiteLLM logical names (above) for --model flags or builder_spawn_child.",
+      "OpenCode native IDs: opencode-go/kimi-k2.6, anthropic/claude-sonnet-4-5,",
+      "  google/gemini-2.5-flash, openai/gpt-4.1, openai/o4-mini, xai/grok-3-mini",
+      "====================================================================",
+    ].filter(Boolean).join("\n");
+  } catch {
+    return "";
+  }
+}
+
 // ── Tmux helpers ───────────────────────────────────────────────────────────
 
 function tmuxExists(session: string): boolean {
@@ -304,56 +340,82 @@ function pushChanges(workflow: BuilderWorkflow, run: BuilderRun): string {
   }
 }
 
+const BUILDER_VAULT_DIR = "/opt/ai-vault/builder";
+
+function ensureBuilderVaultDir(): void {
+  if (!existsSync(BUILDER_VAULT_DIR)) mkdirSync(BUILDER_VAULT_DIR, { recursive: true });
+}
+
 function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string | null, runStatus: string): void {
   const ts = new Date().toISOString();
   const vaultDate = ts.slice(0, 10); // YYYY-MM-DD
 
-  // Build summary lines
-  const summaryLines: string[] = [
-    `## Builder run: ${workflow.name}`,
-    `**Status**: ${runStatus}`,
-    `**Workflow**: ${workflow.id}`,
-    `**Run**: ${run.id}`,
-    `**Trigger**: ${run.trigger}`,
-    `**Pass**: ${passId ?? "-"}`,
-    `**Started**: ${run.startedAt ? new Date(run.startedAt).toISOString() : "-"}`,
-    `**Finished**: ${run.finishedAt ? new Date(run.finishedAt).toISOString() : "-"}`,
-    `**Agent**: ${workflow.config.agentOrder[0] ?? "unknown"}`,
-    `**Model**: ${workflow.config.modelPolicy.builder ?? "-"}`,
-    `**Plan**: ${workflow.planFile}`,
-    `**Project**: ${workflow.projectRoot}`,
+  const wfShort  = workflow.id.slice(0, 8);
+  const runShort = run.id.slice(0, 8);
+
+  // Full details go to /opt/ai-vault/builder/YYYY-MM-DD-<wf>-<run>.md
+  // Daily vault gets only a brief one-liner — keeps the daily note clean.
+  ensureBuilderVaultDir();
+  const builderLogPath = `${BUILDER_VAULT_DIR}/${vaultDate}-${wfShort}-${runShort}.md`;
+
+  const fullLines: string[] = [
+    `# Builder run: ${workflow.name}`,
     "",
+    `| Field | Value |`,
+    `|---|---|`,
+    `| Status    | ${runStatus} |`,
+    `| Workflow  | ${workflow.id} |`,
+    `| Run       | ${run.id} |`,
+    `| Trigger   | ${run.trigger} |`,
+    `| Pass      | ${passId ?? "-"} |`,
+    `| Started   | ${run.startedAt ? new Date(run.startedAt).toISOString() : "-"} |`,
+    `| Finished  | ${run.finishedAt ? new Date(run.finishedAt).toISOString() : ts} |`,
+    `| Agent     | ${workflow.config.agentOrder[0] ?? "unknown"} |`,
+    `| Model     | ${workflow.config.modelPolicy.builder ?? "-"} |`,
+    `| Plan      | ${workflow.planFile} |`,
+    `| Project   | ${workflow.projectRoot} |`,
+    `| Artifacts | /var/lib/control-surface/builder-runs/${run.id}/ |`,
+    "",
+    `_Logged at ${ts}_`,
   ];
 
-  const vaultEntry = summaryLines.join("\n");
-
-  // Write to AI Vault daily note
-  const vaultPath = `/opt/ai-vault/daily/${vaultDate}.md`;
   try {
-    const existing = existsSync(vaultPath) ? readFileSync(vaultPath, "utf8") : "";
-    const marker = `## Builder Runs`;
-    if (existing.includes(marker)) {
-      const parts = existing.split(marker);
-      const after = parts[1] ?? "";
-      const restParts = after.split("---");
-      const rest = restParts.slice(1).join("---");
-      writeFileSync(vaultPath, `${parts[0]}${marker}\n\n${vaultEntry}\n---${rest}`, { encoding: "utf8" });
-    } else {
-      const separator = existing.trim() ? "\n\n---\n\n" : "";
-      writeFileSync(vaultPath, existing + separator + `## Builder Runs\n\n${vaultEntry}`, { encoding: "utf8" });
-    }
+    writeFileSync(builderLogPath, fullLines.join("\n"), { encoding: "utf8" });
   } catch (e) {
-    console.error("[builder] vault log write failed:", e);
+    console.error("[builder] builder vault write failed:", e);
   }
 
-  // Write to project plan file if it exists
+  // One-liner in the daily vault under ## Builder Runs
+  const briefEntry = `- [${runStatus}] ${workflow.name} · run=${runShort} · ${ts.slice(11, 19)} UTC → [details](${builderLogPath})\n`;
+  const dailyVaultPath = `/opt/ai-vault/daily/${vaultDate}.md`;
+  try {
+    const existing = existsSync(dailyVaultPath) ? readFileSync(dailyVaultPath, "utf8") : "";
+    const marker = "## Builder Runs";
+    if (existing.includes(marker)) {
+      writeFileSync(
+        dailyVaultPath,
+        existing.replace(marker + "\n", marker + "\n" + briefEntry),
+        { encoding: "utf8" },
+      );
+    } else {
+      const separator = existing.trim() ? "\n\n---\n\n" : "";
+      writeFileSync(
+        dailyVaultPath,
+        existing + separator + `${marker}\n${briefEntry}`,
+        { encoding: "utf8" },
+      );
+    }
+  } catch (e) {
+    console.error("[builder] daily vault write failed:", e);
+  }
+
+  // Append a brief progress entry to the plan file (useful for plan tracking)
   if (workflow.planFile && existsSync(workflow.planFile)) {
     try {
       const planContent = readFileSync(workflow.planFile, "utf8");
-      const runMarker = `## Builder Run ${run.id.slice(0, 8)}`;
+      const runMarker = `Builder run ${runShort}`;
       if (!planContent.includes(runMarker)) {
-        const timestamp = new Date().toISOString();
-        const entry = `\n\n---\n${runMarker}\n- **Status**: ${runStatus}\n- **Trigger**: ${run.trigger}\n- **Finished**: ${timestamp}\n- **Artifact**: /var/lib/control-surface/builder-runs/${run.id}/\n`;
+        const entry = `\n\n<!-- ${runMarker}: ${runStatus} at ${ts} — details: ${builderLogPath} -->`;
         writeFileSync(workflow.planFile, planContent + entry, { encoding: "utf8" });
       }
     } catch (e) {
@@ -364,7 +426,7 @@ function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string |
 
 // ── Phase 6: Auto-Continue and Context Handoff ─────────────────────────────
 
-function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, nextSequence: number): string {
+function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, nextSequence: number, agent?: string, model?: string | null): string {
   const projectRoot = workflow.projectRoot;
   const prevPasses = readBuilderPasses(run.id).filter((p) => p.sequence < nextSequence);
 
@@ -401,22 +463,40 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
   if (existsSync(workflow.planFile)) {
     try {
       const planContent = readFileSync(workflow.planFile, "utf8");
-      const phaseMatch = planContent.match(/## (Phase \d+[^\n]*)/g);
+      const phaseMatch = planContent.match(/^##[^\n]*/gm);
       if (phaseMatch) {
-        lines.push(`Plan phases found: ${phaseMatch.join(" | ")}`);
+        lines.push(`Plan sections: ${phaseMatch.slice(0, 20).join(" | ")}`);
+      }
+      // Find next unchecked items without reading the whole file
+      const unchecked = planContent
+        .split(/\r?\n/)
+        .filter((l) => /^\s*-\s+\[ \]/.test(l))
+        .slice(0, 5)
+        .map((l) => l.trim());
+      if (unchecked.length > 0) {
+        lines.push(`Next unchecked items: ${unchecked.join(" | ")}`);
       }
       lines.push(`Full plan at: ${workflow.planFile}`);
+      lines.push(`Use: grep -n '^\\s*- \\[ \\]' '${workflow.planFile}' | head -20`);
     } catch { /* ignore */ }
   } else {
     lines.push(`Plan file not found at: ${workflow.planFile}`);
   }
 
+  // Inject live model briefing so agents know what's available
+  const briefing = readModelBriefing(model ?? null, agent ?? "unknown");
+  if (briefing) {
+    lines.push("");
+    lines.push(briefing);
+  }
+
   lines.push("");
-  lines.push("=== Instructions ===");
-  lines.push("Continue developing the project from where the previous pass left off.");
-  lines.push("Review the plan file and prior pass summaries to understand what remains.");
-  lines.push("Run validation commands after changes.");
-  lines.push("Report: changed files, test results, what was accomplished, what still needs work.");
+  lines.push("=== Instructions for this pass ===");
+  lines.push("1. Read ONLY the next 2-3 unchecked items from the plan (use grep, not full cat).");
+  lines.push("2. Implement those items, then mark them [x] in the plan file.");
+  lines.push("3. Run validation commands after changes (see contract above).");
+  lines.push("4. End with a concise summary: what changed, what failed, what the next item is.");
+  lines.push("Do NOT try to complete the whole plan in one pass.");
 
   return lines.join("\n");
 }
@@ -460,7 +540,7 @@ async function startNextPass(
   }
 
   // Build continuation context
-  const continuationContext = buildContinuationContext(workflow, run, nextSequence);
+  const continuationContext = buildContinuationContext(workflow, run, nextSequence, agent, model);
   const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext, embeddedEffort);
 
   const jobId = `job_${randomUUID()}`;
@@ -749,24 +829,47 @@ function releaseProjectLock(projectRoot: string): void {
 function buildCodexPrompt(workflow: BuilderWorkflow, continuationContext?: string): string {
   const { planFile, projectRoot } = workflow;
   const orchestrationRules = `
-=== SUB-AGENT ORCHESTRATION CONTRACT ===
-You are a Builder pass supervisor. You may dispatch child agent tasks, but ONLY through the provided helper functions in this shell environment:
+=== BUILDER PASS CONTRACT ===
 
-1. builder_spawn_child <agent> <model> <task-description> — dispatches a single task to a child agent and returns its PID. Available agents: opencode, codex, claude, gemini. The model must be a valid ID (e.g. opencode-go/kimi-k2.6, codex:o4-mini).
-2. builder_child_status <pid> — returns RUNNING, DONE, FAILED, or TIMEOUT.
-3. builder_child_wait <pid> [timeout-seconds] — blocks until the child finishes or the timeout expires. Default timeout is 300s.
-4. builder_child_output <pid> — prints the child's stdout+stderr tail (last 200 lines).
-5. builder_child_kill <pid> — sends SIGTERM to a hung child.
+── PLAN FILE NAVIGATION (critical for large plans) ──────────────────────────
+DO NOT read the entire plan file at once. Use targeted commands:
+  grep -n '^\s*- \[ \]' '${planFile}' | head -20   # next unchecked items
+  grep -n '^## ' '${planFile}'                      # phase/section headings
+  grep -n '^### \|^## ' '${planFile}' | head -40    # full outline
+Focus on the NEXT 2-3 unchecked [ ] items only. After completing an item,
+mark it [x] in the plan file. Do NOT attempt to finish an entire phase in
+one pass — that overruns context and produces incomplete work.
+
+── CONTEXT EFFICIENCY ───────────────────────────────────────────────────────
+Read files with head/tail/grep; never cat an entire file >100 lines.
+Your end-of-pass summary is stored (capped ~2 KB) and fed to the next pass.
+Write it concisely: what changed, what failed, what the next unchecked item is.
+Example: head -80 file.ts; grep -n 'functionName' file.ts
+
+── TASK SPLITTING — when to use builder_spawn_child ────────────────────────
+Split into child tasks when ANY of these apply:
+  • >5 separate files need changes in one coherent logical unit
+  • 2+ independent features/components can be built in parallel
+  • A subtask needs a different model (e.g. heavy cloud for research)
+Write $BUILDER_DIR/child-context.txt with project state BEFORE spawning.
+
+── SUB-AGENT HELPERS (available in this shell) ──────────────────────────────
+1. builder_spawn_child <agent> <model> <task-description>
+   → agents: opencode, codex, claude, gemini
+   → model: LiteLLM logical name or OpenCode native ID
+   → returns PID; max 3 concurrent children
+2. builder_child_status <pid>   → RUNNING | DONE | FAILED | TIMEOUT
+3. builder_child_wait <pid> [timeout-seconds]   → default 300 s
+4. builder_child_output <pid>   → last 200 lines of stdout+stderr
+5. builder_child_kill <pid>     → SIGTERM on a hung child
 
 RULES:
-- Maximum 3 concurrent children per pass. Excess spawn calls are rejected.
-- Each child gets a fresh tmux session but shares the project directory.
-- Children inherit the current git state but MUST NOT commit or push.
-- If a child fails, you may retry ONCE with a different model/agent before giving up.
-- Always record the child PID and final status in the pass log.
-- Context handoff: write a brief context file at $BUILDER_DIR/child-context.txt before spawning children.
-- DO NOT use raw opencode/claude/codex/gemini commands directly — use builder_spawn_child.
-===========================`;
+- Each child gets a fresh tmux session, shares the project directory.
+- Children MUST NOT commit or push — only the parent pass does that.
+- Retry a failed child ONCE with a different model/agent, then give up.
+- Log every child PID and final status to the pass stdout.
+- DO NOT invoke opencode/claude/codex/gemini directly — use builder_spawn_child.
+=============================================================================`;
   let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.${orchestrationRules}`;
   if (workflow.mode === "plan") {
     base = `Research the project at ${projectRoot}, dynamically inspect existing plan files, AGENTS.md, README files, package metadata, and current git state, then create or update the plan file at ${planFile}. Do not implement product code in this pass. The output plan must include current facts, open gaps, proposed phases, validation commands, and the next manual test path. If ${planFile} does not exist, create it.${orchestrationRules}`;
@@ -819,14 +922,10 @@ function writePassScript(
     command = `echo "Unsupported builder agent: ${agent}"`;
   }
 
-  const continuationBlock = continuationContext
-    ? `\n# Continuation context written to file
-CONTEXT_FILE="${dir}/continuation-${passNumber}.txt"
-cat > "$CONTEXT_FILE" << 'BUILDER_EOF'
-${continuationContext}
-BUILDER_EOF
-echo "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/${stdoutLog}"
-`
+  // Continuation context is written by Node.js directly (no heredoc needed in shell).
+  const continuationContextFile = continuationContext ? `${dir}/continuation-${passNumber}.txt` : null;
+  const continuationBlock = continuationContextFile
+    ? `echo "[builder] Continuation context from prior passes: ${continuationContextFile}" >> "$BUILDER_DIR/${stdoutLog}"\n`
     : "";
 
   const PASS_TIMEOUT_SECONDS = workflow.config.riskPolicy?.passTimeoutSeconds ?? 900;
@@ -970,6 +1069,16 @@ echo "[builder] Continuation context written to $CONTEXT_FILE" >> "$BUILDER_DIR/
 
   const childHelpers = buildChildHelpersScript();
 
+  // Write prompt, helpers, and continuation context files directly from Node.js.
+  // This avoids shell heredoc injection: if these strings contain the heredoc
+  // sentinel on a line by itself, the shell script would terminate early.
+  const promptFilePath = join(dir, promptFile);
+  writeFileSync(promptFilePath, prompt, { encoding: "utf8" });
+  writeFileSync(join(dir, "builder-child-helpers.sh"), childHelpers, { encoding: "utf8" });
+  if (continuationContext && continuationContextFile) {
+    writeFileSync(continuationContextFile, continuationContext, { encoding: "utf8" });
+  }
+
   const script = `#!/bin/bash
 set -euo pipefail
 BUILDER_DIR="${dir}"
@@ -980,17 +1089,12 @@ export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE
 EXIT_CODE=143
 trap 'echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"' EXIT
 mkdir -p "$BUILDER_DIR/children" "$BUILDER_DIR/bin"
-cat > "$BUILDER_PROMPT_FILE" << 'BUILDER_PROMPT_EOF'
-${prompt}
-BUILDER_PROMPT_EOF
 echo "[builder] Pass ${passNumber} starting at $(date -Iseconds)" | tee "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Timeout: ${PASS_TIMEOUT_SECONDS}s" >> "$BUILDER_DIR/${stdoutLog}"
-cat > "$BUILDER_DIR/builder-child-helpers.sh" << 'BUILDER_HELPERS_EOF'
-${childHelpers}
-BUILDER_HELPERS_EOF
+echo "[builder] Prompt: $BUILDER_PROMPT_FILE ($(wc -c < "$BUILDER_PROMPT_FILE") bytes)" >> "$BUILDER_DIR/${stdoutLog}"
 source "$BUILDER_DIR/builder-child-helpers.sh"
 export -f builder_child_id_for_pid builder_spawn_child builder_child_status builder_child_wait builder_child_output builder_child_kill
 export BASH_ENV="$BUILDER_DIR/builder-child-helpers.sh"
