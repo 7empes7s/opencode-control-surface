@@ -1028,7 +1028,7 @@ body {
   font-family: var(--sans); font-size: 10.5px; font-weight: 600; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: 0.10em;
   text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border);
-  white-space: nowrap;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: color-mix(in oklch, white 2%, transparent);
 }
 .data-table td {
@@ -2003,6 +2003,12 @@ body {
   .page-header .btn-sm,
   .audit-select { min-height: 44px; }
   .data-table .btn-sm { min-height: 44px; }
+  /* Builder modals cap at viewport width on tablet */
+  .modal-box.builder-workflow-modal,
+  .modal-box.builder-detail-panel {
+    max-width: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+  }
 }
 
 /* ── Mobile (< 600) ───────────────────────────────────────────────────── */
@@ -2140,6 +2146,16 @@ body {
   .queue-col-priority, .queue-col-elapsed, .queue-col-flags { display: none; }
   .models-col-provider, .models-col-latency, .models-col-json, .models-col-failures { display: none; }
 
+  /* Models table: give name col more room, shrink actions col */
+  .models-table .name-col  { width: 38%; }
+  .models-table .cap-col   { width: 18%; }
+  .models-table .quality-col { width: 23%; }
+  .models-table .actions-col { width: 21%; }
+
+  /* Tighter table padding on mobile */
+  .data-table td { padding: 8px 10px; }
+  .data-table th { padding: 7px 10px; }
+
   /* Models table — hide pricing/type/CLI/provider/ctx/rating cols via col elements */
   .models-table col.price-col,
   .models-table col.type-col,
@@ -2185,17 +2201,19 @@ body {
     display: none;
   }
 
-  /* Queue action buttons — stack vertically on mobile */
+  /* Queue action buttons — compact row with wrap on mobile */
   .queue-actions {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
     gap: 4px;
-    align-items: stretch;
-    min-width: 80px;
+    align-items: center;
+    min-width: 0;
   }
   .queue-actions .btn-sm {
-    min-height: 36px;
-    font-size: 10.5px;
+    min-height: 32px;
+    font-size: 10px;
+    padding: 0 7px;
   }
 }
 
@@ -3394,16 +3412,22 @@ body {
   }
   .topnav-hamburger:hover { color: var(--text); background: var(--bg-hover); }
 
-  /* Expanded full-width nav row (hidden by default) */
+  /* Expanded full-width nav row — fixed so parent overflow:hidden doesn't clip it */
   .topnav-links-expanded {
     display: none;
     flex-wrap: wrap;
     gap: 6px;
     padding: 10px 14px;
     background: var(--bg-panel);
+    border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    width: 100%;
     box-sizing: border-box;
+    position: fixed;
+    top: 44px;
+    left: 0;
+    right: 0;
+    z-index: 120;
+    box-shadow: 0 8px 24px oklch(0% 0 0 / 45%);
   }
   .topnav-links-expanded.open {
     display: flex;

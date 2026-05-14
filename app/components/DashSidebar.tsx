@@ -151,7 +151,7 @@ export function DashSidebar() {
         </div>
 
 <nav className="topnav-links" aria-label="Main navigation">
-          {PRIMARY_NAV.map(({ href, label, icon: Icon, match }) => {
+          {NAV.map(({ href, label, icon: Icon, match }) => {
             const active = match ? match(location) : location.startsWith(href);
             return (
               <Link key={href} href={href} className={`topnav-link${active ? " active" : ""}`}>

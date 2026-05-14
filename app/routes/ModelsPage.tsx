@@ -153,9 +153,9 @@ export function ModelsPage() {
             </colgroup>
             <thead><tr>
               <th>logical name</th><th>cap</th><th>quality</th><th></th>
-              <th>pricing</th><th>type</th><th>CLI</th>
-              <th className="models-col-provider">provider</th>
-              <th>ctx</th><th>rating</th><th>latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
+              <th className="price-col">pricing</th><th className="type-col">type</th><th className="cli-col">CLI</th>
+              <th className="models-col-provider provider-col">provider</th>
+              <th className="ctx-col">ctx</th><th className="rating-col">rating</th><th className="latency-col models-col-latency">latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
             </tr></thead>
             <tbody>
               {d.models.map((m) => (
@@ -163,29 +163,31 @@ export function ModelsPage() {
                   <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
                   <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
                   <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                  <td style={{ display: "flex", gap: 4 }} className="actions-col">
-                    {m.qualityStatus === "blocked" ? (
-                      <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
-                    ) : m.qualityStatus === "probation" ? (
-                      <>
-                        <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                  <td className="actions-col">
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {m.qualityStatus === "blocked" ? (
+                        <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
+                      ) : m.qualityStatus === "probation" ? (
+                        <>
+                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                        </>
+                      ) : (
                         <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
-                      </>
-                    ) : (
-                      <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
-                    )}
+                      )}
+                    </div>
                   </td>
-                  <td>
+                  <td className="price-col">
                     {m.isFree && <Pill color="green">free</Pill>}
                     {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
                     {m.isOpenCode && <span className="text-xs" style={{ marginLeft: 4 }} title="OpenCode native">🔷</span>}
                   </td>
-                  <td><Pill>{m.providerType}</Pill></td>
-                  <td>{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
-                  <td className="dim mono models-col-provider">{m.provider}</td>
-                  <td className="mono dim">{fmtContextWindow(m.contextWindow)}</td>
-                  <td className="mono dim">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
-                  <td className="mono dim models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
+                  <td className="type-col"><Pill>{m.providerType}</Pill></td>
+                  <td className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
+                  <td className="dim mono models-col-provider provider-col">{m.provider}</td>
+                  <td className="mono dim ctx-col">{fmtContextWindow(m.contextWindow)}</td>
+                  <td className="mono dim rating-col">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
+                  <td className="mono dim latency-col models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
                   <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
                   <td className="mono dim models-col-failures">
                     {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
