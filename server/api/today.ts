@@ -1,6 +1,7 @@
 import { buildHomeData } from "./home.ts";
 import { isDashboardDbEnabled, getDashboardDb } from "../db/dashboard.ts";
 import { readOperatorState, writeOperatorState } from "../db/writer.ts";
+import { ok } from "./types.ts";
 
 interface TodayData {
   date: string;
@@ -198,5 +199,5 @@ export async function todayHandler(): Promise<Response> {
     suggestedSchedule,
   };
 
-  return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify(ok(result)), { headers: { "Content-Type": "application/json" } });
 }
