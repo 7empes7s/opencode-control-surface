@@ -18,6 +18,8 @@ import type {
   BuilderRunsResponse,
   BuilderWorkflowResponse,
   BuilderWorkflowsResponse,
+  BuilderRunSummaryResponse,
+  PlanProgressResponse,
 } from "../../server/api/builder";
 import type {
   BuilderArtifact,
@@ -974,6 +976,184 @@ function CollapsibleLog({ label, content }: { label: string; content: string }) 
   );
 }
 
+function RunAnalyticsCard({ summary }: { summary: BuilderRunSummaryResponse | null | undefined }) {
+  if (!summary) return null;
+  const dur = summary.durationMs != null ? `${Math.round(summary.durationMs / 1000)}s` : "—";
+  const progress = summary.planItemsDone != null
+    ? `${summary.planItemsDone} done${summary.planItemsRemaining != null ? ` / ${summary.planItemsRemaining} remaining` : ""}`
+    : null;
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", marginBottom: 12, background: "var(--bg-card-start)" }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Run analytics</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "6px 16px", fontSize: 12 }}>
+        <div><span style={{ color: "var(--text-dim)" }}>duration</span> <strong>{dur}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>passes</span> <strong>{summary.passCount}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>trigger</span> <strong>{summary.trigger}</strong></div>
+        {summary.lastAgent && <div><span style={{ color: "var(--text-dim)" }}>agent</span> <strong>{summary.lastAgent}</strong></div>}
+        {summary.lastModel && <div><span style={{ color: "var(--text-dim)" }}>model</span> <strong className="mono" style={{ fontSize: 11 }}>{summary.lastModel}</strong></div>}
+        {progress && <div><span style={{ color: "var(--text-dim)" }}>plan progress</span> <strong>{progress}</strong></div>}
+        {summary.completionPercent != null && <div><span style={{ color: "var(--text-dim)" }}>completion</span> <strong>{summary.completionPercent}%</strong></div>}
+        {summary.filesEdited.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files edited</span> <strong>{summary.filesEdited.length}</strong></div>}
+        {summary.filesCreated.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files created</span> <strong>{summary.filesCreated.length}</strong></div>}
+        {summary.unresolvedErrors != null && <div><span style={{ color: "var(--text-dim)" }}>unresolved errors</span> <strong style={{ color: summary.unresolvedErrors > 0 ? "var(--text-red, red)" : undefined }}>{summary.unresolvedErrors}</strong></div>}
+      </div>
+    </div>
+  );
+}
+
+function FailureInvestigationPanel({ passId }: { passId: string }) {
+  const { data, loading, error } = useAuthenticatedApi<{ data: { diagnosis: { failureClass: string; title: string; whatHappened: string; lastActivity: string; likelyCause: string; suggestedActions: string[] } } }>(`/api/builder/passes/${passId}/diagnosis`);
+  const diagnosis = data?.data?.diagnosis;
+
+  if (loading) return <div style={{ padding: "8px 0", color: "var(--text-dim)", fontSize: 12 }}>loading diagnosis...</div>;
+  if (error || !diagnosis) return null;
+
+  return (
+    <div style={{ marginTop: 10, border: "1px solid color-mix(in oklch, red 40%, transparent)", borderRadius: 6, padding: "10px 12px", background: "color-mix(in oklch, red 4%, transparent)" }}>
+      <div style={{ fontWeight: 600, fontSize: 12, color: "var(--text-red, red)", marginBottom: 6 }}>❌ {diagnosis.title}</div>
+      <div style={{ fontSize: 11, lineHeight: 1.6, color: "var(--text-dim)" }}>
+        <div><strong>What happened:</strong> {diagnosis.whatHappened}</div>
+        {diagnosis.lastActivity && <div style={{ marginTop: 4 }}><strong>Last activity:</strong> <span className="mono" style={{ fontSize: 10, whiteSpace: "pre-wrap" }}>{diagnosis.lastActivity.slice(0, 300)}</span></div>}
+        <div style={{ marginTop: 4 }}><strong>Likely cause:</strong> {diagnosis.likelyCause}</div>
+        {diagnosis.suggestedActions?.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            <strong>Suggested actions:</strong>
+            <ul style={{ margin: "4px 0 0 0", paddingLeft: 16 }}>
+              {diagnosis.suggestedActions.map((action: string) => (
+                <li key={action} style={{ fontSize: 11 }}>{action.replace(/-/g, " ")}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SessionSummaryCard({ summary }: { summary: BuilderRunSummaryResponse | null | undefined }) {
+  if (!summary) return null;
+  const isDone = summary.status === "success" || summary.status === "failed";
+  if (!isDone) return null;
+
+  const dur = summary.durationMs != null ? `${Math.floor(summary.durationMs / 60000)}m ${Math.round((summary.durationMs % 60000) / 1000)}s` : "—";
+  const color = summary.status === "success" ? "var(--text-green, green)" : "var(--text-red, red)";
+
+  return (
+    <div style={{ border: `1px solid ${color}`, borderRadius: 8, padding: "12px 14px", marginBottom: 12, background: "var(--bg-card-start)" }}>
+      <div style={{ fontWeight: 600, fontSize: 13, color, marginBottom: 8 }}>
+        {summary.status === "success" ? "✅" : "❌"} Session complete — {summary.status}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "4px 16px", fontSize: 12 }}>
+        <div><span style={{ color: "var(--text-dim)" }}>duration</span> <strong>{dur}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>passes</span> <strong>{summary.successPasses} success / {summary.failedPasses} failed</strong></div>
+        {summary.planItemsDone != null && <div><span style={{ color: "var(--text-dim)" }}>items completed</span> <strong>{summary.planItemsDone}</strong></div>}
+        {summary.planItemsRemaining != null && <div><span style={{ color: "var(--text-dim)" }}>items remaining</span> <strong>{summary.planItemsRemaining}</strong></div>}
+        {summary.filesEdited.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files edited</span> <strong>{summary.filesEdited.length}</strong></div>}
+        {summary.filesCreated.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files created</span> <strong>{summary.filesCreated.length}</strong></div>}
+      </div>
+    </div>
+  );
+}
+
+function PlanProgressWidget({ workflowId, planFile }: { workflowId: string | undefined; planFile: string | undefined }) {
+  const { data, loading } = useAuthenticatedApi<{ data: PlanProgressResponse }>(
+    workflowId ? `/api/builder/workflows/${workflowId}/plan-progress` : null
+  );
+  const progress = data?.data;
+
+  if (!workflowId || !planFile) return null;
+  if (loading && !progress) return <div style={{ fontSize: 11, color: "var(--text-dim)", padding: "8px 0" }}>loading plan progress...</div>;
+  if (!progress) return null;
+
+  const planName = planFile.split("/").pop() ?? planFile;
+  const barWidth = progress.totalItems > 0 ? Math.round((progress.totalDone / progress.totalItems) * 100) : 0;
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Plan progress — <span className="mono" style={{ fontSize: 11 }}>{planName}</span></div>
+      {progress.error ? (
+        <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{progress.error}</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: 1, height: 6, background: "var(--border)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ width: `${barWidth}%`, height: "100%", background: "var(--text-green, green)", transition: "width 0.3s" }} />
+            </div>
+            <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{progress.totalDone}/{progress.totalItems} ({barWidth}%)</span>
+          </div>
+          {progress.sections.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {progress.sections.map((section) => {
+                const sectionBar = section.total > 0 ? Math.round((section.done / section.total) * 100) : 0;
+                const done = section.done === section.total;
+                return (
+                  <div key={section.title} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+                    <span style={{ color: done ? "var(--text-green, green)" : "var(--text-dim)", width: 12 }}>{done ? "✓" : "·"}</span>
+                    <span style={{ flex: 1, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{section.title}</span>
+                    <span style={{ whiteSpace: "nowrap", color: "var(--text-dim)" }}>{section.done}/{section.total}</span>
+                    <div style={{ width: 48, height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden", flexShrink: 0 }}>
+                      <div style={{ width: `${sectionBar}%`, height: "100%", background: done ? "var(--text-green, green)" : "var(--text-amber, amber)" }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function LivePassPanel({ runId, isRunning }: { runId: string; isRunning: boolean }) {
+  const [lines, setLines] = useState<string[]>([]);
+  const [connected, setConnected] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const es = new EventSource(`/api/builder/runs/${runId}/pass-live`);
+    setConnected(true);
+    setLines([]);
+
+    es.addEventListener("line", (e: MessageEvent) => {
+      try {
+        const { text } = JSON.parse(e.data) as { text: string; ts: number };
+        setLines((prev) => [...prev.slice(-99), text]);
+      } catch { /* ignore */ }
+    });
+    es.addEventListener("done", () => {
+      es.close();
+      setConnected(false);
+    });
+    es.onerror = () => {
+      es.close();
+      setConnected(false);
+    };
+    return () => { es.close(); setConnected(false); };
+  }, [runId, isRunning]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines]);
+
+  if (!isRunning && lines.length === 0) return null;
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, marginBottom: 12, overflow: "hidden" }}>
+      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, background: "var(--bg-card-start)", borderBottom: "1px solid var(--border)" }}>
+        <span style={{ fontSize: 11, fontWeight: 600 }}>Live output</span>
+        {connected && <span style={{ fontSize: 10, color: "var(--text-green, green)" }}>● streaming</span>}
+        {!connected && lines.length > 0 && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>● ended</span>}
+      </div>
+      <pre style={{ padding: "10px 14px", fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.5, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-all", background: "color-mix(in oklch, black 15%, transparent)", maxHeight: 240, overflowY: "auto", margin: 0 }}>
+        {lines.length === 0 ? "waiting for output..." : lines.join("\n")}
+        <div ref={bottomRef} />
+      </pre>
+    </div>
+  );
+}
+
 function RunDetailPanel({
   runDetail,
   loading,
@@ -994,6 +1174,11 @@ function RunDetailPanel({
   const validations = runDetail?.validations ?? [];
   const [passLogs, setPassLogs] = useState<Record<string, { stdout: string; stderr: string }>>({});
   const [expandedLogs, setExpandedLogs] = useState<Record<string, boolean>>({});
+
+  const { data: summaryData } = useAuthenticatedApi<{ data: BuilderRunSummaryResponse }>(
+    run ? `/api/builder/runs/${run.id}/summary` : null
+  );
+  const summary = summaryData?.data ?? null;
 
   useEffect(() => {
     if (!runDetail?.run) return;
@@ -1042,6 +1227,10 @@ function RunDetailPanel({
 
         {runDetail && (
           <div className="builder-detail-body">
+            <SessionSummaryCard summary={summary} />
+            <RunAnalyticsCard summary={summary} />
+            <PlanProgressWidget workflowId={workflow?.id} planFile={workflow?.planFile} />
+            {run?.status === "running" && <LivePassPanel runId={run.id} isRunning={true} />}
             {run && (
               <div className="builder-detail-meta builder-kv-grid">
                 <div><span>status</span><strong><Pill color={statusColor(run.status)}>{run.status}</Pill></strong></div>
@@ -1053,6 +1242,18 @@ function RunDetailPanel({
             )}
 
             <SourceSessionDetail source={workflow?.config.sourceSession} />
+            {workflow?.mode === "scheduled" && workflow.config && (() => {
+              const nextRunAt = (workflow as Record<string, unknown>).nextRunAt;
+              if (!nextRunAt || typeof nextRunAt !== "number") return null;
+              const diffMs = nextRunAt - Date.now();
+              const diffMin = Math.round(diffMs / 60000);
+              const label = diffMs < 0 ? "overdue" : diffMin < 60 ? `in ${diffMin}m` : `in ${Math.round(diffMin / 60)}h`;
+              return (
+                <div style={{ fontSize: 11, color: "var(--text-dim)", padding: "4px 0", marginBottom: 8 }}>
+                  Next scheduled run: <strong>{label}</strong>
+                </div>
+              );
+            })()}
 
             {passes.length > 0 && (
               <div className="builder-detail-section">
@@ -1145,6 +1346,19 @@ function RunDetailPanel({
                       {!logs.stdout && !logs.stderr && (
                         <div style={{ padding: "12px 14px", color: "var(--text-dim)", fontSize: 12 }}>no logs captured</div>
                       )}
+                    </div>
+                  )}
+                  {isOpen && pass.status === "failed" && (
+                    <FailureInvestigationPanel passId={pass.id} />
+                  )}
+                  {isOpen && pass.summary && (
+                    <div style={{ padding: "4px 14px 8px", fontSize: 11, color: "var(--text-dim)", borderTop: "1px solid var(--border)" }}>
+                      <strong>Summary:</strong> {pass.summary}
+                    </div>
+                  )}
+                  {isOpen && pass.nextInstruction && (
+                    <div style={{ padding: "4px 14px 8px", fontSize: 11, color: "var(--text-dim)" }}>
+                      <strong>Next instruction:</strong> {pass.nextInstruction}
                     </div>
                   )}
                 </div>

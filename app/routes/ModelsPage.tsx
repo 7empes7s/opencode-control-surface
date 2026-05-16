@@ -3,6 +3,7 @@ import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
+import { RatingsSection } from "./RatingsPage";
 import type { ModelsDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -270,6 +271,8 @@ export function ModelsPage() {
           )}
         </div>
       </SectionCard>
+
+      <RatingsSection models={d.models} />
     </div>
   );
 }

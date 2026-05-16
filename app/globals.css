@@ -2452,6 +2452,38 @@ body {
     display: none;
   }
 
+  /* Ratings table — on mobile show only model / cap / rating / quality */
+  .ratings-table col.rt-json-col,
+  .ratings-table col.rt-coding-col,
+  .ratings-table col.rt-writing-col,
+  .ratings-table col.rt-reasoning-col,
+  .ratings-table col.rt-latency-col,
+  .ratings-table col.rt-pricing-col,
+  .ratings-table col.rt-conf-col {
+    display: none;
+  }
+  .ratings-table th.rt-json-col,
+  .ratings-table td.rt-json-col,
+  .ratings-table th.rt-coding-col,
+  .ratings-table td.rt-coding-col,
+  .ratings-table th.rt-writing-col,
+  .ratings-table td.rt-writing-col,
+  .ratings-table th.rt-reasoning-col,
+  .ratings-table td.rt-reasoning-col,
+  .ratings-table th.rt-latency-col,
+  .ratings-table td.rt-latency-col,
+  .ratings-table th.rt-pricing-col,
+  .ratings-table td.rt-pricing-col,
+  .ratings-table th.rt-conf-col,
+  .ratings-table td.rt-conf-col {
+    display: none;
+  }
+  /* Give the 4 remaining cols sensible proportions */
+  .ratings-table .rt-name-col  { width: 50%; }
+  .ratings-table .rt-cap-col   { width: 18%; }
+  .ratings-table .rt-rating-col { width: 14%; }
+  .ratings-table .rt-quality-col { width: 18%; }
+
   /* Builder run detail tables */
   .run-passes-table col.started-col,
   .run-passes-table col.finished-col,

@@ -200,6 +200,10 @@ const server = Bun.serve({
       return handleApi(req, url);
     }
 
+    if (pathname.startsWith("/v1/")) {
+      return handleApi(req, url);
+    }
+
     if (pathname.startsWith("/opencode-api")) {
       if (!checkToken(req)) {
         return new Response(JSON.stringify({ error: "unauthorized" }), {

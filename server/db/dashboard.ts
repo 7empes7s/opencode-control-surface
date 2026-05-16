@@ -404,6 +404,36 @@ function migrateDashboardDb(db: Database): void {
   ensureColumn(db, "jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0");
 
   ensureColumn(db, "builder_passes", "model_reason", "TEXT");
+  ensureColumn(db, "builder_passes", "next_instruction", "TEXT");
+  ensureColumn(db, "builder_passes", "analytics_json", "TEXT");
+  ensureColumn(db, "builder_passes", "plan_items_done", "INTEGER");
+  ensureColumn(db, "builder_passes", "plan_items_remaining", "INTEGER");
+  ensureColumn(db, "builder_passes", "completion_percent", "INTEGER");
+  ensureColumn(db, "builder_passes", "trace_id", "TEXT");
+  ensureColumn(db, "builder_runs", "trace_id", "TEXT");
+  ensureColumn(db, "action_audit", "prev_hash", "TEXT");
+  ensureColumn(db, "action_audit", "row_hash", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gateway_calls (
+      id INTEGER PRIMARY KEY,
+      ts INTEGER NOT NULL,
+      logical_model TEXT NOT NULL,
+      resolved_model TEXT NOT NULL,
+      backend TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      latency_ms INTEGER,
+      cost_estimate_usd REAL,
+      success INTEGER NOT NULL DEFAULT 1,
+      error_class TEXT,
+      trace_id TEXT,
+      caller TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
+    CREATE INDEX IF NOT EXISTS idx_gateway_calls_model ON gateway_calls (logical_model, ts);
+  `);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_action_audit_target ON action_audit (target_type, target_id);

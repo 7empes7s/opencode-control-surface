@@ -38,6 +38,30 @@ function stringify(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+type ChainStatus = { ok: boolean; checkedCount: number; firstBadId?: number; headHash: string | null; headTs: number | null };
+
+function ChainStatusBadge() {
+  const { data, refresh } = useAuthenticatedApi<ChainStatus>("/api/audit/chain-status", 60_000);
+  if (!data) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", borderRadius: 8, background: data.ok ? "color-mix(in oklch, green 15%, transparent)" : "color-mix(in oklch, red 15%, transparent)", border: `1px solid ${data.ok ? "green" : "red"}`, fontSize: 12, marginBottom: 16 }}>
+      <span style={{ fontWeight: 700, color: data.ok ? "green" : "red" }}>
+        {data.ok ? "✓ Chain OK" : "✗ Chain BROKEN"}
+      </span>
+      <span style={{ color: "var(--text-dim)" }}>
+        {data.checkedCount} row{data.checkedCount !== 1 ? "s" : ""} verified
+        {data.firstBadId ? ` · first bad row: #${data.firstBadId}` : ""}
+      </span>
+      {data.headHash && (
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }} title={data.headHash}>
+          head: {data.headHash.slice(0, 12)}…
+        </span>
+      )}
+      <button onClick={refresh} style={{ marginLeft: "auto", fontSize: 10, padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", color: "var(--text-dim)" }}>Verify</button>
+    </div>
+  );
+}
+
 export function AuditPage() {
   const [resultStatus, setResultStatus] = useState("");
   const [targetType, setTargetType] = useState("");
@@ -135,6 +159,8 @@ export function AuditPage() {
           <RefreshCw size={14} /> refresh
         </button>
       </div>
+
+      <ChainStatusBadge />
 
       <div className="stat-row">
         <div className="stat-item"><div className="stat-val">{rows.length}</div><div className="stat-lbl">loaded</div></div>

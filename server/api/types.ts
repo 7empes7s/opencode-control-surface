@@ -211,6 +211,22 @@ export interface DoctorDetail {
   lastDecision: { ts: string; slug: string; action: string; reason: string } | null;
 }
 
+export interface WorkloadScores {
+  json: number | null;
+  coding: number | null;
+  writing: number | null;
+  reasoning: number | null;
+  lastProbedAt?: number | null;
+}
+
+export interface RatingBreakdown {
+  score: number;
+  confidence: number;
+  sources: string[];
+  missing: string[];
+  components: Record<string, { score: number; weight: number; contribution: number }>;
+}
+
 export interface ModelsDetail {
   models: {
     logicalName: string;
@@ -231,6 +247,10 @@ export interface ModelsDetail {
     contextWindow: number | null;
     params: number | null;
     resolvedModel: string | null;
+    pricingTier?: string | null;
+    rating100?: number | null;
+    ratingBreakdown?: RatingBreakdown | null;
+    workloadScores?: WorkloadScores | null;
   }[];
   cooldowns: { model: string; startedAt: number | null; expiresAt: number; reason?: string }[];
   fallbacks: Record<string, string[]>;

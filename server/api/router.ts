@@ -35,6 +35,13 @@ import {
   builderRunnerDisabledHandler,
   builderProvisionHandler,
   builderArtifactContentHandler,
+  builderPassDiagnosisHandler,
+  builderRunSummaryHandler,
+  builderWorkflowPlanProgressHandler,
+  builderPassLiveHandler,
+  traceListDatesHandler,
+  traceByDateHandler,
+  auditChainStatusHandler,
 } from "./builder.ts";
 import {
   codexListHandler, codexCreateHandler, codexGetHandler,
@@ -74,6 +81,14 @@ import {
   checkToken,
 } from "./actions.ts";
 import { executeActionHandler } from "./execute.ts";
+import {
+  gatewayStatusHandler,
+  gatewayModelsHandler,
+  gatewayLedgerHandler,
+  gatewayStatsHandler,
+  v1ChatCompletionsHandler,
+  v1ModelsHandler,
+} from "./gateway.ts";
 
 export async function handleApi(req: Request, url: URL): Promise<Response> {
   const { pathname } = url;
@@ -144,6 +159,22 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
     await builderRunReconcileHandler(builderRunMatch[1]);
     return builderRunHandler(builderRunMatch[1]);
   }
+  const builderWorkflowPlanProgressMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/plan-progress$/);
+  if (method === "GET" && builderWorkflowPlanProgressMatch) {
+    return builderWorkflowPlanProgressHandler(builderWorkflowPlanProgressMatch[1]);
+  }
+  const builderPassLiveMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/pass-live$/);
+  if (method === "GET" && builderPassLiveMatch) {
+    return builderPassLiveHandler(builderPassLiveMatch[1]);
+  }
+  const builderRunSummaryMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/summary$/);
+  if (method === "GET" && builderRunSummaryMatch) {
+    return builderRunSummaryHandler(builderRunSummaryMatch[1]);
+  }
+  const builderPassDiagnosisMatch = pathname.match(/^\/api\/builder\/passes\/([^/]+)\/diagnosis$/);
+  if (method === "GET" && builderPassDiagnosisMatch) {
+    return builderPassDiagnosisHandler(builderPassDiagnosisMatch[1]);
+  }
   const builderRunActionMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/(retry|cancel)$/);
   if (method === "POST" && builderRunActionMatch) {
     const runId = builderRunActionMatch[1];
@@ -154,6 +185,24 @@ export async function handleApi(req: Request, url: URL): Promise<Response> {
   }
   if (method === "GET" && pathname === "/api/builder/artifacts") return builderArtifactsHandler(url);
   if (method === "GET" && pathname === "/api/builder/log") return builderArtifactContentHandler(url);
+
+  // Traces
+  if (method === "GET" && pathname === "/api/traces") return traceListDatesHandler();
+  const traceByDateMatch = pathname.match(/^\/api\/traces\/(\d{4}-\d{2}-\d{2})$/);
+  if (method === "GET" && traceByDateMatch) return traceByDateHandler(traceByDateMatch[1]);
+
+  // Audit chain
+  if (method === "GET" && pathname === "/api/audit/chain-status") return auditChainStatusHandler();
+
+  // Gateway
+  if (method === "GET" && pathname === "/api/gateway/status") return gatewayStatusHandler();
+  if (method === "GET" && pathname === "/api/gateway/models") return gatewayModelsHandler();
+  if (method === "GET" && pathname === "/api/gateway/ledger") return gatewayLedgerHandler(url);
+  if (method === "GET" && pathname === "/api/gateway/stats") return gatewayStatsHandler(url);
+  // OpenAI-compatible surface
+  if (method === "POST" && pathname === "/v1/chat/completions") return v1ChatCompletionsHandler(req);
+  if (method === "GET" && pathname === "/v1/models") return v1ModelsHandler();
+
   if (method === "POST" && pathname === "/api/builder/provision") {
     if (!checkToken(req)) return unauthorized();
     return builderProvisionHandler(req);

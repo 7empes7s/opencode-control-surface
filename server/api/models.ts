@@ -51,15 +51,18 @@ export function modelsHandler(): Response {
       const available = m.available ?? false;
       const contextWindow = m.contextWindow || (m.params >= 200 ? 131072 : m.params >= 70 ? 32768 : 8192);
 
+      const qualityStatus = m.qualityStatus ?? computeQualityStatus(available, hasError);
+      const pricingTier = m.pricingTier ?? (isFree ? 'free-rate-limited' : isPaid ? 'api-paid' : 'subscription');
+
       return {
         logicalName: m.logicalName,
         provider: m.provider,
         capability: m.capability ?? "light",
         available,
         latency: m.latency ?? null,
-        jsonOk: available && !hasError,
+        jsonOk: m.jsonOk ?? (available && !hasError),
         checkedAt: m.checkedAt ?? 0,
-        qualityStatus: computeQualityStatus(available, hasError),
+        qualityStatus,
         recentFailures: hasError ? 1 : 0,
         consecutiveGarbage: 0,
         isFree,
@@ -71,7 +74,10 @@ export function modelsHandler(): Response {
         params: m.params ?? null,
         resolvedModel: m.resolvedModel ?? m.modelId ?? m.logicalName,
         tier: m.provider === 'zen' ? (m.modelId?.includes('free') ? 'zen-free' : 'zen-paid') : m.provider,
-        rating: Math.round((10000 / (m.latency || 1000)) * 10) / 10,
+        pricingTier,
+        rating100: m.rating100 ?? null,
+        ratingBreakdown: m.ratingBreakdown ?? null,
+        workloadScores: m.workloadScores ?? null,
         errorCount: hasError ? 1 : 0,
         lastError: m.error ?? null,
         uptime: available ? '✅' : '❌',

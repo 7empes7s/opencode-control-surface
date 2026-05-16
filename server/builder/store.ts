@@ -119,6 +119,7 @@ export type BuilderRun = {
   stopRequestedBy: string | null;
   result: unknown;
   error: string | null;
+  traceId: string | null;
 };
 
 export type BuilderPass = {
@@ -141,6 +142,11 @@ export type BuilderPass = {
   nextInstruction: string | null;
   failureClass: string | null;
   error: string | null;
+  analyticsJson: string | null;
+  planItemsDone: number | null;
+  planItemsRemaining: number | null;
+  completionPercent: number | null;
+  traceId: string | null;
 };
 
 export type BuilderArtifact = {
@@ -413,6 +419,7 @@ type DbRunRow = {
   stop_requested_by: string | null;
   result_json: string | null;
   error: string | null;
+  trace_id: string | null;
 };
 
 function mapRun(row: DbRunRow): BuilderRun {
@@ -428,6 +435,7 @@ function mapRun(row: DbRunRow): BuilderRun {
     stopRequestedBy: row.stop_requested_by,
     result: parseJson(row.result_json, null),
     error: row.error,
+    traceId: row.trace_id ?? null,
   };
 }
 
@@ -436,7 +444,7 @@ export function readBuilderRuns(workflowId?: string): BuilderRun[] {
   const params: string[] = [];
   let sql = `
     SELECT id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
-      stop_requested_at, stop_requested_by, result_json, error
+      stop_requested_at, stop_requested_by, result_json, error, trace_id
     FROM builder_runs
   `;
   if (workflowId) {
@@ -489,6 +497,11 @@ type DbPassRow = {
   next_instruction: string | null;
   failure_class: string | null;
   error: string | null;
+  analytics_json: string | null;
+  plan_items_done: number | null;
+  plan_items_remaining: number | null;
+  completion_percent: number | null;
+  trace_id: string | null;
 };
 
 function parseStringArray(value: string | null): string[] {
@@ -517,6 +530,11 @@ function mapPass(row: DbPassRow): BuilderPass {
     nextInstruction: row.next_instruction,
     failureClass: row.failure_class,
     error: row.error,
+    analyticsJson: row.analytics_json ?? null,
+    planItemsDone: row.plan_items_done ?? null,
+    planItemsRemaining: row.plan_items_remaining ?? null,
+    completionPercent: row.completion_percent ?? null,
+    traceId: row.trace_id ?? null,
   };
 }
 
@@ -526,7 +544,7 @@ export function readBuilderPasses(runId: string): BuilderPass[] {
     return (getDashboardDb()!.query(`
       SELECT id, run_id, workflow_id, sequence, phase, status, agent, provider, model,
         model_reason, started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
-        summary, next_instruction, failure_class, error
+        summary, next_instruction, failure_class, error, analytics_json, plan_items_done, plan_items_remaining, completion_percent, trace_id
       FROM builder_passes
       WHERE run_id = ?
       ORDER BY sequence ASC

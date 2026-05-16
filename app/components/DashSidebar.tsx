@@ -23,6 +23,8 @@ import {
   LayoutDashboard,
   Hammer,
   Menu,
+  GitBranch,
+  Route,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -48,6 +50,8 @@ const NAV: NavItem[] = [
   { href: "/jobs", label: "Jobs", icon: ClipboardList },
   { href: "/audit", label: "Audit", icon: History },
   { href: "/builder", label: "Builder", icon: Hammer },
+  { href: "/traces", label: "Traces", icon: GitBranch },
+  { href: "/gateway", label: "Gateway", icon: Route },
   { href: "/settings", label: "Settings", icon: Settings2 },
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },

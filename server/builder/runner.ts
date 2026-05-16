@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { createJob, finishJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
+import { startSpan, endSpan } from "../tracing/tracer.ts";
 import {
   readBuilderRun,
   readBuilderRuns,
@@ -15,6 +16,7 @@ import {
   parseAgentEntry,
   type BuilderRun,
   type BuilderWorkflow,
+  type BuilderPass,
 } from "./store.ts";
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
 import { runDoctorReview, writeDoctorReport } from "./doctor.ts";
@@ -346,7 +348,7 @@ function ensureBuilderVaultDir(): void {
   if (!existsSync(BUILDER_VAULT_DIR)) mkdirSync(BUILDER_VAULT_DIR, { recursive: true });
 }
 
-function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string | null, runStatus: string): void {
+function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string | null, passSeq: number, runStatus: string): void {
   const ts = new Date().toISOString();
   const vaultDate = ts.slice(0, 10); // YYYY-MM-DD
 
@@ -357,6 +359,35 @@ function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string |
   // Daily vault gets only a brief one-liner — keeps the daily note clean.
   ensureBuilderVaultDir();
   const builderLogPath = `${BUILDER_VAULT_DIR}/${vaultDate}-${wfShort}-${runShort}.md`;
+
+  const passResult = (() => {
+    try { return readPassResult(run.id, passSeq); } catch { return null; }
+  })();
+
+  const analyticsLines: string[] = [];
+  if (passResult) {
+    analyticsLines.push("", "## Pass Analytics", "");
+    analyticsLines.push(`| Field | Value |`);
+    analyticsLines.push(`|---|---|`);
+    analyticsLines.push(`| Pass status   | ${passResult.status} |`);
+    if (passResult.completionPercent != null)
+      analyticsLines.push(`| Completion    | ${passResult.completionPercent}% |`);
+    if (passResult.itemsDone?.length)
+      analyticsLines.push(`| Items done    | ${passResult.itemsDone.length} |`);
+    if (passResult.itemsRemaining?.length)
+      analyticsLines.push(`| Items left    | ${passResult.itemsRemaining.length} |`);
+    if (passResult.filesEdited?.length)
+      analyticsLines.push(`| Files edited  | ${passResult.filesEdited.join(", ")} |`);
+    if (passResult.filesCreated?.length)
+      analyticsLines.push(`| Files created | ${passResult.filesCreated.join(", ")} |`);
+    if (passResult.nextInstruction)
+      analyticsLines.push(`| Next step     | ${passResult.nextInstruction.slice(0, 120)} |`);
+    if (passResult.passNote)
+      analyticsLines.push(`| Pass note     | ${passResult.passNote.slice(0, 200)} |`);
+    const unresolvedErrors = (passResult.errors ?? []).filter((e) => !e.resolved);
+    if (unresolvedErrors.length)
+      analyticsLines.push(`| Errors        | ${unresolvedErrors.length} unresolved |`);
+  }
 
   const fullLines: string[] = [
     `# Builder run: ${workflow.name}`,
@@ -375,6 +406,7 @@ function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string |
     `| Plan      | ${workflow.planFile} |`,
     `| Project   | ${workflow.projectRoot} |`,
     `| Artifacts | /var/lib/control-surface/builder-runs/${run.id}/ |`,
+    ...analyticsLines,
     "",
     `_Logged at ${ts}_`,
   ];
@@ -620,6 +652,7 @@ export function updateBuilderRun(
     finishedAt?: number | null;
     error?: string | null;
     result?: unknown;
+    traceId?: string | null;
   },
 ): void {
   const db = requireDb();
@@ -645,6 +678,10 @@ export function updateBuilderRun(
   if (updates.result !== undefined) {
     sets.push("result_json = ?");
     params.push(JSON.stringify(updates.result));
+  }
+  if (updates.traceId !== undefined) {
+    sets.push("trace_id = ?");
+    params.push(updates.traceId);
   }
 
   if (sets.length === 0) return;
@@ -710,6 +747,12 @@ export function updateBuilderPass(
     jobIds?: string[];
     artifactIds?: string[];
     validationIds?: string[];
+    nextInstruction?: string | null;
+    analyticsJson?: string | null;
+    planItemsDone?: number | null;
+    planItemsRemaining?: number | null;
+    completionPercent?: number | null;
+    traceId?: string | null;
   },
 ): void {
   const db = requireDb();
@@ -752,11 +795,112 @@ export function updateBuilderPass(
     sets.push("validation_ids_json = ?");
     params.push(JSON.stringify(updates.validationIds));
   }
+  if (updates.nextInstruction !== undefined) {
+    sets.push("next_instruction = ?");
+    params.push(updates.nextInstruction);
+  }
+  if (updates.analyticsJson !== undefined) {
+    sets.push("analytics_json = ?");
+    params.push(updates.analyticsJson);
+  }
+  if (updates.planItemsDone !== undefined) {
+    sets.push("plan_items_done = ?");
+    params.push(updates.planItemsDone);
+  }
+  if (updates.planItemsRemaining !== undefined) {
+    sets.push("plan_items_remaining = ?");
+    params.push(updates.planItemsRemaining);
+  }
+  if (updates.completionPercent !== undefined) {
+    sets.push("completion_percent = ?");
+    params.push(updates.completionPercent);
+  }
+  if (updates.traceId !== undefined) {
+    sets.push("trace_id = ?");
+    params.push(updates.traceId);
+  }
 
   if (sets.length === 0) return;
   params.push(passId);
 
   db.query(`UPDATE builder_passes SET ${sets.join(", ")} WHERE id = ?`).run(...(params as (string | number | null)[]));
+}
+
+export type PassResult = {
+  status: "incomplete" | "complete" | "failed" | "blocked";
+  completionPercent?: number | null;
+  itemsDone?: string[];
+  itemsRemaining?: string[];
+  filesEdited?: string[];
+  filesCreated?: string[];
+  filesRead?: string[];
+  toolsUsed?: Record<string, number>;
+  modelsUsed?: string[];
+  errors?: Array<{ type: string; message: string; resolved: boolean }>;
+  validationResults?: {
+    typecheck?: string;
+    tests?: string;
+    playwright?: string;
+    build?: string;
+  };
+  nextInstruction?: string | null;
+  blockers?: Array<{ reason: string; suggestedFix: string }>;
+  passNote?: string | null;
+};
+
+export function readPassResult(runId: string, passSeq: number): PassResult | null {
+  const path = join(runDir(runId), "PASS_RESULT.json");
+  try {
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf8");
+    return JSON.parse(raw) as PassResult;
+  } catch {
+    return null;
+  }
+}
+
+function extractPassAnalytics(
+  runId: string,
+  passId: string,
+  passSeq: number,
+  startedAt: number | null,
+  finishedAt: number,
+): void {
+  const result = readPassResult(runId, passSeq);
+  if (!result) return;
+
+  const durationMs = startedAt ? finishedAt - startedAt : null;
+
+  const stdoutTail = (() => {
+    try {
+      const p = join(runDir(runId), `pass-${passSeq}-stdout.log`);
+      if (!existsSync(p)) return "";
+      const content = readFileSync(p, "utf8");
+      return content.slice(-3000);
+    } catch { return ""; }
+  })();
+
+  const analytics = {
+    durationMs,
+    planItemsDone: result.itemsDone?.length ?? 0,
+    planItemsRemaining: result.itemsRemaining?.length ?? null,
+    completionPercent: result.completionPercent ?? null,
+    filesEdited: result.filesEdited ?? [],
+    filesCreated: result.filesCreated ?? [],
+    typecheckOutcome: result.validationResults?.typecheck ?? "skipped",
+    playwrightOutcome: result.validationResults?.playwright ?? "skipped",
+    unresolvedErrors: (result.errors ?? []).filter((e) => !e.resolved).length,
+    stdoutTail,
+  };
+
+  updateBuilderPass(passId, {
+    analyticsJson: JSON.stringify(analytics),
+    planItemsDone: analytics.planItemsDone,
+    planItemsRemaining: analytics.planItemsRemaining ?? undefined,
+    completionPercent: analytics.completionPercent ?? undefined,
+    nextInstruction: result.nextInstruction ?? null,
+    summary: result.passNote ?? undefined,
+  });
 }
 
 export function createBuilderArtifact(input: {
@@ -869,6 +1013,36 @@ RULES:
 - Retry a failed child ONCE with a different model/agent, then give up.
 - Log every child PID and final status to the pass stdout.
 - DO NOT invoke opencode/claude/codex/gemini directly — use builder_spawn_child.
+
+── CONTEXT BUDGET RULES ─────────────────────────────────────────────────────
+- Exploration budget: max 8 file reads before starting implementation
+- Use grep -n / head -50 / wc -l instead of cat for unknown files
+- Never read node_modules, .git, dist, or build artifacts
+- Check file size with wc -l before reading (skip if > 500 lines unless directly editing)
+
+── PLAN ADHERENCE ───────────────────────────────────────────────────────────
+- Read the plan file sections for your 2-3 target items ONLY (not the full plan)
+- Mark [x] immediately after completing each item
+- Do not implement items beyond your allocated scope
+- Do not refactor code outside your plan items
+
+── VERIFICATION CADENCE ─────────────────────────────────────────────────────
+- After every 2-3 file edits: run bun run check (or equivalent)
+- If typecheck fails after an edit: fix it before moving to the next item
+- Do not accumulate more than 3 typecheck errors before fixing
+- Run targeted tests (bun test path/to/relevant.test.ts) not the full suite
+
+── BLOCKER PROTOCOL ─────────────────────────────────────────────────────────
+- If a service is down and your task requires it: write PASS_RESULT.json with status="blocked"
+- If a dependency is missing (import error for nonexistent package): write blocked + suggest fix
+- If plan instructions are ambiguous for your item: write blocked + quote the ambiguous part
+- Do NOT guess at blocked states — always declare and exit
+
+── SCOPE DISCIPLINE (Minimal Diff) ─────────────────────────────────────────
+- Only edit files required by your plan items
+- Do not "clean up" or refactor passing code you didn't need to touch
+- If you find a bug in adjacent code: log it in passNote but don't fix it
+- Keep diffs minimal — reviewability matters
 =============================================================================`;
   let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.${orchestrationRules}`;
   if (workflow.mode === "plan") {
@@ -1345,6 +1519,19 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const currentPass = allPasses.find((p) => p.id === passId);
   const passSeq = currentPass?.sequence ?? 1;
 
+  // Ensure this run has a traceId; stamp on first reconcile
+  if (!run.traceId) {
+    const traceId = randomUUID();
+    updateBuilderRun(runId, { traceId });
+    const runSpan = startSpan("run", { runId, workflowId: run.workflowId, trigger: run.trigger }, null, traceId);
+    endSpan(runSpan.spanId, "ok");
+    if (passId) {
+      updateBuilderPass(passId, { traceId });
+      const passSpan = startSpan("pass", { passId, runId, sequence: passSeq }, null, traceId);
+      endSpan(passSpan.spanId, "ok");
+    }
+  }
+
   const workflow = readBuilderWorkflow(run.workflowId);
 
   const session = tmuxSessionName(runId, passSeq);
@@ -1375,9 +1562,21 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       if (existsSync(stdoutPath)) currentSize += statSync(stdoutPath).size;
       if (existsSync(stderrPath)) currentSize += statSync(stderrPath).size;
     } catch { /* ignore */ }
+    const STALL_WARN_MS = 5 * 60 * 1000; // 300s — warn but don't kill yet
     const STALL_THRESHOLD_MS = (workflow?.config.riskPolicy?.passTimeoutSeconds ?? 900) * 1000;
     const outputChanged = lastOutputSize === null || currentSize !== lastOutputSize;
     const outputAgeMs = checkedAt - (outputChanged ? checkedAt : lastOutputAt);
+    const warnedStall = monitor.warnedStall === true;
+    if (!outputChanged && outputAgeMs > STALL_WARN_MS && !warnedStall) {
+      const warnSecs = Math.round(STALL_WARN_MS / 1000);
+      const killSecs = Math.round(STALL_THRESHOLD_MS / 1000);
+      console.log(`[builder] [warn] run ${runId} pass ${passSeq} — no output for ${warnSecs}s. Will kill at ${killSecs}s.`);
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(stdoutPath, `\n[builder-warn] No output for ${warnSecs}s — agent may be stalled. Will kill at ${killSecs}s.\n`);
+      } catch { /* ignore */ }
+      updateBuilderRun(runId, { result: { ...resultObj, runnerMonitor: { ...monitor, lastOutputSize: currentSize, lastOutputAt: outputChanged ? checkedAt : lastOutputAt, passSeq, warnedStall: true } } });
+    }
     if (!outputChanged && outputAgeMs > STALL_THRESHOLD_MS) {
       // No output growth and past timeout — kill as stalled
       console.error(`[builder] run ${runId} pass ${passSeq} STALLED (no output change for >${STALL_THRESHOLD_MS}ms, outputAge=${outputAgeMs}ms)`);
@@ -1470,6 +1669,14 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       summary: summary || null,
       failureClass,
     });
+
+    if (passId) {
+      try {
+        extractPassAnalytics(runId, passId, passSeq, run.startedAt ?? null, ts);
+      } catch (err) {
+        console.error("[builder] extractPassAnalytics failed:", err);
+      }
+    }
   }
 
   // Run validation commands if pass succeeded
@@ -1511,23 +1718,14 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   } else if (codexExhausted) {
     runError = "Codex usage limit reached — retry after limit resets";
   } else if (exitCode !== 0) {
-    // Extract the last non-blank error-looking lines from stdout; fall back to exit code
-    const errorLines = stdout
-      .split("\n")
-      .filter((l) => /error|ERROR|Error|failed|FAILED|fatal|FATAL/i.test(l) && l.trim())
-      .slice(-3);
-    runError = errorLines.length > 0 ? errorLines.join("\n") : `Agent exited with code ${exitCode}`;
+    runError = `Agent exited with code ${exitCode}`;
   } else if (runStatus === "failed" && !allValidationsPassed && validationIds.length > 0) {
     const failedVal = readBuilderValidations(runId).find(
       (v) => v.status !== "success",
     );
-    if (failedVal) {
-      const cmd = failedVal.command ?? "unknown command";
-      const out = failedVal.outputTail ?? "";
-      runError = `Validation failed: ${cmd}\n${out.slice(-300)}`;
-    } else {
-      runError = "Validation failed";
-    }
+    runError = failedVal
+      ? `Validation failed: ${failedVal.command ?? "unknown command"}`
+      : "Validation failed";
   }
 
   updateBuilderRun(runId, {
@@ -1639,7 +1837,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     }
 
     // Always log to vault regardless of run status
-    logToVault(workflow, run, passId ?? null, runStatus);
+    logToVault(workflow, run, passId ?? null, passSeq, runStatus);
   }
 
   // Phase 6: start next pass if conditions are met
@@ -2033,6 +2231,26 @@ async function runPlaywrightValidation(
   const targets = config.targets?.length ? config.targets : ["/"];
   const internalUrl = workflow.config.validationProfile.internalUrl ?? "http://127.0.0.1:3000";
 
+  // Service-up probe before running Playwright — skip tests entirely if the service is down
+  const probeResult = spawnSync("curl", [
+    "--max-time", "8", "--silent", "--show-error",
+    "-o", "/dev/null", "-w", "%{http_code}",
+    internalUrl,
+  ], { encoding: "utf8", timeout: 12_000 });
+  const probeCode = (probeResult.stdout ?? "").trim();
+  if (!probeCode.startsWith("2") && !probeCode.startsWith("3")) {
+    const vid = createValidationRow({
+      workflowId: workflow.id, runId: run.id, passId,
+      kind: "playwright", status: "failed",
+      command: null, url: internalUrl,
+      startedAt: Date.now(), finishedAt: Date.now(),
+      outputTail: null,
+      artifactId: null,
+      error: `Service not reachable before Playwright (HTTP ${probeCode || "no response"})`,
+    });
+    return [vid];
+  }
+
   for (const target of targets) {
     const vStarted = Date.now();
     let error: string | null = null;
@@ -2168,5 +2386,71 @@ export function startBuilderReconciler(options: { intervalMs?: number } = {}): B
       stopped = true;
       clearInterval(timer);
     },
+  };
+}
+
+export type FailureDiagnosis = {
+  failureClass: string;
+  title: string;
+  whatHappened: string;
+  lastActivity: string;
+  likelyCause: string;
+  suggestedActions: Array<"retry-narrow" | "retry-higher-timeout" | "retry-continue" | "edit-plan" | "view-stdout" | "pause-workflow">;
+};
+
+export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string): FailureDiagnosis {
+  const fc = pass.failureClass ?? "unknown";
+  const lastLines = stdoutTail.split("\n").filter((l) => l.trim()).slice(-5).join("\n");
+
+  if (fc === "agent-stalled") {
+    const exploring = /let me look|understand|exploring|checking/i.test(lastLines);
+    return {
+      failureClass: fc,
+      title: "Agent Stalled",
+      whatHappened: "No output for the stall timeout duration. Pass was killed.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: exploring
+        ? "Agent began broad file exploration — model inference stalled or context filled"
+        : "Model inference timeout or network issue",
+      suggestedActions: ["retry-narrow", "retry-higher-timeout", "edit-plan"],
+    };
+  }
+  if (fc === "pass-timeout") {
+    return {
+      failureClass: fc,
+      title: "Pass Timeout",
+      whatHappened: "Pass hit the hard timeout limit and was killed by the OS.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Plan has more work than fits in one pass — this is normal for large plans",
+      suggestedActions: ["retry-continue", "retry-higher-timeout"],
+    };
+  }
+  if (fc === "validation-failed") {
+    return {
+      failureClass: fc,
+      title: "Validation Failed",
+      whatHappened: "The pass completed but one or more validation checks failed.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "TypeScript errors, failing tests, or Playwright failures introduced by the agent",
+      suggestedActions: ["retry-narrow", "view-stdout", "edit-plan"],
+    };
+  }
+  if (fc === "blocked") {
+    return {
+      failureClass: fc,
+      title: "Agent Blocked",
+      whatHappened: "The agent declared it cannot proceed without operator input.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Missing context, ambiguous instruction, or a dependency not in scope",
+      suggestedActions: ["edit-plan", "retry-narrow"],
+    };
+  }
+  return {
+    failureClass: fc,
+    title: "Pass Failed",
+    whatHappened: pass.error ?? "The pass ended with an error status.",
+    lastActivity: lastLines.slice(-300),
+    likelyCause: "Check stdout for details",
+    suggestedActions: ["view-stdout", "retry-narrow"],
   };
 }

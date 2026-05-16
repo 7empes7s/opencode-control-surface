@@ -40,6 +40,8 @@ import {
   retryRun,
   cancelRun,
   reconcileRunStatus,
+  classifyFailureDiagnosis,
+  type FailureDiagnosis,
 } from "../builder/runner.ts";
 import { getNextRunTime } from "../builder/scheduler.ts";
 
@@ -746,4 +748,342 @@ export async function builderProvisionHandler(req: Request): Promise<Response> {
     });
     return apiError(errorMessage(error), 400);
   }
+}
+
+export type BuilderPassDiagnosisResponse = {
+  diagnosis: FailureDiagnosis;
+  degraded: boolean;
+  reason?: string;
+};
+
+export function builderPassDiagnosisHandler(passId: string): Response {
+  const reason = dbUnavailable();
+  if (reason) {
+    return json(ok<BuilderPassDiagnosisResponse>({ diagnosis: {} as FailureDiagnosis, degraded: true, reason }, { builder: "stale" }));
+  }
+
+  // Find the pass by iterating through runs
+  const runs = readBuilderRuns();
+  let foundPass: BuilderPass | null = null;
+  let foundRunId: string | null = null;
+
+  for (const run of runs) {
+    const passes = readBuilderPasses(run.id);
+    const pass = passes.find(p => p.id === passId);
+    if (pass) {
+      foundPass = pass;
+      foundRunId = run.id;
+      break;
+    }
+  }
+
+  if (!foundPass || !foundRunId) {
+    return apiError("Pass not found", 404);
+  }
+
+  // Read stdout artifact for context
+  const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+  const artifacts = readBuilderArtifacts(foundRunId);
+  const stdoutArtifact = artifacts.find(a => a.passId === passId && a.kind === "stdout");
+  let stdoutTail = "";
+  if (stdoutArtifact && existsSync(stdoutArtifact.path)) {
+    try { stdoutTail = readFileSync(stdoutArtifact.path, "utf8").slice(-3000); } catch {}
+  }
+
+  const diagnosis = classifyFailureDiagnosis(foundPass, stdoutTail);
+  return json(ok<BuilderPassDiagnosisResponse>({ diagnosis, degraded: false }, { builder: "ok" }));
+}
+
+export type BuilderRunSummaryResponse = {
+  runId: string;
+  status: string;
+  trigger: string;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  passCount: number;
+  successPasses: number;
+  failedPasses: number;
+  lastAgent: string | null;
+  lastModel: string | null;
+  planItemsDone: number | null;
+  planItemsRemaining: number | null;
+  completionPercent: number | null;
+  filesEdited: string[];
+  filesCreated: string[];
+  unresolvedErrors: number | null;
+};
+
+export function builderRunSummaryHandler(runId: string): Response {
+  const reason = dbUnavailable();
+  if (reason) {
+    return apiError("db unavailable", 503);
+  }
+
+  const runs = readBuilderRuns();
+  const run = runs.find((r) => r.id === runId);
+  if (!run) {
+    return apiError("Run not found", 404);
+  }
+
+  const passes = readBuilderPasses(runId);
+  const lastPass = passes.length > 0 ? passes[passes.length - 1] : null;
+
+  let planItemsDone: number | null = null;
+  let planItemsRemaining: number | null = null;
+  let completionPercent: number | null = null;
+  const filesEdited: string[] = [];
+  const filesCreated: string[] = [];
+  let unresolvedErrors: number | null = null;
+
+  // Aggregate analytics from passes (analyticsJson is written to DB by runner.ts but not yet typed on BuilderPass)
+  for (const pass of passes) {
+    const aj = (pass as Record<string, unknown>).analyticsJson;
+    if (typeof aj === "string") {
+      try {
+        const a = JSON.parse(aj) as Record<string, unknown>;
+        if (typeof a.planItemsDone === "number") planItemsDone = (planItemsDone ?? 0) + a.planItemsDone;
+        if (typeof a.planItemsRemaining === "number") planItemsRemaining = a.planItemsRemaining;
+        if (typeof a.completionPercent === "number") completionPercent = a.completionPercent;
+        if (Array.isArray(a.filesEdited)) for (const f of a.filesEdited) if (typeof f === "string" && !filesEdited.includes(f)) filesEdited.push(f);
+        if (Array.isArray(a.filesCreated)) for (const f of a.filesCreated) if (typeof f === "string" && !filesCreated.includes(f)) filesCreated.push(f);
+        if (typeof a.unresolvedErrors === "number") unresolvedErrors = a.unresolvedErrors;
+      } catch { /* ignore */ }
+    }
+  }
+
+  const durationMs = run.startedAt && run.finishedAt ? run.finishedAt - run.startedAt : null;
+
+  const summary: BuilderRunSummaryResponse = {
+    runId: run.id,
+    status: run.status,
+    trigger: run.trigger,
+    startedAt: run.startedAt ?? null,
+    finishedAt: run.finishedAt ?? null,
+    durationMs,
+    passCount: passes.length,
+    successPasses: passes.filter((p) => p.status === "success").length,
+    failedPasses: passes.filter((p) => p.status === "failed").length,
+    lastAgent: lastPass?.agent ?? null,
+    lastModel: lastPass?.model ?? null,
+    planItemsDone,
+    planItemsRemaining,
+    completionPercent,
+    filesEdited,
+    filesCreated,
+    unresolvedErrors,
+  };
+
+  return json(ok(summary, { builder: "ok" }));
+}
+
+export type PlanProgressSection = {
+  title: string;
+  done: number;
+  total: number;
+};
+
+export type PlanProgressResponse = {
+  planFile: string;
+  sections: PlanProgressSection[];
+  totalDone: number;
+  totalItems: number;
+  percentDone: number;
+  lastParsedAt: number;
+  error?: string;
+};
+
+const planProgressCache = new Map<string, { data: PlanProgressResponse; cachedAt: number }>();
+
+export function builderWorkflowPlanProgressHandler(workflowId: string): Response {
+  const reason = dbUnavailable();
+  if (reason) {
+    return apiError("db unavailable", 503);
+  }
+
+  const workflow = readBuilderWorkflow(workflowId);
+  if (!workflow) {
+    return apiError("Workflow not found", 404);
+  }
+
+  const planFile = workflow.planFile;
+  const cached = planProgressCache.get(workflowId);
+  if (cached && Date.now() - cached.cachedAt < 30_000) {
+    return json(ok(cached.data, { builder: "ok" }));
+  }
+
+  const { existsSync: fsExists, readFileSync: fsRead } = require("node:fs") as typeof import("node:fs");
+
+  if (!planFile || !fsExists(planFile)) {
+    const result: PlanProgressResponse = {
+      planFile: planFile ?? "",
+      sections: [],
+      totalDone: 0,
+      totalItems: 0,
+      percentDone: 0,
+      lastParsedAt: Date.now(),
+      error: "Plan file not found",
+    };
+    return json(ok(result, { builder: "ok" }));
+  }
+
+  try {
+    const text = fsRead(planFile, "utf8");
+    const lines = text.split("\n");
+    const sections: PlanProgressSection[] = [];
+    let currentSection: PlanProgressSection | null = null;
+
+    for (const line of lines) {
+      if (line.startsWith("## ")) {
+        if (currentSection) sections.push(currentSection);
+        currentSection = { title: line.slice(3).trim(), done: 0, total: 0 };
+      } else if (currentSection) {
+        if (line.includes("- [x]") || line.includes("- [X]")) {
+          currentSection.done++;
+          currentSection.total++;
+        } else if (line.includes("- [ ]")) {
+          currentSection.total++;
+        }
+      }
+    }
+    if (currentSection) sections.push(currentSection);
+
+    const activeSections = sections.filter((s) => s.total > 0);
+    const totalDone = activeSections.reduce((sum, s) => sum + s.done, 0);
+    const totalItems = activeSections.reduce((sum, s) => sum + s.total, 0);
+    const percentDone = totalItems > 0 ? Math.round((totalDone / totalItems) * 100) : 0;
+
+    const result: PlanProgressResponse = {
+      planFile,
+      sections: activeSections,
+      totalDone,
+      totalItems,
+      percentDone,
+      lastParsedAt: Date.now(),
+    };
+
+    planProgressCache.set(workflowId, { data: result, cachedAt: Date.now() });
+    return json(ok(result, { builder: "ok" }));
+  } catch (err) {
+    const result: PlanProgressResponse = {
+      planFile,
+      sections: [],
+      totalDone: 0,
+      totalItems: 0,
+      percentDone: 0,
+      lastParsedAt: Date.now(),
+      error: String(err),
+    };
+    return json(ok(result, { builder: "ok" }));
+  }
+}
+
+export function builderPassLiveHandler(runId: string): Response {
+  const { existsSync, statSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+  const POLL_MS = 2000;
+  const MAX_INIT_BYTES = 8000;
+
+  const findCurrentPass = (): { passSeq: number; logPath: string } | null => {
+    try {
+      const passes = readBuilderPasses(runId);
+      const running = passes.find((p) => p.status === "running");
+      if (!running) return null;
+      const logPath = `/var/lib/control-surface/builder-runs/${runId}/pass-${running.sequence}-stdout.log`;
+      return { passSeq: running.sequence, logPath };
+    } catch { return null; }
+  };
+
+  const encoder = new TextEncoder();
+  let intervalId: ReturnType<typeof setInterval> | null = null;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      let offset = 0;
+      let lastPassSeq: number | null = null;
+
+      const sendEvent = (text: string) => {
+        try {
+          const lines = text.split("\n").filter((l) => l.trim());
+          for (const line of lines) {
+            controller.enqueue(encoder.encode(`event: line\ndata: ${JSON.stringify({ text: line, ts: Date.now() })}\n\n`));
+          }
+        } catch { /* client disconnected */ }
+      };
+
+      const poll = () => {
+        const current = findCurrentPass();
+        if (!current) {
+          try {
+            controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
+            controller.close();
+          } catch { /* already closed */ }
+          if (intervalId) clearInterval(intervalId);
+          return;
+        }
+
+        if (current.passSeq !== lastPassSeq) {
+          offset = 0;
+          lastPassSeq = current.passSeq;
+        }
+
+        if (!existsSync(current.logPath)) return;
+
+        try {
+          const size = statSync(current.logPath).size;
+          if (size <= offset) return;
+
+          if (offset === 0 && size > MAX_INIT_BYTES) {
+            offset = size - MAX_INIT_BYTES;
+          }
+
+          const buf = Buffer.alloc(size - offset);
+          const fd = require("node:fs").openSync(current.logPath, "r");
+          require("node:fs").readSync(fd, buf, 0, buf.length, offset);
+          require("node:fs").closeSync(fd);
+          offset = size;
+          sendEvent(buf.toString("utf8"));
+        } catch { /* file read error, skip */ }
+      };
+
+      poll();
+      intervalId = setInterval(poll, POLL_MS);
+    },
+    cancel() {
+      if (intervalId) clearInterval(intervalId);
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+// ── Trace endpoints ───────────────────────────────────────────────────────────
+
+export function traceListDatesHandler(): Response {
+  const { listTraceDates } = require("../tracing/exporter.ts") as typeof import("../tracing/exporter.ts");
+  return json(ok({ dates: listTraceDates() }));
+}
+
+export function traceByDateHandler(date: string): Response {
+  const { readTraces } = require("../tracing/exporter.ts") as typeof import("../tracing/exporter.ts");
+  return json(ok({ date, spans: readTraces(date) }));
+}
+
+// ── Audit chain-status endpoint ───────────────────────────────────────────────
+
+export function auditChainStatusHandler(): Response {
+  const { verifyChain, getChainHead } = require("../db/audit/chain.ts") as typeof import("../db/audit/chain.ts");
+  const { getDashboardDb } = require("../db/dashboard.ts") as typeof import("../db/dashboard.ts");
+  const db = getDashboardDb();
+  if (!db) return apiError("DB not available", 503);
+  const result = verifyChain(db, 500);
+  const head = getChainHead(db);
+  return json(ok({ ...result, headHash: head?.rowHash ?? null, headTs: head?.ts ?? null }));
 }
