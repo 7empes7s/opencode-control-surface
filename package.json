@@ -9,7 +9,9 @@
     "start": "bun run server/index.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun run build"
+    "check": "bun run typecheck && bun run build",
+    "build:binary": "bun run build && BUILD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo dev) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) bun build --compile --target=bun-linux-x64 --outfile=dist/tib-builder server/main.ts",
+    "build:docker": "docker build -t tib-builder:latest ."
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.0.0",

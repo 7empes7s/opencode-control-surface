@@ -14,6 +14,29 @@ interface WorkspaceRoot {
   liveService?: string;
 }
 
+interface LicenseStatus {
+  tier: string;
+  features: string[];
+  tenantId: string | null;
+  issuedAt: string | null;
+  expiresAt: string | null;
+  licensed: boolean;
+}
+
+interface TelemetryConsent {
+  consented: boolean;
+  updatedAt: string;
+}
+
+interface TelemetryPayload {
+  events: unknown[];
+  runCount: number;
+  passSuccessRate: number;
+  passFailRate: number;
+  modelUsageHistogram: Record<string, number>;
+  shippedAt: string;
+}
+
 function WCard({ children, className = "", style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return <div className={`w-card ${className}`} style={style}>{children}</div>;
 }
@@ -31,8 +54,20 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
+type TabId = "auth" | "license" | "telemetry";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "auth", label: "Auth & Stack" },
+  { id: "license", label: "License" },
+  { id: "telemetry", label: "Telemetry" },
+];
+
 export function SettingsPage() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
+  const [telemetryPayload, setTelemetryPayload] = useState<TelemetryPayload | null>(null);
+  const [telemetryConsent, setTelemetryConsent] = useState<TelemetryConsent | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>("auth");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceRoot[]>(FALLBACK_WORKSPACES);
@@ -48,6 +83,18 @@ export function SettingsPage() {
         setError(err.message);
         setLoading(false);
       });
+    fetch("/api/licensing/status")
+      .then(res => res.json())
+      .then(setLicenseStatus)
+      .catch(() => {});
+    fetch("/api/telemetry/preview")
+      .then(res => res.json())
+      .then(setTelemetryPayload)
+      .catch(() => {});
+    fetch("/api/telemetry/consent")
+      .then(res => res.json())
+      .then(setTelemetryConsent)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -75,6 +122,20 @@ export function SettingsPage() {
         <div className="dash-section-title">Settings</div>
       </div>
 
+      <div className="dash-tabs" style={{ marginBottom: 16 }}>
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            className={`dash-tab ${activeTab === t.id ? "active" : ""}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "auth" && (
+        <>
       {/* Auth Status */}
       <div className="dash-section">
         <div className="dash-section-title">auth status</div>
@@ -146,6 +207,86 @@ export function SettingsPage() {
           </div>
         </WCard>
       </div>
+        </>
+      )}
+
+      {activeTab === "license" && (
+        <div className="dash-section">
+          <div className="dash-section-title">license</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Tier</span>
+              <Pill color={licenseStatus?.licensed ? "green" : "gray"}>
+                {licenseStatus?.tier ?? "unknown"}
+              </Pill>
+            </div>
+            {licenseStatus?.tenantId && (
+              <div className="w-row">
+                <span className="w-label">Tenant ID</span>
+                <span className="w-mono" style={{ fontSize: 11 }}>{licenseStatus.tenantId}</span>
+              </div>
+            )}
+            {licenseStatus?.issuedAt && (
+              <div className="w-row">
+                <span className="w-label">Issued</span>
+                <span className="w-caption">{new Date(licenseStatus.issuedAt).toLocaleDateString()}</span>
+              </div>
+            )}
+            {licenseStatus?.expiresAt && (
+              <div className="w-row">
+                <span className="w-label">Expires</span>
+                <span className="w-caption">{new Date(licenseStatus.expiresAt).toLocaleDateString()}</span>
+              </div>
+            )}
+            <div className="w-row" style={{ marginTop: 8 }}>
+              <span className="w-label">License file</span>
+              <span className="w-mono" style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                {licenseStatus?.licensed ? "/etc/opencode-license.d/v3.yaml" : "not present"}
+              </span>
+            </div>
+          </WCard>
+
+          <div className="dash-section-title" style={{ marginTop: 24 }}>feature list</div>
+          <WCard>
+            {licenseStatus?.features && licenseStatus.features.length > 0 ? (
+              licenseStatus.features.map((f, i) => (
+                <div key={i} className="w-row">
+                  <Pill color="blue">{f}</Pill>
+                </div>
+              ))
+            ) : (
+              <div className="w-caption">No additional features — running in solo mode.</div>
+            )}
+          </WCard>
+        </div>
+      )}
+
+      {activeTab === "telemetry" && (
+        <div className="dash-section">
+          <div className="dash-section-title">telemetry</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Opt-in status</span>
+              <Pill color={telemetryConsent?.consented ? "green" : "gray"}>
+                {telemetryConsent?.consented ? "opted in" : "not opted in"}
+              </Pill>
+            </div>
+            {telemetryConsent?.updatedAt && (
+              <div className="w-row">
+                <span className="w-label">Last updated</span>
+                <span className="w-caption">{new Date(telemetryConsent.updatedAt).toLocaleString()}</span>
+              </div>
+            )}
+          </WCard>
+
+          <div className="dash-section-title" style={{ marginTop: 24 }}>preview payload</div>
+          <WCard>
+            <pre style={{ fontSize: 10, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", overflowX: "auto" }}>
+              {JSON.stringify(telemetryPayload ?? {}, null, 2)}
+            </pre>
+          </WCard>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,21 @@
+version: "1.0"
+name: "Hello Builder"
+description: |
+  Your first workflow. Run it in 5 minutes.
+  This workflow writes a greeting to a file and validates it exists.
+trigger:
+  type: manual
+agentOrder:
+  - id: hello
+    name: "Write Greeting"
+    agent: opencode
+    prompt: |
+      Write a file called HELLO.txt in the current directory.
+      Content:
+      "Hello from Builder! This is my first workflow."
+      "Timestamp: <current ISO timestamp>"
+      
+      Use the write tool to create the file.
+    validationProfile:
+      echo: "test -f HELLO.txt"
+      timeoutMs: 10000

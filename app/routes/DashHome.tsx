@@ -160,6 +160,92 @@ function SparkBars({ values }: { values: number[] }) {
   );
 }
 
+interface ReasonerJob {
+  id: string;
+  status: string;
+  createdAt: number;
+  finishedAt?: number;
+}
+
+function ReasonerStatusStrip() {
+  const { data: jobs } = useApi<ReasonerJob[]>("/api/reasoner/jobs", 30_000);
+  const { data: diagnoses } = useApi<unknown[]>("/api/reasoner/diagnoses", 30_000);
+  const { data: incidents } = useApi<unknown[]>("/api/reasoner/incidents", 30_000);
+
+  const pendingJobs = (jobs ?? []).filter((j) => j.status === "pending").length;
+  const diagnosesCount = (diagnoses ?? []).length;
+  const openIncidents = (incidents ?? []).length;
+
+  const lastFinished = (jobs ?? []).find((j) => j.finishedAt != null)?.finishedAt;
+  const lastRanLabel = lastFinished
+    ? (() => {
+        const mins = Math.round((Date.now() - lastFinished) / 60000);
+        return mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+      })()
+    : "never";
+
+  if (!jobs && !diagnoses && !incidents) return null;
+
+  return (
+    <div style={{
+      fontFamily: "var(--mono)",
+      fontSize: 11,
+      color: "var(--text-dim)",
+      padding: "6px 12px",
+      background: "var(--bg-sub)",
+      borderRadius: 4,
+      marginBottom: 12,
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "4px 12px",
+      alignItems: "center",
+    }}>
+      <span style={{ color: "var(--text)", fontWeight: 600 }}>Reasoner</span>
+      <span>{pendingJobs} jobs pending</span>
+      <span>·</span>
+      <span>{diagnosesCount} diagnoses</span>
+      <span>·</span>
+      <span>{openIncidents} open incidents</span>
+      <span>·</span>
+      <span>last ran {lastRanLabel}</span>
+    </div>
+  );
+}
+
+function OrchestratorStatusStrip() {
+  const { data: instances } = useApi<{ instances: Array<{ status: string; currentStepIndex: number }> }>("/api/orchestrator/instances", 30_000);
+  const { data: lanes } = useApi<{ lanes: Array<{ laneName: string; maxConcurrency: number; activeCount: number }> }>("/api/orchestrator/lanes", 30_000);
+
+  const activeCount = (instances?.instances ?? []).filter((i) => i.status === "running").length;
+  const totalCount = (instances?.instances ?? []).length;
+  const laneData = lanes?.lanes ?? [];
+  const totalActive = laneData.reduce((s, l) => s + l.activeCount, 0);
+  const totalMax = laneData.reduce((s, l) => s + l.maxConcurrency, 0);
+
+  if (!instances && !lanes) return null;
+
+  return (
+    <div style={{
+      fontFamily: "var(--mono)",
+      fontSize: 11,
+      color: "var(--text-dim)",
+      padding: "6px 12px",
+      background: "var(--bg-sub)",
+      borderRadius: 4,
+      marginBottom: 12,
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "4px 12px",
+      alignItems: "center",
+    }}>
+      <span style={{ color: "var(--text)", fontWeight: 600 }}>Orchestrator</span>
+      <span>{activeCount}/{totalCount} active</span>
+      <span>·</span>
+      <span>lanes: {totalActive}/{totalMax} busy</span>
+    </div>
+  );
+}
+
 export function DashHome() {
   const { data: streamData, connected } = useStream<HomeData>("/api/stream");
   // Fallback poll for initial load if SSE hasn't fired yet
@@ -347,6 +433,12 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+
+      {/* ── Reasoner status ───────────────────────────── */}
+      <ReasonerStatusStrip />
+
+      {/* ── Orchestrator status ───────────────────────── */}
+      <OrchestratorStatusStrip />
 
       {/* ── Doctor ────────────────────────────────────── */}
       <div className="dash-section">

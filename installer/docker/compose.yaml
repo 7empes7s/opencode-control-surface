@@ -1,0 +1,11 @@
+services:
+  tib-builder:
+    build: ../..
+    ports: ["3000:3000"]
+    volumes:
+      - tib-data:/var/lib/tib-builder
+    environment:
+      DATA_DIR: /var/lib/tib-builder
+      OPERATOR_TOKEN: changeme
+volumes:
+  tib-data:

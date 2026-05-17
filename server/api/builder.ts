@@ -247,12 +247,24 @@ function parseSourceSession(value: unknown): BuilderWorkflowInput["config"]["sou
     capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt.slice(0, 80) : undefined,
     transcriptSummary: typeof raw.transcriptSummary === "string" ? raw.transcriptSummary.slice(0, 1000) : undefined,
     latestUserPrompt: typeof raw.latestUserPrompt === "string" ? raw.latestUserPrompt.slice(0, 1000) : undefined,
+    assistantSummary: typeof raw.assistantSummary === "string" ? raw.assistantSummary.slice(0, 1000) : undefined,
     touchedFiles: Array.isArray(raw.touchedFiles)
       ? raw.touchedFiles
           .filter((item): item is string => typeof item === "string")
           .map((item) => item.trim().slice(0, 500))
           .filter(Boolean)
           .slice(0, 40)
+      : undefined,
+    touchedFileSummary: typeof raw.touchedFileSummary === "string" ? raw.touchedFileSummary.slice(0, 1000) : undefined,
+    recentTurns: Array.isArray(raw.recentTurns)
+      ? raw.recentTurns
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+          .map((item) => ({
+            role: typeof item.role === "string" ? item.role.slice(0, 24) : "message",
+            text: typeof item.text === "string" ? item.text.slice(0, 700) : "",
+          }))
+          .filter((item) => item.text.trim())
+          .slice(0, 8)
       : undefined,
   };
 }
@@ -619,6 +631,27 @@ export type BuilderProvisionResponse = {
   reason?: string;
 };
 
+const DEFAULT_PROVISION_ROOTS = ["/opt/provisioned", "/var/lib/control-surface/projects"];
+const PROTECTED_PROVISION_ROOTS = [
+  "/opt/opencode-control-surface",
+  "/opt/newsbites",
+  "/opt/mimoun",
+  "/opt/paperclip",
+  "/root",
+];
+
+function parseProvisionRoots(): string[] {
+  const extra = (process.env.BUILDER_PROVISION_ROOTS_ALLOW ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return [...DEFAULT_PROVISION_ROOTS, ...extra].map((entry) => resolve(entry));
+}
+
+function isPathWithin(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}/`);
+}
+
 export function builderDoctorReportsHandler(url: URL): Response {
   const reason = dbUnavailable();
   if (reason) {
@@ -669,7 +702,7 @@ export async function builderTriggerDoctorReviewHandler(workflowId: string): Pro
 export async function builderProvisionHandler(req: Request): Promise<Response> {
   const reason = dbUnavailable();
   if (reason) {
-    return json(ok<BuilderProvisionResponse>({ result: { id: "", projectRoot: "", name: "", workflowId: "", workflowStatus: "", provisioned: { cloned: false, gitInitialized: false, agentsMd: false, planFile: null, vaultNote: false, skillFile: false }, warnings: [], error: reason }, degraded: true, reason }, { builder: "stale" }));
+    return json(ok<BuilderProvisionResponse>({ result: { id: "", projectRoot: "", name: "", workflowId: "", workflowStatus: "", provisioned: { cloned: false, gitInitialized: false, agentsMd: false, planFile: null, vaultNote: false, skillFile: false, validationProfileFile: null, runtimeScaffoldFiles: [] }, validationCommands: [], warnings: [], error: reason }, degraded: true, reason }, { builder: "stale" }));
   }
 
   try {
@@ -687,6 +720,7 @@ export async function builderProvisionHandler(req: Request): Promise<Response> {
       gitPolicy: { commit: string; push: string };
       internalUrl: string;
       publicUrl: string;
+      runtimeScaffold: boolean;
     }>;
 
     const projectRoot = String(body.projectRoot ?? "").trim();
@@ -695,11 +729,12 @@ export async function builderProvisionHandler(req: Request): Promise<Response> {
     if (!name) return apiError("name required");
     if (name.length > 120) return apiError("name too long (max 120 chars)");
 
-    // Validate path is outside existing static roots (prevent overwrite of live services)
-    const STATIC_ROOTS = ["/opt/opencode-control-surface", "/opt/newsbites", "/opt/mimoun", "/opt/paperclip", "/opt", "/root"];
     const resolved = resolve(projectRoot);
-    if (STATIC_ROOTS.some(r => resolved === r || resolved.startsWith(r + "/"))) {
+    if (PROTECTED_PROVISION_ROOTS.some((root) => isPathWithin(resolved, root))) {
       return apiError(`cannot provision inside protected root: ${projectRoot}`, 403);
+    }
+    if (!parseProvisionRoots().some((root) => isPathWithin(resolved, root))) {
+      return apiError(`projectRoot must be under ${parseProvisionRoots().join(" or ")}`, 403);
     }
 
     const result = provisionProject({
@@ -716,6 +751,7 @@ export async function builderProvisionHandler(req: Request): Promise<Response> {
       gitPolicy: body.gitPolicy ?? { commit: "manual", push: "never" },
       internalUrl: body.internalUrl?.trim() || undefined,
       publicUrl: body.publicUrl?.trim() || undefined,
+      runtimeScaffold: body.runtimeScaffold === true,
     });
 
     writeActionAudit({
@@ -978,18 +1014,72 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
   }
 }
 
+// Convert a single stream-json line from claude --output-format stream-json into
+// a human-readable string. Returns null to suppress the line entirely.
+function formatClaudeStreamLine(line: string): string | null {
+  if (!line.startsWith("{")) return line; // pass-through for [builder] prefix lines
+  try {
+    const ev = JSON.parse(line) as Record<string, unknown>;
+    switch (ev.type) {
+      case "system":
+        return null; // suppress init metadata
+      case "user":
+        return null; // suppress tool-result feedback payloads
+      case "assistant": {
+        const content = (ev.message as { content?: unknown[] } | undefined)?.content ?? [];
+        const parts: string[] = [];
+        for (const block of content) {
+          const b = block as { type?: string; text?: string; name?: string; input?: Record<string, unknown> };
+          if (b.type === "text" && b.text?.trim()) {
+            parts.push(b.text.trim());
+          } else if (b.type === "tool_use") {
+            const name = b.name ?? "tool";
+            const inp = b.input ?? {};
+            let detail = "";
+            if (name === "Bash") detail = String(inp.command ?? "").split("\n")[0].slice(0, 120);
+            else if (name === "Read") detail = String(inp.file_path ?? inp.path ?? "");
+            else if (name === "Write" || name === "Edit") detail = String(inp.file_path ?? "");
+            else if (name === "Grep") detail = `"${String(inp.pattern ?? "")}" in ${String(inp.path ?? "")}`;
+            else if (name === "WebSearch") detail = String(inp.query ?? "");
+            else if (name === "WebFetch") detail = String(inp.url ?? "").slice(0, 80);
+            else detail = JSON.stringify(inp).slice(0, 80);
+            parts.push(`  ▶ ${name}: ${detail}`);
+          }
+        }
+        return parts.length ? parts.join("\n") : null;
+      }
+      case "tool_result": {
+        const content = ev.content as Array<{ type?: string; text?: string }> | undefined;
+        const text = Array.isArray(content) ? content.find((c) => c.type === "text")?.text ?? "" : String(content ?? "");
+        const firstLine = text.split("\n")[0].trim().slice(0, 200);
+        return firstLine ? `    ${firstLine}` : null;
+      }
+      case "result": {
+        if (typeof ev.result === "string") return `\n✓ ${ev.result.trim().slice(0, 500)}`;
+        if (ev.subtype === "error_max_turns") return `\n✗ max turns reached`;
+        if (typeof ev.error === "string") return `\n✗ ${String(ev.error).slice(0, 200)}`;
+        return null;
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return line; // not JSON — return raw
+  }
+}
+
 export function builderPassLiveHandler(runId: string): Response {
   const { existsSync, statSync, readFileSync } = require("node:fs") as typeof import("node:fs");
   const POLL_MS = 2000;
   const MAX_INIT_BYTES = 8000;
 
-  const findCurrentPass = (): { passSeq: number; logPath: string } | null => {
+  const findCurrentPass = (): { passSeq: number; logPath: string; agent: string } | null => {
     try {
       const passes = readBuilderPasses(runId);
       const running = passes.find((p) => p.status === "running");
       if (!running) return null;
       const logPath = `/var/lib/control-surface/builder-runs/${runId}/pass-${running.sequence}-stdout.log`;
-      return { passSeq: running.sequence, logPath };
+      return { passSeq: running.sequence, logPath, agent: running.agent ?? "" };
     } catch { return null; }
   };
 
@@ -1000,12 +1090,17 @@ export function builderPassLiveHandler(runId: string): Response {
     start(controller) {
       let offset = 0;
       let lastPassSeq: number | null = null;
+      let currentAgent = "";
 
       const sendEvent = (text: string) => {
         try {
           const lines = text.split("\n").filter((l) => l.trim());
-          for (const line of lines) {
-            controller.enqueue(encoder.encode(`event: line\ndata: ${JSON.stringify({ text: line, ts: Date.now() })}\n\n`));
+          for (const raw of lines) {
+            const formatted = currentAgent === "claude" ? formatClaudeStreamLine(raw) : raw;
+            if (formatted === null) continue;
+            for (const line of formatted.split("\n").filter((l) => l.trim())) {
+              controller.enqueue(encoder.encode(`event: line\ndata: ${JSON.stringify({ text: line, ts: Date.now() })}\n\n`));
+            }
           }
         } catch { /* client disconnected */ }
       };
@@ -1024,6 +1119,7 @@ export function builderPassLiveHandler(runId: string): Response {
         if (current.passSeq !== lastPassSeq) {
           offset = 0;
           lastPassSeq = current.passSeq;
+          currentAgent = current.agent;
         }
 
         if (!existsSync(current.logPath)) return;

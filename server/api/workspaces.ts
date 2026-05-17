@@ -1,5 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, relative, resolve, sep } from "node:path";
+import { getDashboardDb } from "../db/dashboard.ts";
 
 export type WorkspaceRisk = "low" | "medium" | "high";
 
@@ -9,6 +10,10 @@ export type WorkspaceRoot = {
   risk: WorkspaceRisk;
   writable: boolean;
   note: string;
+  service?: string;
+  internalUrl?: string;
+  publicUrl?: string;
+  defaultPlan?: string;
 };
 
 export const WORKSPACE_ROOTS: WorkspaceRoot[] = [
@@ -61,17 +66,51 @@ function isWithin(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
-function getProvisionedRoots(): Map<string, string> {
+function parseWorkspaceRootConfig(value: string): Partial<WorkspaceRoot> {
+  try {
+    return JSON.parse(value) as Partial<WorkspaceRoot>;
+  } catch {
+    return {};
+  }
+}
+
+export function getProvisionedWorkspaceRoots(): WorkspaceRoot[] {
   const allKey = "BUILDER_PROVISIONED_ROOTS";
   const provisioned = process.env[allKey] ?? "";
-  const map = new Map<string, string>();
+  const map = new Map<string, WorkspaceRoot>();
   for (const entry of provisioned.split(",").filter(Boolean)) {
-    // Try to look up label from env var key
     const labelKey = `BUILDER_ALLOWED_ROOT_${Buffer.from(entry).toString("base64").replace(/[/+=]/g, "_")}`;
     const label = process.env[labelKey] ?? basename(entry);
-    map.set(entry, label);
+    map.set(entry, { path: entry, label, risk: "medium", writable: true, note: "Provisioned project" });
   }
-  return map;
+
+  const db = getDashboardDb();
+  if (db) {
+    try {
+      const rows = db.query(`
+        SELECT name, root, config_json
+        FROM builder_projects
+      `).all() as Array<{ name: string; root: string; config_json: string }>;
+      for (const row of rows) {
+        const config = parseWorkspaceRootConfig(row.config_json);
+        map.set(row.root, {
+          path: row.root,
+          label: config.label ?? row.name ?? basename(row.root),
+          risk: config.risk ?? "medium",
+          writable: config.writable ?? true,
+          note: config.note ?? "Provisioned project",
+          service: config.service,
+          internalUrl: config.internalUrl,
+          publicUrl: config.publicUrl,
+          defaultPlan: config.defaultPlan,
+        });
+      }
+    } catch {
+      // Keep env-provisioned roots available even if the DB is mid-migration.
+    }
+  }
+
+  return [...map.values()];
 }
 
 export function normalizeWorkspace(input?: string): { ok: true; path: string; root: WorkspaceRoot } | { ok: false; error: string } {
@@ -99,18 +138,13 @@ export function normalizeWorkspace(input?: string): { ok: true; path: string; ro
   }
 
   // Check dynamically provisioned roots
-  const provisionedRoots = getProvisionedRoots();
-  for (const [rootPath] of provisionedRoots) {
-    if (!existsSync(rootPath)) continue;
+  const provisionedRoots = getProvisionedWorkspaceRoots();
+  for (const root of provisionedRoots) {
+    if (!existsSync(root.path)) continue;
     try {
-      const realRoot = realpathSync(rootPath);
+      const realRoot = realpathSync(root.path);
       if (isWithin(realRequested, realRoot)) {
-        const label = provisionedRoots.get(rootPath) ?? basename(rootPath);
-        return {
-          ok: true,
-          path: realRequested,
-          root: { path: rootPath, label, risk: "medium", writable: true, note: "Provisioned project" },
-        };
+        return { ok: true, path: realRequested, root };
       }
     } catch { /* skip */ }
   }

@@ -1,0 +1,78 @@
+version: "1.0"
+name: "Nightly Doctor Review"
+description: |
+  Run health diagnostics every night at 2 AM UTC.
+  Checks all services, GPU tunnel, model health, and disk usage.
+  Reports critical issues as a structured artifact.
+trigger:
+  type: cron
+  cron: "0 2 * * *"  # 2:00 AM UTC every day
+  enabled: true
+agentOrder:
+  - id: discover
+    name: "Discover Services"
+    agent: opencode
+    model: editorial-fast
+    prompt: |
+      Query all running services via systemctl.
+      Output a JSON array of {name, status, memory, cpu} for each service.
+      Services to check: newsbites, newsbites-autopipeline, litellm,
+      opencode-server, control-surface, vast-tunnel, cloudflared,
+      paperclip, openclaw_gateway, mimule-backup, model-health-check.
+    validationProfile:
+      echo: "test -f /tmp/services.json"
+
+  - id: gpu-check
+    name: "GPU Health"
+    agent: opencode
+    model: routing-cheap
+    prompt: |
+      Read /var/lib/mimule/gpu-health.json and report GPU status.
+      Check: tunnel alive (curl localhost:11434), model loaded,
+      recent errors, memory usage.
+      Output: JSON {alive, modelLoaded, errorRate, memoryUsed}
+
+  - id: model-health-check
+    name: "Model Health"
+    agent: opencode
+    model: routing-cheap
+    prompt: |
+      Read /var/lib/mimule/model-health.json.
+      Report: models available, latencyP50 for each, error rates.
+      Flag any model with error_rate > 0.05.
+      Output: JSON {models: [{name, status, latencyP50, errorRate}]}
+
+  - id: disk-check
+    name: "Disk Usage"
+    agent: opencode
+    prompt: |
+      Run: df -h / /var /opt
+      Report: each mount point's used%, available, flags if >85%.
+      Output: JSON {mounts: [{path, usedPercent, available, alert}]}
+
+  - id: compile-report
+    name: "Compile Report"
+    agent: opencode
+    skillBundle: "health-report"
+    prompt: |
+      Compile all diagnostic results into a structured health report.
+      Read DIAGNOSTIC_REPORT.md template from skill bundle.
+      Write report to DIAGNOSTIC_REPORT.md in artifact directory.
+    validationProfile:
+      echo: "test -f DIAGNOSTIC_REPORT.md"
+      timeoutMs: 30000
+
+  - id: alert-if-needed
+    name: "Alert on Issues"
+    agent: opencode
+    prompt: |
+      Read DIAGNOSTIC_REPORT.md.
+      If critical issues found, send webhook alert.
+      Write ALERT_STATUS.md with result.
+    validationProfile:
+      echo: "test -f ALERT_STATUS.md"
+      timeoutMs: 15000
+
+notification:
+  channels: ["webhook"]
+  webhookUrl: "https://internal.tib.com/alerts/doctor"

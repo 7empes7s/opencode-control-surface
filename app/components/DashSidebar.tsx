@@ -25,6 +25,11 @@ import {
   Menu,
   GitBranch,
   Route,
+  Shield,
+  FolderOpen,
+  Info,
+  Wrench,
+  Package,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -34,6 +39,7 @@ type NavItem = {
   label: string;
   icon: typeof LayoutGrid;
   match?: (loc: string) => boolean;
+  condition?: () => boolean;
 };
 type Theme = "dark" | "light";
 type Variant = "terminal" | "compact";
@@ -50,9 +56,16 @@ const NAV: NavItem[] = [
   { href: "/jobs", label: "Jobs", icon: ClipboardList },
   { href: "/audit", label: "Audit", icon: History },
   { href: "/builder", label: "Builder", icon: Hammer },
+  { href: "/workflows", label: "Workflows", icon: GitBranch },
+  { href: "/marketplace", label: "Marketplace", icon: Package },
   { href: "/traces", label: "Traces", icon: GitBranch },
   { href: "/gateway", label: "Gateway", icon: Route },
+  { href: "/governance", label: "Governance", icon: Shield },
+  { href: "/compliance", label: "Compliance", icon: Shield },
+  { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/settings", label: "Settings", icon: Settings2 },
+  { href: "/about", label: "About", icon: Info },
+  { href: "/install", label: "Setup", icon: Wrench, condition: () => localStorage.getItem("tib-install-wizard-done") !== "true" },
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },
   { href: "/claude", label: "Claude Code", icon: Sparkles },
@@ -155,7 +168,7 @@ export function DashSidebar() {
         </div>
 
 <nav className="topnav-links" aria-label="Main navigation">
-          {NAV.map(({ href, label, icon: Icon, match }) => {
+          {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
             const active = match ? match(location) : location.startsWith(href);
             return (
               <Link key={href} href={href} className={`topnav-link${active ? " active" : ""}`}>
@@ -168,7 +181,7 @@ export function DashSidebar() {
 
         {topnavExpanded && (
           <div className="topnav-links-expanded open" role="navigation" aria-label="All pages">
-            {NAV.map(({ href, label, icon: Icon, match }) => {
+            {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
               const active = match ? match(location) : location.startsWith(href);
               return (
                 <Link
@@ -270,7 +283,7 @@ export function DashSidebar() {
               </button>
             </div>
             <div className="drawer-nav-grid">
-              {NAV.map(({ href, label, icon: Icon, match }) => {
+              {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
                 const active = match ? match(location) : location.startsWith(href);
                 return (
                   <Link

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
-export const DASHBOARD_SCHEMA_VERSION = 2;
+export const DASHBOARD_SCHEMA_VERSION = 3;
 
 type InitDashboardDbOptions = {
   enabled?: boolean;
@@ -13,8 +13,9 @@ type InitDashboardDbOptions = {
 let dashboardDb: Database | null = null;
 let dashboardDbPath: string | null = null;
 
-export function isDashboardDbEnabled(enabled = process.env.DASHBOARD_DB === "1"): boolean {
-  return enabled === true;
+export function isDashboardDbEnabled(enabled?: boolean): boolean {
+  if (enabled !== undefined) return enabled === true;
+  return process.env.DASHBOARD_DB === "1";
 }
 
 export function getDashboardDbPath(): string {
@@ -93,6 +94,31 @@ function migrateDashboardDb(db: Database): void {
       version INTEGER PRIMARY KEY,
       applied_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS tenants (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT,
+      repo_path TEXT,
+      language TEXT,
+      framework TEXT,
+      validator_commands_json TEXT,
+      default_model_roster_json TEXT,
+      default_policies_json TEXT,
+      status TEXT,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_tenant_id
+      ON projects (tenant_id);
 
     CREATE TABLE IF NOT EXISTS metric_samples (
       id INTEGER PRIMARY KEY,
@@ -373,6 +399,38 @@ function migrateDashboardDb(db: Database): void {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sso_configs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT UNIQUE,
+      provider_kind TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      client_secret_enc TEXT NOT NULL,
+      redirect_uri TEXT,
+      scopes_json TEXT,
+      group_mapping_json TEXT,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sso_configs_tenant ON sso_configs (tenant_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_configs_tenant_unique ON sso_configs (tenant_id);
+
+    CREATE TABLE IF NOT EXISTS sso_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      sub TEXT NOT NULL,
+      email TEXT,
+      role TEXT NOT NULL,
+      groups_json TEXT,
+      access_token_enc TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sso_sessions_tenant ON sso_sessions (tenant_id);
+  `);
+
   ensureColumn(db, "action_audit", "actor_source", "TEXT");
   ensureColumn(db, "action_audit", "action", "TEXT");
   ensureColumn(db, "action_audit", "action_id", "TEXT");
@@ -410,9 +468,131 @@ function migrateDashboardDb(db: Database): void {
   ensureColumn(db, "builder_passes", "plan_items_remaining", "INTEGER");
   ensureColumn(db, "builder_passes", "completion_percent", "INTEGER");
   ensureColumn(db, "builder_passes", "trace_id", "TEXT");
-  ensureColumn(db, "builder_runs", "trace_id", "TEXT");
-  ensureColumn(db, "action_audit", "prev_hash", "TEXT");
+   ensureColumn(db, "builder_runs", "trace_id", "TEXT");
+    ensureColumn(db, "builder_runs", "orchestrator_instance_id", "TEXT");
+    ensureColumn(db, "action_audit", "prev_hash", "TEXT");
   ensureColumn(db, "action_audit", "row_hash", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS governance_policies (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      loaded_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS governance_policy_decisions (
+      id INTEGER PRIMARY KEY,
+      policy_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      effect TEXT NOT NULL,
+      rule_name TEXT,
+      reason TEXT,
+      context_json TEXT,
+      decided_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gov_policy_decisions_ts ON governance_policy_decisions (decided_at);
+    CREATE INDEX IF NOT EXISTS idx_gov_policy_decisions_policy ON governance_policy_decisions (policy_id);
+    CREATE TABLE IF NOT EXISTS governance_role_bindings (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      project_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gov_role_bindings_user ON governance_role_bindings (user_id);
+    CREATE TABLE IF NOT EXISTS governance_secrets (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT,
+      encrypted_value TEXT NOT NULL,
+      encrypted_dek TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      key_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS governance_approvals (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      tenant_id TEXT,
+      requested_at INTEGER NOT NULL,
+      requested_by TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      approvals_json TEXT NOT NULL DEFAULT '[]',
+      required_count INTEGER NOT NULL DEFAULT 1,
+      expires_at INTEGER,
+      decided_at INTEGER,
+      decided_by TEXT,
+      decision TEXT,
+      reason TEXT
+    );
+    CREATE TABLE IF NOT EXISTS governance_approval_votes (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      voter TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      comment TEXT,
+      voted_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS governance_budgets (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      project_id TEXT,
+      daily_cap_usd REAL,
+      monthly_cap_usd REAL,
+      warn_pct REAL NOT NULL DEFAULT 0.8,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_export_jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      from_ts INTEGER NOT NULL,
+      to_ts INTEGER NOT NULL,
+      format TEXT NOT NULL DEFAULT 'jsonl',
+      status TEXT NOT NULL DEFAULT 'pending',
+      row_count INTEGER,
+      chain_hash TEXT,
+      output_path TEXT,
+      error TEXT,
+      started_at INTEGER,
+      finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_export_jobs_tenant ON audit_export_jobs (tenant_id, status);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tenant_settings (
+      tenant_id TEXT PRIMARY KEY,
+      data_residency_region TEXT,
+      storage_root TEXT,
+      audit_retention_days INTEGER,
+      require_two_approvers INTEGER DEFAULT 0,
+      sso_required INTEGER DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS report_runs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      template_id TEXT,
+      params_json TEXT,
+      status TEXT,
+      output_json TEXT,
+      row_count INTEGER,
+      started_at INTEGER,
+      finished_at INTEGER,
+      error TEXT
+    );
+  `);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS gateway_calls (
@@ -431,16 +611,309 @@ function migrateDashboardDb(db: Database): void {
       trace_id TEXT,
       caller TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
+CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     CREATE INDEX IF NOT EXISTS idx_gateway_calls_model ON gateway_calls (logical_model, ts);
   `);
 
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_action_audit_target ON action_audit (target_type, target_id);
-    CREATE INDEX IF NOT EXISTS idx_action_audit_result_status ON action_audit (result_status);
-    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
-    CREATE INDEX IF NOT EXISTS idx_jobs_target ON jobs (target_type, target_id);
+    CREATE TABLE IF NOT EXISTS reasoner_jobs (
+      id TEXT PRIMARY KEY,
+      pass_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoner_jobs_status ON reasoner_jobs (status);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_jobs_created ON reasoner_jobs (created_at);
+
+    CREATE TABLE IF NOT EXISTS reasoner_diagnoses (
+      id TEXT PRIMARY KEY,
+      pass_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      failure_class TEXT NOT NULL,
+      root_cause TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      suggested_actions_json TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      raw_llm_response TEXT,
+      diagnosed_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoner_diagnoses_pass ON reasoner_diagnoses (pass_id);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_diagnoses_run ON reasoner_diagnoses (run_id);
+
+    CREATE TABLE IF NOT EXISTS reasoner_incidents (
+      id TEXT PRIMARY KEY,
+      cluster_key TEXT NOT NULL UNIQUE,
+      failure_class TEXT NOT NULL,
+      title TEXT NOT NULL,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      representative_pass_id TEXT NOT NULL,
+      representative_diagnosis_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open'
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_status ON reasoner_incidents (status);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_occurrence ON reasoner_incidents (occurrence_count);
+
+    CREATE TABLE IF NOT EXISTS reasoner_incident_members (
+      id TEXT PRIMARY KEY,
+      incident_id TEXT NOT NULL,
+      pass_id TEXT NOT NULL,
+      diagnosis_id TEXT NOT NULL,
+      added_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoner_incident_members_incident ON reasoner_incident_members (incident_id);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_incident_members_pass ON reasoner_incident_members (pass_id);
+
+    CREATE TABLE IF NOT EXISTS reasoner_playbooks (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      failure_class_pattern TEXT NOT NULL,
+      actions_json TEXT NOT NULL,
+      is_safe INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS reasoner_playbook_runs (
+      id TEXT PRIMARY KEY,
+      playbook_id TEXT NOT NULL,
+      incident_id TEXT,
+      pass_id TEXT,
+      triggered_by TEXT NOT NULL,
+      actions_applied_json TEXT NOT NULL,
+      result TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_reasoner_playbook_runs_playbook ON reasoner_playbook_runs (playbook_id);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_playbook_runs_incident ON reasoner_playbook_runs (incident_id);
+
+    CREATE TABLE IF NOT EXISTS orchestrator_instances (
+      id TEXT PRIMARY KEY,
+      definition_name TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      workflow_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      current_step_index INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_instances_status ON orchestrator_instances (status);
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_instances_workflow ON orchestrator_instances (workflow_id);
+
+    CREATE TABLE IF NOT EXISTS orchestrator_history (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      result_json TEXT,
+      status TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_history_instance ON orchestrator_history (instance_id, step_index);
+
+    CREATE TABLE IF NOT EXISTS orchestrator_signals (
+      id TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      signal_name TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_signals_instance ON orchestrator_signals (instance_id, signal_name, delivered);
+
+    CREATE TABLE IF NOT EXISTS orchestrator_lanes (
+      id TEXT PRIMARY KEY,
+      lane_name TEXT NOT NULL UNIQUE,
+      max_concurrency INTEGER NOT NULL DEFAULT 3,
+      active_count INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS marketplace_skills (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      manifest_json TEXT NOT NULL,
+      bundle_path TEXT NOT NULL,
+      bundle_hash TEXT NOT NULL,
+      installed_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      error_message TEXT,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_marketplace_skills_tenant ON marketplace_skills (tenant_id, status);
+
+    CREATE TABLE IF NOT EXISTS marketplace_skill_runs (
+      id TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      status TEXT NOT NULL,
+      output_json TEXT,
+      error TEXT,
+      FOREIGN KEY (skill_id) REFERENCES marketplace_skills(id),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_marketplace_skill_runs_skill ON marketplace_skill_runs (skill_id, started_at DESC);
   `);
+
+  // Add columns to tables created above (must run after CREATE TABLE)
+  ensureColumn(db, "orchestrator_instances", "parent_instance_id", "TEXT");
+
+  // ── Phase 2: tenant_id columns ──────────────────────────────────────────
+  // Core telemetry / ops tables
+  ensureColumn(db, "metric_samples", "tenant_id", "TEXT");
+  ensureColumn(db, "events", "tenant_id", "TEXT");
+  ensureColumn(db, "action_audit", "tenant_id", "TEXT");
+  ensureColumn(db, "jobs", "tenant_id", "TEXT");
+  ensureColumn(db, "operator_state", "tenant_id", "TEXT");
+
+  // Builder tables
+  ensureColumn(db, "builder_projects", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_workflows", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_runs", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_passes", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_artifacts", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_validations", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_locks", "tenant_id", "TEXT");
+  ensureColumn(db, "builder_doctor_reports", "tenant_id", "TEXT");
+
+  // Governance tables
+  ensureColumn(db, "governance_policies", "tenant_id", "TEXT");
+  ensureColumn(db, "governance_policy_decisions", "tenant_id", "TEXT");
+  ensureColumn(db, "governance_role_bindings", "tenant_id", "TEXT");
+  ensureColumn(db, "governance_secrets", "tenant_id", "TEXT");
+  ensureColumn(db, "governance_approvals", "tenant_id", "TEXT");
+  ensureColumn(db, "governance_approvals", "status", "TEXT");
+  ensureColumn(db, "governance_approvals", "approvals_json", "TEXT");
+  ensureColumn(db, "governance_approvals", "required_count", "INTEGER");
+  ensureColumn(db, "governance_approvals", "expires_at", "INTEGER");
+  ensureColumn(db, "governance_approval_votes", "id", "TEXT");
+  ensureColumn(db, "governance_approval_votes", "request_id", "TEXT");
+  ensureColumn(db, "governance_approval_votes", "voter", "TEXT");
+  ensureColumn(db, "governance_approval_votes", "decision", "TEXT");
+  ensureColumn(db, "governance_approval_votes", "comment", "TEXT");
+  ensureColumn(db, "governance_approval_votes", "voted_at", "INTEGER");
+  ensureColumn(db, "governance_budgets", "tenant_id", "TEXT");
+
+  // Audit export jobs
+  ensureColumn(db, "audit_export_jobs", "tenant_id", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "requested_by", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "from_ts", "INTEGER");
+  ensureColumn(db, "audit_export_jobs", "to_ts", "INTEGER");
+  ensureColumn(db, "audit_export_jobs", "format", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "status", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "row_count", "INTEGER");
+  ensureColumn(db, "audit_export_jobs", "chain_hash", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "output_path", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "error", "TEXT");
+  ensureColumn(db, "audit_export_jobs", "started_at", "INTEGER");
+  ensureColumn(db, "audit_export_jobs", "finished_at", "INTEGER");
+
+  // Tenant settings
+  ensureColumn(db, "tenant_settings", "data_residency_region", "TEXT");
+  ensureColumn(db, "tenant_settings", "storage_root", "TEXT");
+  ensureColumn(db, "tenant_settings", "audit_retention_days", "INTEGER");
+  ensureColumn(db, "tenant_settings", "require_two_approvers", "INTEGER");
+  ensureColumn(db, "tenant_settings", "sso_required", "INTEGER");
+  ensureColumn(db, "tenant_settings", "updated_at", "INTEGER");
+
+  // Gateway
+  ensureColumn(db, "gateway_calls", "tenant_id", "TEXT");
+
+  // Reasoner tables
+  ensureColumn(db, "reasoner_jobs", "tenant_id", "TEXT");
+  ensureColumn(db, "reasoner_diagnoses", "tenant_id", "TEXT");
+  ensureColumn(db, "reasoner_incidents", "tenant_id", "TEXT");
+  ensureColumn(db, "reasoner_incident_members", "tenant_id", "TEXT");
+  ensureColumn(db, "reasoner_playbooks", "tenant_id", "TEXT");
+  ensureColumn(db, "reasoner_playbook_runs", "tenant_id", "TEXT");
+
+  // Orchestrator tables
+  ensureColumn(db, "orchestrator_instances", "tenant_id", "TEXT");
+  ensureColumn(db, "orchestrator_history", "tenant_id", "TEXT");
+  ensureColumn(db, "orchestrator_signals", "tenant_id", "TEXT");
+  ensureColumn(db, "orchestrator_lanes", "tenant_id", "TEXT");
+
+  // ── Phase 2: backfill null tenant_id to "mimule" ────────────────────────
+  const TENANT_BACKFILL_TABLES = [
+    "metric_samples", "events", "action_audit", "jobs", "operator_state",
+    "builder_projects", "builder_workflows", "builder_runs", "builder_passes",
+    "builder_artifacts", "builder_validations", "builder_locks", "builder_doctor_reports",
+    "governance_policies", "governance_policy_decisions", "governance_role_bindings",
+    "governance_secrets", "governance_approvals", "governance_budgets",
+    "gateway_calls",
+    "reasoner_jobs", "reasoner_diagnoses", "reasoner_incidents",
+    "reasoner_incident_members", "reasoner_playbooks", "reasoner_playbook_runs",
+    "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
+  ];
+  for (const tbl of TENANT_BACKFILL_TABLES) {
+    db.run(`UPDATE ${tbl} SET tenant_id = 'mimule' WHERE tenant_id IS NULL`);
+  }
+
+  // ── Phase 2: tenant-leading indexes ─────────────────────────────────────
+  // Telemetry / audit / job tables: (tenant_id, ts)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_metric_samples_tenant_ts
+      ON metric_samples (tenant_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_events_tenant_ts
+      ON events (tenant_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_action_audit_tenant_ts
+      ON action_audit (tenant_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_jobs_tenant_ts
+      ON jobs (tenant_id, ts);
+  `);
+
+  // Builder: (tenant_id, project_id) on workflows
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_builder_workflows_tenant_project
+      ON builder_workflows (tenant_id, project_id);
+  `);
+
+  // Builder: (tenant_id, workflow_id) on runs/passes/artifacts/validations
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_builder_runs_tenant_workflow
+      ON builder_runs (tenant_id, workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_builder_passes_tenant_workflow
+      ON builder_passes (tenant_id, workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_builder_artifacts_tenant_workflow
+      ON builder_artifacts (tenant_id, workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_builder_validations_tenant_workflow
+      ON builder_validations (tenant_id, workflow_id);
+  `);
+
+  // Orchestrator / reasoner: (tenant_id, status)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_orchestrator_instances_tenant_status
+      ON orchestrator_instances (tenant_id, status);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_jobs_tenant_status
+      ON reasoner_jobs (tenant_id, status);
+    CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_tenant_status
+      ON reasoner_incidents (tenant_id, status);
+  `);
+
+  // Seed default tenant
+  const now = Date.now();
+  db.query("INSERT OR IGNORE INTO tenants (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run("mimule", "MIMULE", "active", now, now);
+
+  db.query("INSERT OR IGNORE INTO tenant_settings (tenant_id, updated_at) VALUES (?, ?)")
+    .run("mimule", now);
 
   db.query("INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)")
     .run(DASHBOARD_SCHEMA_VERSION, appliedAt);

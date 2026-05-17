@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync, statSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { createJob, finishJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
 import { startSpan, endSpan } from "../tracing/tracer.ts";
+import { queueDiagnosis } from "../reasoner/agent.ts";
+import { matchPlaybook, applyPlaybookAction, recordPlaybookRun } from "../reasoner/playbooks.ts";
 import {
   readBuilderRun,
   readBuilderRuns,
@@ -14,6 +16,7 @@ import {
   readBuilderPasses,
   readBuilderArtifacts,
   parseAgentEntry,
+  isBuilderProjectRootAllowlisted,
   type BuilderRun,
   type BuilderWorkflow,
   type BuilderPass,
@@ -21,6 +24,11 @@ import {
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
 import { runDoctorReview, writeDoctorReport } from "./doctor.ts";
 import { getNextRunTime, isDue, getBackoffMs } from "./scheduler.ts";
+import { readSecretPlaintext } from "../governance/secrets.ts";
+import { createOrchestratorInstance, getOrchestratorInstance, findInstanceByRunId, recordBuilderPassResult } from "../orchestrator/adapter.ts";
+import { createApprovalRequest, getApprovalRequest } from "../governance/approvals.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import type { StepResult } from "../orchestrator/types.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 
@@ -48,6 +56,58 @@ function requireDb() {
 
 function now(): number {
   return Date.now();
+}
+
+// Extract human-readable text from claude --output-format stream-json output.
+// Prefers the final `result` event; falls back to collected assistant text chunks.
+function parseClaudeStreamJson(raw: string): string {
+  let finalResult = "";
+  const assistantChunks: string[] = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      const ev = JSON.parse(t) as Record<string, unknown>;
+      if (ev.type === "result" && typeof ev.result === "string") {
+        finalResult = ev.result;
+      } else if (ev.type === "assistant") {
+        const content = (ev.message as { content?: unknown[] } | undefined)?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if ((block as { type?: string; text?: string }).type === "text") {
+              assistantChunks.push((block as { text: string }).text);
+            }
+          }
+        }
+      }
+    } catch { /* skip malformed lines */ }
+  }
+  const text = (finalResult || assistantChunks.join("")).trim();
+  return text.slice(0, 2000) || raw.slice(-500);
+}
+
+function loadSecretsForPass(workflow: BuilderWorkflow): Record<string, string> {
+  const names = workflow.config.secretNames ?? [];
+  if (!names.length) return {};
+  const secrets: Record<string, string> = {};
+  for (const name of names) {
+    const plaintext = readSecretPlaintext(name);
+    if (plaintext !== null) {
+      secrets[`SECRET_${name.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`] = plaintext;
+    }
+  }
+  return secrets;
+}
+
+function redactSecrets(text: string, secrets: Record<string, string>): string {
+  if (!Object.keys(secrets).length) return text;
+  let result = text;
+  for (const [name, value] of Object.entries(secrets)) {
+    if (value && value.length > 0) {
+      result = result.split(value).join(`[REDACTED:${name}]`);
+    }
+  }
+  return result;
 }
 
 // Reads the live model-health file to produce a concise briefing for agents.
@@ -88,25 +148,85 @@ function readModelBriefing(selectedModel: string | null, agent: string): string 
 
 // ── Tmux helpers ───────────────────────────────────────────────────────────
 
-function tmuxExists(session: string): boolean {
-  const result = spawnSync("tmux", ["has-session", "-t", session], { encoding: "utf8" });
+function tmuxSocket(tenantId: string): string {
+  return `tib-${tenantId}`;
+}
+
+export { tmuxSocket };
+
+function tmuxEnsureServer(socket: string): void {
+  spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", "init"], { encoding: "utf8" });
+}
+
+function tmuxExists(socket: string, session: string): boolean {
+  const result = spawnSync("tmux", ["-L", socket, "has-session", "-t", session], { encoding: "utf8" });
   return result.status === 0;
 }
 
-function tmuxKill(session: string): void {
-  spawnSync("tmux", ["kill-session", "-t", session], { encoding: "utf8" });
+function tmuxKill(socket: string, session: string): void {
+  spawnSync("tmux", ["-L", socket, "kill-session", "-t", session], { encoding: "utf8" });
 }
 
-function tmuxSendKeys(session: string, keys: string): void {
-  spawnSync("tmux", ["send-keys", "-t", session, keys], { encoding: "utf8" });
+function tmuxSendKeys(socket: string, session: string, keys: string): void {
+  spawnSync("tmux", ["-L", socket, "send-keys", "-t", session, keys], { encoding: "utf8" });
 }
 
-function tmuxCapturePane(session: string): string {
-  const result = spawnSync("tmux", ["capture-pane", "-p", "-t", session], {
+function tmuxCapturePane(socket: string, session: string): string {
+  const result = spawnSync("tmux", ["-L", socket, "capture-pane", "-p", "-t", session], {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
   });
   return result.stdout ?? "";
+}
+
+function tmuxPanePids(socket: string, session: string): number[] {
+  const result = spawnSync("tmux", ["-L", socket, "list-panes", "-t", session, "-F", "#{pane_pid}"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return [];
+  return (result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => Number.parseInt(line.trim(), 10))
+    .filter((pid) => Number.isFinite(pid) && pid > 0);
+}
+
+function processHasChildren(pid: number): boolean {
+  const result = spawnSync("pgrep", ["-P", String(pid)], {
+    encoding: "utf8",
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+function tmuxPaneHasChildProcess(socket: string, session: string): boolean {
+  return tmuxPanePids(socket, session).some((pid) => processHasChildren(pid));
+}
+
+function killDetachedRunProcesses(runId: string): void {
+  const result = spawnSync("ps", ["-eo", "pid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.status !== 0) return;
+
+  const pids = (result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      const match = trimmed.match(/^(\d+)\s+(.+)$/);
+      if (!match) return null;
+      const pid = Number.parseInt(match[1], 10);
+      const command = match[2];
+      if (!Number.isFinite(pid) || pid <= 0) return null;
+      if (!command.includes(runId)) return null;
+      if (command.includes("ps -eo pid=,command=")) return null;
+      return String(pid);
+    })
+    .filter((pid): pid is string => Boolean(pid));
+
+  if (pids.length > 0) {
+    spawnSync("kill", ["-TERM", ...pids], { encoding: "utf8" });
+  }
 }
 
 // ── Run helpers ────────────────────────────────────────────────────────────
@@ -471,19 +591,42 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
     "",
   ];
 
+  // For the very first pass of a new run, prepend findings from the previous run so work is not restarted from scratch.
+  if (prevPasses.length === 0 && workflow.lastRunId && workflow.lastRunId !== run.id) {
+    const lastRun = readBuilderRun(workflow.lastRunId);
+    if (lastRun) {
+      const lastPasses = readBuilderPasses(lastRun.id).sort((a, b) => a.sequence - b.sequence);
+      if (lastPasses.length > 0) {
+        lines.push(`--- Previous Run (${workflow.lastRunId.slice(0, 12)}, ${lastRun.status}) — carry forward ---`);
+        for (const p of lastPasses) {
+          const wasTimeout = p.failureClass === "pass-timeout";
+          const label = wasTimeout ? "interrupted/timeout — partial work preserved" : p.status;
+          lines.push(`  Pass ${p.sequence} (${p.agent ?? "?"}, ${label}): ${(p.summary ?? "no summary").slice(0, 400)}`);
+        }
+        lines.push("Continue from where the previous run left off. Check the plan for remaining unchecked items.");
+        lines.push("");
+      }
+    }
+  }
+
   for (const pass of prevPasses.sort((a, b) => a.sequence - b.sequence)) {
     const artifacts = readBuilderArtifacts(run.id).filter((a) => a.passId === pass.id);
     const validations = readBuilderValidations(run.id).filter((v) => v.passId === pass.id);
 
-    lines.push(`--- Pass ${pass.sequence} (${pass.agent ?? "?"}, ${pass.status}) ---`);
+    const wasTimeout = pass.failureClass === "pass-timeout";
+    const statusLabel = wasTimeout ? "interrupted/timeout — partial work preserved" : pass.status;
+    lines.push(`--- Pass ${pass.sequence} (${pass.agent ?? "?"}, ${statusLabel}) ---`);
     if (pass.summary) {
-      lines.push(`Summary: ${pass.summary.slice(0, 500)}`);
+      lines.push(`Summary: ${pass.summary.slice(0, wasTimeout ? 1000 : 500)}`);
     }
     const stdoutArtifact = artifacts.find((a) => a.kind === "stdout");
     if (stdoutArtifact && existsSync(stdoutArtifact.path)) {
       try {
-        const content = readFileSync(stdoutArtifact.path, "utf8").slice(-2000);
-        if (content) lines.push(`Last stdout (2KB): ${content.slice(-1500)}`);
+        const raw = readFileSync(stdoutArtifact.path, "utf8");
+        const excerptLen = wasTimeout ? 4000 : 2000;
+        const content = pass.agent === "claude" ? parseClaudeStreamJson(raw) : raw.slice(-excerptLen);
+        const label = wasTimeout ? `Interrupted output (${excerptLen / 1000}KB)` : "Last stdout (2KB)";
+        if (content) lines.push(`${label}: ${content.slice(-excerptLen)}`);
       } catch { /* ignore */ }
     }
     const validationResults = validations.map((v) => `${v.kind}:${v.status}`).join(", ");
@@ -550,7 +693,7 @@ async function startNextPass(
     : selectModelForRole(role, workflow.config, agent);
   const { model, provider, reason: modelReason } = selection;
 
-  const phase = nextSequence === 1 ? "plan" : nextSequence === 2 ? "implement" : "review";
+  const phase = agent === "claude" ? "plan" : agent === "codex" ? "review" : "implement";
 
   const passId = createBuilderPass({
     runId: run.id,
@@ -573,7 +716,8 @@ async function startNextPass(
 
   // Build continuation context
   const continuationContext = buildContinuationContext(workflow, run, nextSequence, agent, model);
-  const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext, embeddedEffort);
+  const secrets = loadSecretsForPass(workflow);
+  const scriptPath = writePassScript(run.id, workflow, agent, model, nextSequence, continuationContext, embeddedEffort, secrets);
 
   const jobId = `job_${randomUUID()}`;
   createJob({
@@ -597,7 +741,9 @@ async function startNextPass(
   updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
 
   const session = tmuxSessionName(run.id, nextSequence);
-  const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], { encoding: "utf8" });
+  const socket = tmuxSocket(workflow.tenantId);
+  tmuxEnsureServer(socket);
+  const spawnResult = spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], { encoding: "utf8" });
   if (spawnResult.status !== 0) {
     const error = spawnResult.stderr || `tmux spawn failed (exit ${spawnResult.status})`;
     updateBuilderPass(passId, { status: "failed", finishedAt: now(), error });
@@ -608,18 +754,23 @@ async function startNextPass(
 // ── Builder run / pass / artifact writers ──────────────────────────────────
 
 export function createBuilderRun(workflowId: string, trigger: string, actor = "operator"): BuilderRun {
+  const workflow = readBuilderWorkflow(workflowId);
+  if (!workflow) throw new Error("workflow not found");
+  const ctx = getCurrentTenantContext();
+  const tenantId = workflow.tenantId || ctx.tenantId;
   const db = requireDb();
   const id = `br_${randomUUID()}`;
   const ts = now();
 
   db.query(`
     INSERT INTO builder_runs
-      (id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
+      (id, workflow_id, tenant_id, trigger, status, started_at, finished_at, current_pass_id,
        stop_requested_at, stop_requested_by, result_json, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     workflowId,
+    tenantId,
     trigger,
     "running",
     ts,
@@ -1066,6 +1217,7 @@ function writePassScript(
   passNumber = 1,
   continuationContext?: string,
   effort?: string,
+  secrets?: Record<string, string>,
 ): string {
   ensureRunsDir();
   const dir = runDir(runId);
@@ -1084,7 +1236,7 @@ function writePassScript(
     const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
     command = `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never${modelFlag} -o "$BUILDER_DIR/codex-output.txt" -C "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "claude") {
-    command = `claude --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
+    command = `claude --print --output-format stream-json --verbose --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "opencode") {
     const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
     command = `opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions${modelFlag} "$(cat "$BUILDER_PROMPT_FILE")"`;
@@ -1145,6 +1297,7 @@ function writePassScript(
       '  cat > "$child_script" << \'CHILD_EOF\'',
       '#!/bin/bash',
       'set -uo pipefail',
+      'echo "$$" > "$BUILDER_CHILD_DIR/pid"',
       'run_child() {',
       '  local task',
       '  task="$(cat "$BUILDER_CHILD_DIR/task.txt")"',
@@ -1153,7 +1306,7 @@ function writePassScript(
       '  elif [ "$BUILDER_CHILD_AGENT" = "codex" ]; then',
       '    codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never --model "$BUILDER_CHILD_MODEL" -o "$BUILDER_CHILD_DIR/output.txt" -C "$BUILDER_PROJECT_ROOT" "$task"',
       '  elif [ "$BUILDER_CHILD_AGENT" = "claude" ]; then',
-      '    claude --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$task"',
+      '    claude --print --output-format stream-json --verbose --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$task"',
       '  elif [ "$BUILDER_CHILD_AGENT" = "gemini" ]; then',
       '    printf "%s" "$task" | gemini --skip-trust --approval-mode auto_edit --model "$BUILDER_CHILD_MODEL" --prompt -',
       '  else',
@@ -1171,9 +1324,16 @@ function writePassScript(
       'echo "[builder-child] $BUILDER_CHILD_ID status=$status exit=$code finished_at=$(date -Iseconds)" >> "$BUILDER_CHILD_PASS_LOG"',
       'CHILD_EOF',
       '  chmod +x "$child_script"',
-      `  tmux new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
-      '  local child_pid=$(tmux list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
-      '  echo "$child_pid" > "$child_dir/pid"',
+      `  tmux new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env PATH=\\"$PATH\\" BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
+      '  local child_pid=""',
+      '  for _ in 1 2 3 4 5 6 7 8 9 10; do',
+      '    if [ -s "$child_dir/pid" ]; then child_pid="$(cat "$child_dir/pid" 2>/dev/null)"; break; fi',
+      '    sleep 0.1',
+      '  done',
+      '  if [ -z "$child_pid" ]; then',
+      '    child_pid=$(tmux list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
+      '    echo "$child_pid" > "$child_dir/pid"',
+      '  fi',
       '  echo "{\\"id\\":\\"$child_id\\",\\"agent\\":\\"$child_agent\\",\\"model\\":\\"$child_model\\",\\"pid\\":\\"$child_pid\\",\\"spawnedAt\\":\\"$(date -Iseconds)\\"}" >> "$BUILDER_DIR/children-manifest.jsonl"',
       '  echo "[builder-child] $child_id pid=$child_pid agent=$child_agent model=$child_model spawned_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
       '  echo "$child_pid"',
@@ -1223,7 +1383,9 @@ function writePassScript(
       '  local child_id',
       '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
       '  [ -z "$child_id" ] && echo "NOT_FOUND" && return',
-      '  tail -200 "$BUILDER_DIR/children/$child_id/stdout.log" "$BUILDER_DIR/children/$child_id/stderr.log" 2>/dev/null',
+      '  [ -f "$BUILDER_DIR/children/$child_id/stdout.log" ] && tail -200 "$BUILDER_DIR/children/$child_id/stdout.log"',
+      '  [ -f "$BUILDER_DIR/children/$child_id/stderr.log" ] && tail -200 "$BUILDER_DIR/children/$child_id/stderr.log"',
+      '  return 0',
       '}',
       'builder_child_kill() {',
       '  local child_pid="$1"',
@@ -1253,6 +1415,16 @@ function writePassScript(
     writeFileSync(continuationContextFile, continuationContext, { encoding: "utf8" });
   }
 
+  const secretExportBlock = (() => {
+    if (!secrets || Object.keys(secrets).length === 0) return "";
+    const lines: string[] = [];
+    for (const [name, value] of Object.entries(secrets)) {
+      const safe = value.replace(/'/g, "'\\''");
+      lines.push(`export ${name}='${safe}'`);
+    }
+    return lines.join("\n") + "\n";
+  })();
+
   const script = `#!/bin/bash
 set -euo pipefail
 BUILDER_DIR="${dir}"
@@ -1263,7 +1435,7 @@ export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE
 EXIT_CODE=143
 trap 'echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"' EXIT
 mkdir -p "$BUILDER_DIR/children" "$BUILDER_DIR/bin"
-echo "[builder] Pass ${passNumber} starting at $(date -Iseconds)" | tee "$BUILDER_DIR/${stdoutLog}"
+${secretExportBlock}echo "[builder] Pass ${passNumber} starting at $(date -Iseconds)" | tee "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Agent: ${agent}, Model: ${model ?? "default"}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Project: ${workflow.projectRoot}" >> "$BUILDER_DIR/${stdoutLog}"
 echo "[builder] Plan: ${workflow.planFile}" >> "$BUILDER_DIR/${stdoutLog}"
@@ -1308,6 +1480,9 @@ export async function startWorkflowRun(
 ): Promise<BuilderRun> {
   const workflow = readBuilderWorkflow(workflowId);
   if (!workflow) throw new Error("workflow not found");
+  if (!isBuilderProjectRootAllowlisted(workflow.projectRoot)) {
+    throw new Error(`project root is not allowlisted: ${workflow.projectRoot}`);
+  }
   const STARTABLE_STATUSES = new Set(["ready", "draft", "paused", "done", "failed", "blocked"]);
   if (!STARTABLE_STATUSES.has(workflow.status)) {
     throw new Error(`workflow cannot be started from status ${workflow.status}`);
@@ -1326,6 +1501,22 @@ export async function startWorkflowRun(
 
   // Create run
   const run = createBuilderRun(workflowId, trigger, actor);
+
+  // Phase 5: create orchestrator instance for the run
+  const orchestratorInstanceId = createOrchestratorInstance(run.id, workflowId);
+
+  // 4-eyes approval gate: if workflow requires two approvers and not already approved trigger, enter pending-approval
+  if (workflow.config.requiresTwoApprovers && trigger !== "approved") {
+    const { tenantId } = getCurrentTenantContext();
+    const requiredCount = workflow.config.requiredApproverCount ?? 2;
+    const expiresAt = workflow.config.approvalExpiresAtMs
+      ? Date.now() + workflow.config.approvalExpiresAtMs
+      : undefined;
+    createApprovalRequest(workflowId, run.id, tenantId, actor, requiredCount, expiresAt);
+    updateBuilderRun(run.id, { status: "pending-approval" });
+    updateBuilderWorkflowStatus(workflowId, "pending-approval");
+    return run;
+  }
 
   // Acquire lock
   if (!acquireProjectLock(workflow.projectRoot, workflowId, run.id, actor)) {
@@ -1357,9 +1548,12 @@ export async function startWorkflowRun(
     runBackup(workflow, run, passId);
   }
 
+  // Load secrets for this pass (for env var injection + redaction)
+  const secrets = loadSecretsForPass(workflow);
+
   // Create job
   const jobId = `job_${randomUUID()}`;
-  const scriptPath = writePassScript(run.id, workflow, agent, model, 1, undefined, embeddedEffort);
+  const scriptPath = writePassScript(run.id, workflow, agent, model, 1, undefined, embeddedEffort, secrets);
   createJob({
     id: jobId,
     kind: "builder.agent-pass",
@@ -1402,7 +1596,9 @@ export async function startWorkflowRun(
 
   // Spawn tmux
   const session = tmuxSessionName(run.id, 1);
-  const spawnResult = spawnSync("tmux", ["new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], {
+  const socket = tmuxSocket(workflow.tenantId);
+  tmuxEnsureServer(socket);
+  const spawnResult = spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], {
     encoding: "utf8",
   });
 
@@ -1427,19 +1623,20 @@ export async function stopWorkflowRun(
   if (!run) throw new Error("run not found");
 
   // Kill tmux sessions for all passes (pass 1 and beyond)
+  const socket = tmuxSocket(run.tenantId);
   const passes = readBuilderPasses(runId);
   for (const pass of passes) {
     const session = tmuxSessionName(runId, pass.sequence);
-    if (tmuxExists(session)) {
-      tmuxKill(session);
+    if (tmuxExists(socket, session)) {
+      tmuxKill(socket, session);
     }
     // Kill child tmux sessions for this run only.
     const childPattern = `builder-child-${runId}_`;
     try {
-      const listResult = spawnSync("tmux", ["list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
+      const listResult = spawnSync("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], { encoding: "utf8" });
       const childSessions = (listResult.stdout ?? "").split(/\r?\n/).filter((s) => s.startsWith(childPattern));
       for (const childSession of childSessions) {
-        tmuxKill(childSession);
+        tmuxKill(socket, childSession);
       }
     } catch { /* ignore */ }
   }
@@ -1533,10 +1730,12 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   }
 
   const workflow = readBuilderWorkflow(run.workflowId);
+  const socket = tmuxSocket(run.tenantId);
 
   const session = tmuxSessionName(runId, passSeq);
-  if (tmuxExists(session)) {
-    const paneOutput = tmuxCapturePane(session);
+  const sessionExists = tmuxExists(socket, session);
+  if (sessionExists) {
+    const paneOutput = tmuxCapturePane(socket, session);
     if (paneOutput) {
       updateJobOutputForRun(runId, paneOutput);
     }
@@ -1562,6 +1761,61 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       if (existsSync(stdoutPath)) currentSize += statSync(stdoutPath).size;
       if (existsSync(stderrPath)) currentSize += statSync(stderrPath).size;
     } catch { /* ignore */ }
+    const recordedExitCode = readExitCode(runId, passSeq);
+    const paneHasChild = tmuxPaneHasChildProcess(socket, session);
+    const noChildSince = typeof monitor.noChildSince === "number"
+      ? monitor.noChildSince
+      : null;
+    const STALE_PANE_GRACE_MS = 15_000;
+    if (recordedExitCode !== null) {
+      console.log(`[builder] run ${runId} pass ${passSeq} finished but tmux session still exists; finalizing recorded exit ${recordedExitCode}`);
+      tmuxKill(socket, session);
+    } else if (!paneHasChild) {
+      const firstNoChildAt = noChildSince ?? checkedAt;
+      const staleForMs = checkedAt - firstNoChildAt;
+      if (staleForMs > STALE_PANE_GRACE_MS) {
+        console.error(`[builder] run ${runId} pass ${passSeq} has stale tmux session with no child process for ${staleForMs}ms; finalizing as interrupted`);
+        try {
+          appendFileSync(stdoutPath, `\n[builder-warn] Tmux session had no child process for ${Math.round(staleForMs / 1000)}s; finalizing pass as interrupted.\n`);
+        } catch { /* ignore */ }
+        tmuxKill(socket, session);
+        killDetachedRunProcesses(runId);
+      } else {
+        updateBuilderRun(runId, {
+          result: {
+            ...resultObj,
+            runnerMonitor: {
+              ...monitor,
+              lastOutputSize: currentSize,
+              lastOutputAt,
+              passSeq,
+              noChildSince: firstNoChildAt,
+            },
+          },
+        });
+        return run;
+      }
+    } else if (noChildSince !== null) {
+      updateBuilderRun(runId, {
+        result: {
+          ...resultObj,
+          runnerMonitor: {
+            ...monitor,
+            lastOutputSize: currentSize,
+            lastOutputAt,
+            passSeq,
+            noChildSince: undefined,
+          },
+        },
+      });
+    }
+
+    if (recordedExitCode === null && !paneHasChild && noChildSince !== null && checkedAt - noChildSince > STALE_PANE_GRACE_MS) {
+      // Fall through to the normal completion path below. There is no exit code,
+      // so it will be classified as an interrupted run instead of wedging.
+    } else if (recordedExitCode !== null) {
+      // Fall through to the normal completion path below with the recorded exit.
+    } else {
     const STALL_WARN_MS = 5 * 60 * 1000; // 300s — warn but don't kill yet
     const STALL_THRESHOLD_MS = (workflow?.config.riskPolicy?.passTimeoutSeconds ?? 900) * 1000;
     const outputChanged = lastOutputSize === null || currentSize !== lastOutputSize;
@@ -1580,7 +1834,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     if (!outputChanged && outputAgeMs > STALL_THRESHOLD_MS) {
       // No output growth and past timeout — kill as stalled
       console.error(`[builder] run ${runId} pass ${passSeq} STALLED (no output change for >${STALL_THRESHOLD_MS}ms, outputAge=${outputAgeMs}ms)`);
-      tmuxKill(session);
+      tmuxKill(socket, session);
       updateBuilderPass(passId!, { status: "failed", finishedAt: now(), failureClass: "agent-stalled", error: `Stalled: no output change for ${Math.round(STALL_THRESHOLD_MS / 1000)}s` });
       updateBuilderRun(runId, { status: "failed", finishedAt: now(), error: `Stalled: no output change for ${Math.round(STALL_THRESHOLD_MS / 1000)}s`, currentPassId: null });
       finishJobByRun(runId, "failed", { error: "stalled" });
@@ -1614,13 +1868,13 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
           try {
             const entry = JSON.parse(line) as { id: string; agent: string; model: string; pid: string; spawnedAt: string };
             const childSession = `builder-child-${entry.id}`;
-            if (tmuxExists(childSession)) {
+            if (tmuxExists(socket, childSession)) {
               // Child still running — check for timeout
               const childAgeMs = now() - new Date(entry.spawnedAt).getTime();
               const childTimeoutMs = 600_000; // 10 min default child timeout
               if (childAgeMs > childTimeoutMs) {
                 console.error(`[builder] child ${entry.id} timed out after ${childAgeMs}ms`);
-                tmuxKill(childSession);
+                tmuxKill(socket, childSession);
                 const childDir = join(runDir(runId), "children", entry.id);
                 writeFileSync(join(childDir, "status"), "TIMEOUT");
                 writeFileSync(join(childDir, "exit.code"), "124");
@@ -1632,6 +1886,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     }
 
     return run;
+    }
   }
 
   // Tmux session is gone — process finished.
@@ -1648,6 +1903,20 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const stderr = readLogFile(runId, `pass-${passSeq}-stderr.log`);
   const codexOutput = readLogFile(runId, "codex-output.txt");
 
+  // Apply secret redaction to stdout before any processing
+  if (workflow?.config.secretNames?.length) {
+    try {
+      const secrets = loadSecretsForPass(workflow);
+      const redacted = redactSecrets(stdout, secrets);
+      const redactedPath = join(runDir(runId), `pass-${passSeq}-stdout.log`);
+      if (redacted !== stdout) {
+        writeFileSync(redactedPath, redacted, { encoding: "utf8" });
+      }
+    } catch (e) {
+      console.error("[builder] secret redaction failed:", e);
+    }
+  }
+
   // Detect codex exhaustion from stdout (codex CLI prints this to stdout)
   const codexExhausted =
     stdout.includes("hit your usage limit") || stdout.includes("usage limit") ||
@@ -1655,9 +1924,17 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
 
   if (passId) {
     const passStatus = exitCode === 0 ? "success" : "failed";
-    const summary = codexOutput || stdout.slice(-2000);
+    const passAgent = currentPass?.agent ?? "";
+    const rawSummary = codexOutput || stdout;
+    const summary = passAgent === "claude"
+      ? parseClaudeStreamJson(rawSummary)
+      : rawSummary.slice(-2000);
     const failureClass = codexExhausted
       ? "codex-exhausted"
+      : exitCode === 124
+      ? "pass-timeout"
+      : exitCode === 143 || exitCode === 137
+      ? "agent-stalled"
       : exitCode === null
       ? "unknown"
       : exitCode === 0
@@ -1675,6 +1952,25 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
         extractPassAnalytics(runId, passId, passSeq, run.startedAt ?? null, ts);
       } catch (err) {
         console.error("[builder] extractPassAnalytics failed:", err);
+      }
+    }
+
+    if (passStatus === "failed" && passId) {
+      try { queueDiagnosis(passId, runId, run.workflowId); } catch (e) { console.error("[builder] queueDiagnosis failed:", e); }
+      if (workflow?.config.autoApplySafePlaybooks && failureClass && isDashboardDbEnabled()) {
+        const db = getDashboardDb()!;
+        try {
+          const playbook = matchPlaybook(db, failureClass);
+          if (playbook?.isSafe) {
+            const results: string[] = [];
+            for (const action of playbook.actions) {
+              const r = await applyPlaybookAction(action, run.workflowId, runId, passId);
+              results.push(r);
+            }
+            recordPlaybookRun(db, playbook.id, null, passId, "auto", playbook.actions, results.join(","));
+            try { appendFileSync(join(runDir(runId), `pass-${passSeq}-stdout.log`), `\n[reasoner] auto-applied playbook "${playbook.name}" (${failureClass}): ${results.join(", ")}\n`); } catch { /* ignore */ }
+          }
+        } catch (e) { console.error("[builder] auto-playbook failed:", e); }
       }
     }
   }
@@ -1706,9 +2002,30 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     return vs && vs.status === "success";
   });
 
+  // Set when the plan file has 0 unchecked items — work is done, stop continuation
+  // regardless of maxPasses or auto-continue mode.
+  let planComplete = false;
+
+  const checkPlanComplete = (planFile: string): boolean => {
+    try {
+      const planText = require("fs").readFileSync(planFile, "utf8") as string;
+      return (planText.match(/^\s*- \[ \]/gm) ?? []).length === 0;
+    } catch { return false; }
+  };
+
   let runStatus: "success" | "failed" = "failed";
   if (exitCode === 0) {
     runStatus = !hasValidationConfig || allValidationsPassed ? "success" : "failed";
+    if (runStatus === "success" && workflow?.planFile) {
+      planComplete = checkPlanComplete(workflow.planFile);
+    }
+  } else if (codexExhausted || exitCode === 143 || exitCode === 137) {
+    // Agent exhausted or stalled: treat as success if the plan file shows all items checked.
+    const planFile = workflow?.planFile;
+    if (planFile && checkPlanComplete(planFile)) {
+      runStatus = "success";
+      planComplete = true;
+    }
   }
 
   // Build a human-readable error message (never raw stderr, which is agent terminal output)
@@ -1728,39 +2045,99 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       : "Validation failed";
   }
 
-  updateBuilderRun(runId, {
-    status: runStatus,
-    finishedAt: ts,
-    currentPassId: null,
-    error: runError,
-  });
-
-  // Finish jobs
-  const db = requireDb();
-  db.query(`
-    UPDATE jobs
-    SET state = ?, status = ?, finished_at = ?, output_tail = COALESCE(?, output_tail), error = ?, exit_code = ?
-    WHERE target_type = ? AND target_id = ? AND state = ?
-  `).run(
-    runStatus,
-    runStatus,
-    ts,
-    stdout ? stdout.slice(-8000) : null,
-    runError,
-    exitCode,
-    "builder-run",
-    runId,
-    "running",
-  );
-
-  // Check if we should continue to next pass before releasing lock
+  // Determine continuation before writing final run state
   const AUTO_CONTINUE_MODES = new Set(["auto-continue", "scheduled", "permanent"]);
+
+  // Fallback: when a reviewer/CLI agent is exhausted or times out, retry with a free opencode model
+  // instead of failing the whole run. Only applies when there are remaining passes budget.
+  const isPassTimeout = exitCode === 124;
+  const isRecoverableFailure = runStatus === "failed" && (
+    codexExhausted ||
+    (isPassTimeout && passSeq >= (workflow?.config.agentOrder.length ?? 99))
+  );
+  const fallbackAgent = isRecoverableFailure && workflow && passSeq < workflow.config.riskPolicy.maxPasses
+    ? (workflow.config.modelPolicy?.fallbackTargets ?? [])
+        .find((t) => !t.startsWith("codex") && !t.startsWith("claude") && !t.startsWith("gemini"))
+    : null;
+
+  if (fallbackAgent && workflow && run) {
+    // Retry this same logical pass with the fallback model, treating it as a new sequence slot
+    const fallbackEntry = `opencode:${fallbackAgent}`;
+    const overriddenOrder = [...(workflow.config.agentOrder ?? [])];
+    // Append a fallback opencode entry so startNextPass picks it up
+    overriddenOrder.splice(passSeq, 0, fallbackEntry);
+    updateBuilderRun(runId, { currentPassId: null, error: null });
+    void startNextPass(
+      { ...workflow, config: { ...workflow.config, agentOrder: overriddenOrder } },
+      run,
+      passSeq + 1,
+    );
+    return;
+  }
+
+  // A pass-timeout means the agent ran out of time but may have made partial progress.
+  // In auto-continue/once modes, allow continuation to the next pass rather than failing the run.
+  const canContinueAfterTimeout = isPassTimeout && Boolean(workflow && (
+    (AUTO_CONTINUE_MODES.has(workflow.mode) && passSeq < workflow.config.riskPolicy.maxPasses) ||
+    (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
+  ));
+
+  // "once" mode runs all agentOrder passes exactly once; auto-continue/scheduled/permanent
+  // keep going until maxPasses is reached or a pass fails.
+  // Never continue when the plan file has 0 unchecked items — work is complete.
   const shouldContinue = Boolean(
     workflow &&
-    runStatus === "success" &&
-    AUTO_CONTINUE_MODES.has(workflow.mode) &&
-    passSeq < workflow.config.riskPolicy.maxPasses,
+    !planComplete &&
+    (runStatus === "success" || canContinueAfterTimeout) &&
+    (
+      (AUTO_CONTINUE_MODES.has(workflow.mode) && passSeq < workflow.config.riskPolicy.maxPasses) ||
+      (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
+    ),
   );
+
+  // Phase 5: advance orchestrator instance after pass completion
+  const instanceId = run.orchestratorInstanceId || findInstanceByRunId(runId)?.id;
+  if (instanceId) {
+    try {
+      const spawnPassResult: StepResult = exitCode === 0
+        ? { status: "complete", output: { done: runStatus === "success" && !shouldContinue } }
+        : { status: "failed", error: runError ?? `exit code ${exitCode}` };
+
+      recordBuilderPassResult(instanceId, passSeq - 1, spawnPassResult);
+    } catch (err) {
+      console.error("[builder] recordBuilderPassResult failed:", err);
+    }
+  }
+
+  if (!shouldContinue) {
+    updateBuilderRun(runId, {
+      status: runStatus,
+      finishedAt: ts,
+      currentPassId: null,
+      error: runError,
+    });
+
+    // Finish jobs
+    const db = requireDb();
+    db.query(`
+      UPDATE jobs
+      SET state = ?, status = ?, finished_at = ?, output_tail = COALESCE(?, output_tail), error = ?, exit_code = ?
+      WHERE target_type = ? AND target_id = ? AND state = ?
+    `).run(
+      runStatus,
+      runStatus,
+      ts,
+      stdout ? stdout.slice(-8000) : null,
+      runError,
+      exitCode,
+      "builder-run",
+      runId,
+      "running",
+    );
+  } else {
+    // Inter-pass: clear currentPassId so startNextPass can set the new one; keep run "running"
+    updateBuilderRun(runId, { currentPassId: null, error: null });
+  }
 
   // Doctor mode: run doctor review after successful pass, but do NOT auto-continue
   if (workflow && runStatus === "success" && workflow.mode === "doctor" && passId) {

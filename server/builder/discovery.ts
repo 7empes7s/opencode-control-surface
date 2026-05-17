@@ -3,7 +3,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getModelsDetail } from "../adapters/models.ts";
 import { getCategorizedModels } from "./modelSelector.ts";
-import { WORKSPACE_ROOTS, normalizeWorkspace, type WorkspaceRisk } from "../api/workspaces.ts";
+import { WORKSPACE_ROOTS, getProvisionedWorkspaceRoots, normalizeWorkspace, type WorkspaceRisk } from "../api/workspaces.ts";
 import { isProjectRootAllowlisted } from "./provision.ts";
 
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
@@ -264,23 +264,20 @@ export function getBuilderProjects(): BuilderProject[] {
       ...PROJECT_TARGETS[entry.path],
     }));
 
-  // Add dynamically provisioned projects from process.env
-  const allKey = "BUILDER_PROVISIONED_ROOTS";
-  const provisioned = process.env[allKey] ?? "";
-  const provisionedProjects: BuilderProject[] = [];
-  for (const rootPath of provisioned.split(",").filter(Boolean)) {
-    if (!existsSync(rootPath)) continue;
-    if (staticProjects.some(p => p.root === rootPath)) continue;
-    const labelKey = `BUILDER_ALLOWED_ROOT_${Buffer.from(rootPath).toString("base64").replace(/[/+=]/g, "_")}`;
-    const label = process.env[labelKey] ?? basename(rootPath);
-    provisionedProjects.push({
-      root: rootPath,
-      label,
-      risk: "medium",
-      writable: true,
-      note: "Provisioned project",
-    });
-  }
+  const provisionedProjects = getProvisionedWorkspaceRoots()
+    .filter((project) => existsSync(project.path))
+    .filter((project) => !staticProjects.some((staticProject) => staticProject.root === project.path))
+    .map((project) => ({
+      root: project.path,
+      label: project.label,
+      risk: project.risk,
+      writable: project.writable,
+      note: project.note,
+      service: project.service,
+      internalUrl: project.internalUrl,
+      publicUrl: project.publicUrl,
+      defaultPlan: project.defaultPlan,
+    }));
 
   return [...staticProjects, ...provisionedProjects];
 }

@@ -1,5 +1,5 @@
 import type { HomeData, ServicePill } from "../api/types.ts";
-import { isDashboardDbEnabled } from "./dashboard.ts";
+import { getDashboardDb, isDashboardDbEnabled } from "./dashboard.ts";
 import { writeEvent, writeMetricSample } from "./writer.ts";
 
 export type PrevSnapshot = {
@@ -8,6 +8,7 @@ export type PrevSnapshot = {
   vastRunwayBucket: "ok" | "warn-24h" | "crit-6h" | null;
   modelsBucket: "healthy" | "degraded" | "down" | null;
   diskBucket: "ok" | "warn-70" | "crit-85" | null;
+  diskProjectionBucket: "ok" | "projected-90" | null;
   queueHealthBucket: "ok" | "approval-warn" | "approval-critical" | "paused-with-queue" | "queue-large" | null;
   doctorDecisionKey: string | null;
   doctorRateLimitCount: number;
@@ -17,6 +18,19 @@ export type PrevSnapshot = {
 let prevSnapshot: PrevSnapshot | null = null;
 
 type Severity = "info" | "warn" | "error";
+
+type DiskProjection = {
+  currentPct: number;
+  dailyGrowthPct: number;
+  projectedPct7d: number;
+  daysTo90: number;
+  sampleCount: number;
+  oldestTs: number;
+  newestTs: number;
+};
+
+const DISK_PROJECTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const DISK_PROJECTION_MIN_SPAN_MS = 60 * 60 * 1000;
 
 function logMetricError(metric: string, error: unknown): void {
   console.error(`[sampler] ${metric} failed`, error);
@@ -98,6 +112,82 @@ function getDiskBucket(home: HomeData): PrevSnapshot["diskBucket"] {
   }
   if (diskUsedPct >= 70) {
     return "warn-70";
+  }
+  return "ok";
+}
+
+function readDiskUsedPct(valueJson: string): number | null {
+  try {
+    const value = JSON.parse(valueJson) as { diskUsedPct?: unknown };
+    if (typeof value.diskUsedPct !== "number" || !Number.isFinite(value.diskUsedPct) || value.diskUsedPct <= 0) {
+      return null;
+    }
+    return value.diskUsedPct;
+  } catch {
+    return null;
+  }
+}
+
+function getDiskProjection(): DiskProjection | null {
+  const db = getDashboardDb();
+  if (!db) {
+    return null;
+  }
+
+  const rows = db.query(`
+    SELECT ts, value_json
+    FROM metric_samples
+    WHERE source = ? AND key = ? AND ts >= ?
+    ORDER BY ts ASC
+    LIMIT 512
+  `).all("hetzner", "load", Date.now() - DISK_PROJECTION_WINDOW_MS) as Array<{ ts: number; value_json: string }>;
+
+  const samples = rows
+    .map((row) => ({ ts: row.ts, diskUsedPct: readDiskUsedPct(row.value_json) }))
+    .filter((row): row is { ts: number; diskUsedPct: number } => row.diskUsedPct !== null);
+
+  if (samples.length < 2) {
+    return null;
+  }
+
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const spanMs = last.ts - first.ts;
+  if (spanMs < DISK_PROJECTION_MIN_SPAN_MS) {
+    return null;
+  }
+
+  const spanDays = spanMs / (24 * 60 * 60 * 1000);
+  const dailyGrowthPct = (last.diskUsedPct - first.diskUsedPct) / spanDays;
+  if (!Number.isFinite(dailyGrowthPct) || dailyGrowthPct <= 0) {
+    return {
+      currentPct: last.diskUsedPct,
+      dailyGrowthPct,
+      projectedPct7d: last.diskUsedPct,
+      daysTo90: Number.POSITIVE_INFINITY,
+      sampleCount: samples.length,
+      oldestTs: first.ts,
+      newestTs: last.ts,
+    };
+  }
+
+  return {
+    currentPct: last.diskUsedPct,
+    dailyGrowthPct,
+    projectedPct7d: last.diskUsedPct + dailyGrowthPct * 7,
+    daysTo90: (90 - last.diskUsedPct) / dailyGrowthPct,
+    sampleCount: samples.length,
+    oldestTs: first.ts,
+    newestTs: last.ts,
+  };
+}
+
+function getDiskProjectionBucket(projection: DiskProjection | null): PrevSnapshot["diskProjectionBucket"] {
+  if (!projection || !Number.isFinite(projection.daysTo90)) {
+    return projection ? "ok" : null;
+  }
+  if (projection.currentPct < 90 && projection.daysTo90 <= 7) {
+    return "projected-90";
   }
   return "ok";
 }
@@ -203,6 +293,10 @@ function diskSeverity(bucket: PrevSnapshot["diskBucket"]): Severity {
   return "info";
 }
 
+function diskProjectionSeverity(projection: DiskProjection): Severity {
+  return projection.daysTo90 <= 2 ? "error" : "warn";
+}
+
 function queueHealthSeverity(bucket: PrevSnapshot["queueHealthBucket"]): Severity {
   if (bucket === "approval-critical" || bucket === "paused-with-queue") {
     return "error";
@@ -224,6 +318,16 @@ function formatAge(ageMs: number | null): string {
   return `${Math.round(ageMs / 60000)}m`;
 }
 
+function formatDays(days: number): string {
+  if (!Number.isFinite(days)) {
+    return "unknown";
+  }
+  if (days >= 1) {
+    return `${Math.round(days * 10) / 10}d`;
+  }
+  return `${Math.max(Math.round(days * 24 * 10) / 10, 0)}h`;
+}
+
 function doctorDecisionSeverity(action: string): Severity {
   if (action === "kill" || action === "abandon" || action === "failed") {
     return "error";
@@ -235,12 +339,14 @@ function doctorDecisionSeverity(action: string): Severity {
 }
 
 function snapshotHome(home: HomeData): PrevSnapshot {
+  const diskProjection = getDiskProjection();
   return {
     services: Object.fromEntries(home.services.map((service) => [service.name, service.status])),
     gpuStatus: home.gpu.status,
     vastRunwayBucket: getVastRunwayBucket(home),
     modelsBucket: getModelsBucket(home),
     diskBucket: getDiskBucket(home),
+    diskProjectionBucket: getDiskProjectionBucket(diskProjection),
     queueHealthBucket: getQueueHealthBucket(home),
     doctorDecisionKey: getDoctorDecisionKey(home),
     doctorRateLimitCount: getDoctorRateLimitCount(home),
@@ -397,6 +503,36 @@ export function detectHomeTransitions(home: HomeData, prev: PrevSnapshot | null)
       });
     } catch (error) {
       console.error("[sampler] disk.bucket failed", error);
+    }
+  }
+
+  const diskProjection = getDiskProjection();
+  if (
+    prev.diskProjectionBucket !== null &&
+    next.diskProjectionBucket === "projected-90" &&
+    prev.diskProjectionBucket !== next.diskProjectionBucket &&
+    diskProjection
+  ) {
+    try {
+      writeEvent({
+        kind: "disk.projected_full",
+        severity: diskProjectionSeverity(diskProjection),
+        entityType: "hetzner",
+        entityId: "disk",
+        summary: `Disk projects to 90% in ${formatDays(diskProjection.daysTo90)} (${Math.round(diskProjection.currentPct * 10) / 10}% now, +${Math.round(diskProjection.dailyGrowthPct * 10) / 10} pct/day)`,
+        payload: {
+          currentPct: diskProjection.currentPct,
+          dailyGrowthPct: diskProjection.dailyGrowthPct,
+          projectedPct7d: diskProjection.projectedPct7d,
+          daysTo90: diskProjection.daysTo90,
+          sampleCount: diskProjection.sampleCount,
+          oldestTs: diskProjection.oldestTs,
+          newestTs: diskProjection.newestTs,
+        },
+        dedupeKey: dedupeKey("hetzner", "disk.projected_full", "projected-90"),
+      });
+    } catch (error) {
+      console.error("[sampler] disk.projected_full failed", error);
     }
   }
 

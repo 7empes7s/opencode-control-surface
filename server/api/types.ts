@@ -243,7 +243,7 @@ export interface ModelsDetail {
     isPaid: boolean;
     isOpenCode: boolean;
     isCli: boolean;
-    providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "other";
+    providerType: "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "nvidia" | "cloudflare" | "opencode" | "alibaba" | "other";
     contextWindow: number | null;
     params: number | null;
     resolvedModel: string | null;

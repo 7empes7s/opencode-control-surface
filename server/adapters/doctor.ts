@@ -10,6 +10,7 @@ export interface DoctorEntry {
   slug?: string;
   stage?: string;
   action?: string;
+  applied?: boolean;
   reason?: string;
   errorType?: string;
   class?: string;

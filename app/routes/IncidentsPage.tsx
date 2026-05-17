@@ -1,23 +1,61 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { Link } from "wouter";
 import { useApi } from "../hooks/useApi";
-import type { ActionDescriptor, EvidenceRef, IncidentsDetail } from "../../server/api/types";
-import { AnimatedNumber, IncidentHeatmap } from "../components/AnimatedCharts";
-import { SectionCard } from "../components/SectionCard";
 
-type IncidentEntry = IncidentsDetail["entries"][number];
-
-interface ActionCatalogData {
-  actions: ActionDescriptor[];
-  degraded: boolean;
-  sources: Record<string, "ok" | "error">;
+interface ReasonerIncident {
+  id: string;
+  clusterKey: string;
+  failureClass: string;
+  title: string;
+  firstSeen: number;
+  lastSeen: number;
+  occurrenceCount: number;
+  representativePassId: string;
+  representativeDiagnosisId: string;
+  status: "open" | "resolved";
 }
 
-function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+interface IncidentDetail extends ReasonerIncident {
+  members: Array<{
+    id: string;
+    passId: string;
+    diagnosisId: string;
+    addedAt: number;
+    failureClass: string;
+    rootCause: string;
+    confidence: string;
+  }>;
 }
 
-function fmtTs(ts: number): string {
-  return new Date(ts).toISOString().slice(0, 19).replace("T", " ") + " UTC";
+interface ReasonerDiagnosis {
+  id: string;
+  passId: string;
+  failureClass: string;
+  rootCauseHypothesis: string;
+  evidence: string[];
+  suggestedActions: string[];
+  confidence: string;
+}
+
+interface Playbook {
+  id: string;
+  name: string;
+  failureClass: string;
+  description: string;
+}
+
+function failureClassColor(fc: string): string {
+  if (fc === "lm_quality") return "amber";
+  if (fc === "transport_timeout" || fc === "capacity_rate_limit") return "amber";
+  if (fc === "infra_crash" || fc === "config_error") return "red";
+  if (fc === "test_regression") return "amber";
+  return "gray";
+}
+
+function confidenceColor(c: string): string {
+  if (c === "high") return "green";
+  if (c === "medium") return "amber";
+  return "gray";
 }
 
 function relTime(ts: number): string {
@@ -28,276 +66,226 @@ function relTime(ts: number): string {
   return `${Math.round(secs / 86400)}d ago`;
 }
 
-function errorColor(t: string): string {
-  if (t === "transport_timeout" || t === "capacity_rate_limit") return "amber";
-  if (t === "quality_garbage") return "amber";
-  return "red";
+function fmtDate(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
 }
 
-function riskColor(risk: ActionDescriptor["risk"]): string {
-  if (risk === "high" || risk === "destructive") return "red";
-  if (risk === "medium") return "amber";
-  return "green";
+function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
+  return <span className={`pill ${color}`}>{children}</span>;
 }
 
-function incidentTargetId(e: IncidentEntry): string {
-  return `${e.type}:${e.slug}:${e.stage}:${e.errorType}`;
-}
+function ExpandedIncidentCard({
+  incidentId,
+  onResolve,
+}: {
+  incidentId: string;
+  onResolve: () => void;
+}) {
+  const { data: detail } = useApi<IncidentDetail>(`/api/reasoner/incidents/${incidentId}`, 0);
+  const repPassId = detail?.representativePassId ?? "";
+  const { data: diag } = useApi<ReasonerDiagnosis>(
+    repPassId ? `/api/reasoner/diagnoses/${repPassId}` : `/api/reasoner/diagnoses/__none__`,
+    0
+  );
+  const { data: playbooks } = useApi<Playbook[]>("/api/reasoner/playbooks", 0);
+  const [applying, setApplying] = useState(false);
+  const [resolving, setResolving] = useState(false);
 
-function uniqEvidence(actions: ActionDescriptor[], selected: IncidentEntry | null): EvidenceRef[] {
-  const refs = actions.flatMap((action) => action.evidenceRefs);
-  if (refs.length === 0 && selected) {
-    return [
-      {
-        label: selected.type === "doctor-abandoned" ? "Doctor log" : "Pipeline alerts",
-        kind: "file",
-        ref: selected.type === "doctor-abandoned" ? "/var/lib/mimule/doctor-log.jsonl" : "/var/lib/mimule/pipeline-alerts.json",
-      },
-      { label: "Incidents detail", kind: "api", ref: "/api/incidents" },
-    ];
+  const matchingPlaybook = playbooks?.find((p) => p.failureClass === detail?.failureClass);
+
+  async function applyPlaybook() {
+    if (!matchingPlaybook || !detail) return;
+    setApplying(true);
+    try {
+      await fetch(`/api/reasoner/playbooks/${matchingPlaybook.id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ incidentId: detail.id }),
+      });
+    } finally {
+      setApplying(false);
+    }
   }
 
-  const seen = new Set<string>();
-  return refs.filter((ref) => {
-    const key = `${ref.kind}:${ref.label}:${ref.ref}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function IncidentTimeline({ entries }: { entries: IncidentsDetail["entries"] }) {
-  const buckets = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const e of entries) {
-      const d = new Date(e.ts);
-      const day = d.toISOString().slice(0, 10);
-      const hour = d.getUTCHours();
-      const key = `${day}:${hour}`;
-      map.set(key, (map.get(key) ?? 0) + 1);
+  async function resolveIncident() {
+    if (!detail) return;
+    setResolving(true);
+    try {
+      await fetch(`/api/reasoner/incidents/${detail.id}`, { method: "POST" });
+      onResolve();
+    } finally {
+      setResolving(false);
     }
-    return Array.from(map.entries()).map(([k, count]) => {
-      const [day, hour] = k.split(":");
-      return { day, hour: Number(hour), count };
-    });
-  }, [entries]);
+  }
+
+  if (!detail) return <div style={{ padding: "12px 16px", color: "var(--text-dim)", fontSize: 12 }}>loading detail…</div>;
 
   return (
-    <SectionCard title="7-day error heatmap" defaultOpen={false} style={{ marginBottom: 16 }}>
-      <div className="section-card-body" style={{ padding: "10px 14px" }}>
-        <IncidentHeatmap buckets={buckets} />
-      </div>
-    </SectionCard>
-  );
-}
-
-export function IncidentsPage() {
-  const { data, loading, error } = useApi<IncidentsDetail>("/api/incidents", 30_000);
-  const { data: catalog } = useApi<ActionCatalogData>("/api/actions/catalog?targetType=incident", 60_000);
-  const [filterType, setFilterType] = useState("");
-  const [filterError, setFilterError] = useState("");
-  const [filterStage, setFilterStage] = useState("");
-  const [selected, setSelected] = useState<IncidentEntry | null>(null);
-  const window24h = 24 * 60 * 60 * 1000;
-
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
-  if (!data) return null;
-
-  const d = data;
-
-  const filtered = d.entries.filter((e) => {
-    if (filterType && e.type !== filterType) return false;
-    if (filterError && e.errorType !== filterError) return false;
-    if (filterStage && e.stage !== filterStage) return false;
-    return true;
-  });
-  const selectedActions = selected
-    ? (catalog?.actions ?? []).filter((action) => action.targetId === incidentTargetId(selected))
-    : [];
-  const selectedEvidence = uniqEvidence(selectedActions, selected);
-
-  return (
-    <div className="dash-page">
-      {selected && (
-        <div className="evidence-drawer-overlay" onClick={() => setSelected(null)}>
-          <aside className="evidence-drawer" onClick={(e) => e.stopPropagation()}>
-            <div className="evidence-drawer-head">
-              <div>
-                <div className="evidence-drawer-kicker">incident evidence</div>
-                <div className="evidence-drawer-title">{selected.slug || "unknown story"}</div>
-              </div>
-              <button className="drawer-close" onClick={() => setSelected(null)} aria-label="Close evidence drawer">×</button>
+    <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--bg-sub)" }}>
+      {diag && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--amber, #c8882a)" }}>AI hypothesis — not verified</span>
+            <Pill color={confidenceColor(diag.confidence)}>{diag.confidence} confidence</Pill>
+          </div>
+          <div style={{ fontSize: 12, marginBottom: 6 }}>
+            <strong>Root cause:</strong> {diag.rootCauseHypothesis}
+          </div>
+          {Array.isArray(diag.evidence) && diag.evidence.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-dim)", marginBottom: 4 }}>Evidence</div>
+              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "var(--text-dim)" }}>
+                {diag.evidence.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
             </div>
-
-            <div className="evidence-drawer-summary">
-              <Pill color={selected.type === "doctor-abandoned" ? "red" : "amber"}>
-                {selected.type === "doctor-abandoned" ? "abandoned" : "failed"}
-              </Pill>
-              <Pill color="gray">{selected.stage || "unknown stage"}</Pill>
-              <Pill color={errorColor(selected.errorType)}>{selected.errorType}</Pill>
-              <span className="mono dim" title={fmtTs(selected.ts)}>{relTime(selected.ts)}</span>
+          )}
+          {Array.isArray(diag.suggestedActions) && diag.suggestedActions.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-dim)", marginBottom: 4 }}>Suggested actions</div>
+              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "var(--text-dim)" }}>
+                {diag.suggestedActions.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
             </div>
-
-            <div className="evidence-block">
-              <div className="evidence-block-title">Actions</div>
-              {selectedActions.length === 0 ? (
-                <div className="evidence-empty">
-                  No catalog actions matched this incident yet. Evidence is still shown below for inspection.
-                </div>
-              ) : (
-                <div className="evidence-action-list">
-                  {selectedActions.map((action) => (
-                    <div key={action.id} className={`evidence-action ${action.disabled ? "disabled" : ""}`}>
-                      <div className="evidence-action-main">
-                        <div className="evidence-action-label">{action.label}</div>
-                        <div className="evidence-action-meta">
-                          <Pill color={riskColor(action.risk)}>{action.risk}</Pill>
-                          {action.reasonRequired && <Pill color="gray">reason</Pill>}
-                          {action.confirm && <Pill color="gray">confirm</Pill>}
-                        </div>
-                      </div>
-                      {action.impactPreview && <div className="evidence-copy">{action.impactPreview}</div>}
-                      {action.rollbackHint && <div className="evidence-muted">Rollback: {action.rollbackHint}</div>}
-                      {action.disabled && action.disabledReason && (
-                        <div className="evidence-disabled">{action.disabledReason}</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="evidence-block">
-              <div className="evidence-block-title">Evidence</div>
-              <div className="evidence-ref-list">
-                {selectedEvidence.map((ref) => (
-                  <div key={`${ref.kind}:${ref.label}:${ref.ref}`} className="evidence-ref">
-                    <span className="pill gray">{ref.kind}</span>
-                    <div>
-                      <div className="evidence-ref-label">{ref.label}</div>
-                      <div className="evidence-ref-path">{ref.ref}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </aside>
+          )}
         </div>
       )}
 
-      <div className="page-header">
-        <div className="page-title">Incidents</div>
-        <div className="stat-row">
-          <div className="stat-item">
-            <div className="stat-val"><AnimatedNumber value={d.stats.total} /></div>
-            <div className="stat-lbl">total</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-val"><AnimatedNumber value={d.stats.last24h} /></div>
-            <div className="stat-lbl">last 24h</div>
-          </div>
-        </div>
-      </div>
-
-      {d.entries.length > 0 && <IncidentTimeline entries={d.entries} />}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
-        <SectionCard title="by error type" defaultOpen={false}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.byErrorType.map((e) => (
-              <div
-                key={e.type}
-                className="w-row"
-                style={{ marginBottom: 4, cursor: "pointer" }}
-                onClick={() => setFilterError(filterError === e.type ? "" : e.type)}
-              >
-                <span className="w-caption" style={{ flex: 1, color: filterError === e.type ? "var(--text-bright)" : undefined }}>{e.type}</span>
-                <span className="w-caption">{e.count}</span>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-
-        <SectionCard title="by stage" defaultOpen={false}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.byStage.map((s) => (
-              <div
-                key={s.stage}
-                className="w-row"
-                style={{ marginBottom: 4, cursor: "pointer" }}
-                onClick={() => setFilterStage(filterStage === s.stage ? "" : s.stage)}
-              >
-                <span className="w-caption" style={{ flex: 1, color: filterStage === s.stage ? "var(--text-bright)" : undefined }}>{s.stage}</span>
-                <span className="w-caption">{s.count}</span>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      </div>
-
-      {/* Active filters */}
-      {(filterType || filterError || filterStage) && (
-        <div className="action-bar" style={{ marginBottom: 12 }}>
-          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>filters:</span>
-          {filterType && <Pill color="blue">{filterType} ×</Pill>}
-          {filterError && (
-            <span className="pill amber" style={{ cursor: "pointer" }} onClick={() => setFilterError("")}>{filterError} ×</span>
-          )}
-          {filterStage && (
-            <span className="pill gray" style={{ cursor: "pointer" }} onClick={() => setFilterStage("")}>{filterStage} ×</span>
-          )}
-          <button className="btn btn-sm btn-ghost" onClick={() => { setFilterType(""); setFilterError(""); setFilterStage(""); }}>
-            clear all
+      {matchingPlaybook && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Playbook: <strong>{matchingPlaybook.name}</strong></span>
+          <button
+            className="btn btn-sm"
+            onClick={applyPlaybook}
+            disabled={applying}
+            style={{ fontSize: 11 }}
+          >
+            {applying ? "Applying…" : "Apply"}
           </button>
         </div>
       )}
 
-      {/* Timeline */}
-      <SectionCard
-        title="timeline"
-        defaultOpen={true}
-        right={<span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{filtered.length} events</span>}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <Link href={`/builder?pass=${detail.representativePassId}`} className="btn btn-sm btn-ghost" style={{ fontSize: 11 }}>
+          View pass →
+        </Link>
+        {detail.status === "open" && (
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={resolveIncident}
+            disabled={resolving}
+            style={{ fontSize: 11 }}
+          >
+            {resolving ? "Resolving…" : "Resolve"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IncidentCard({
+  incident,
+  onResolved,
+}: {
+  incident: ReasonerIncident;
+  onResolved: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
+      <div
+        style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 16px", cursor: "pointer" }}
+        onClick={() => setExpanded((v) => !v)}
       >
-        <div className="section-card-body table-wrap">
-          {filtered.length === 0 ? (
-            <div className="loading-dim">no incidents match filters</div>
-          ) : (
-            <table className="data-table">
-              <thead><tr>
-                <th>when</th><th>type</th><th>slug</th><th>stage</th><th>error</th><th></th>
-              </tr></thead>
-              <tbody>
-                {filtered.map((e, i) => (
-                  <tr
-                    key={`${e.type}:${e.ts}:${e.slug}:${e.stage}:${e.errorType}:${i}`}
-                    style={{ opacity: Date.now() - e.ts > window24h ? 0.6 : 1 }}
-                  >
-                    <td className="mono dim" style={{ fontSize: 10, whiteSpace: "nowrap" }}>
-                      <span title={fmtTs(e.ts)}>{relTime(e.ts)}</span>
-                    </td>
-                    <td>
-                      <Pill color={e.type === "doctor-abandoned" ? "red" : "amber"}>
-                        {e.type === "doctor-abandoned" ? "abandoned" : "failed"}
-                      </Pill>
-                    </td>
-                    <td className="mono trunc" style={{ maxWidth: 200, fontSize: 11 }}>{e.slug}</td>
-                    <td className="mono dim">{e.stage}</td>
-                    <td>
-                      <Pill color={errorColor(e.errorType)}>{e.errorType}</Pill>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <button className="btn btn-sm btn-ghost" onClick={() => setSelected(e)}>
-                        evidence
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{incident.title}</span>
+            <Pill color={failureClassColor(incident.failureClass)}>{incident.failureClass}</Pill>
+            <Pill color={incident.status === "open" ? "red" : "green"}>{incident.status}</Pill>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+            <span>happened <strong>{incident.occurrenceCount}</strong> {incident.occurrenceCount === 1 ? "time" : "times"}</span>
+            <span>first seen {fmtDate(incident.firstSeen)}</span>
+            <span>last seen {relTime(incident.lastSeen)}</span>
+          </div>
         </div>
-      </SectionCard>
+        <span style={{ color: "var(--text-dim)", fontSize: 13, marginTop: 2 }}>{expanded ? "▲" : "▼"}</span>
+      </div>
+      {expanded && (
+        <ExpandedIncidentCard incidentId={incident.id} onResolve={onResolved} />
+      )}
+    </div>
+  );
+}
+
+export function IncidentsPage() {
+  const [statusFilter, setStatusFilter] = useState<"open" | "resolved" | "all">("open");
+  const [classFilter, setClassFilter] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const endpoint = `/api/reasoner/incidents?status=${statusFilter}&_k=${refreshKey}`;
+  const { data: incidents, loading, error } = useApi<ReasonerIncident[]>(endpoint, 30_000);
+
+  const failureClasses = Array.from(new Set((incidents ?? []).map((i) => i.failureClass))).sort();
+  const filtered = classFilter ? (incidents ?? []).filter((i) => i.failureClass === classFilter) : (incidents ?? []);
+  const openCount = (incidents ?? []).filter((i) => i.status === "open").length;
+
+  if (loading && !incidents) return <div className="loading-dim">loading…</div>;
+  if (error && !incidents) return <div className="loading-dim error">error: {error}</div>;
+
+  return (
+    <div className="dash-page">
+      <div className="page-header" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div className="page-title">Incidents</div>
+        {statusFilter !== "resolved" && openCount > 0 && (
+          <span className="pill red" style={{ fontSize: 13 }}>{openCount} open</span>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+          {(["open", "resolved", "all"] as const).map((s, i, arr) => (
+            <button
+              key={s}
+              className={`btn btn-sm ${statusFilter === s ? "" : "btn-ghost"}`}
+              style={{ borderRadius: 0, borderRight: i < arr.length - 1 ? "1px solid var(--border)" : undefined, fontSize: 11 }}
+              onClick={() => { setStatusFilter(s); setRefreshKey((k) => k + 1); }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
+        {failureClasses.length > 1 && (
+          <select
+            value={classFilter}
+            onChange={(e) => setClassFilter(e.target.value)}
+            style={{ fontSize: 11, padding: "4px 8px", background: "var(--bg-sub)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)" }}
+          >
+            <option value="">all classes</option>
+            {failureClasses.map((fc) => (
+              <option key={fc} value={fc}>{fc}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="loading-dim" style={{ marginTop: 40 }}>
+          No incidents yet — diagnoses queue as passes fail
+        </div>
+      ) : (
+        <div>
+          {filtered.map((incident) => (
+            <IncidentCard
+              key={incident.id}
+              incident={incident}
+              onResolved={() => setRefreshKey((k) => k + 1)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

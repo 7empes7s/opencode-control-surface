@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { redactForDashboard } from "../db/writer.ts";
 import { getBuilderProjects, type BuilderProject } from "./discovery.ts";
 import { isProjectRootAllowlisted } from "./provision.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 export type BuilderWorkflowMode = "once" | "auto-continue" | "scheduled" | "permanent" | "doctor" | "plan";
 export type BuilderWorkflowStatus = "draft" | "ready" | "running" | "paused" | "blocked" | "done" | "failed" | "canceled";
-export type BuilderRunStatus = "queued" | "running" | "blocked" | "success" | "failed" | "canceled";
+export type BuilderRunStatus = "queued" | "running" | "blocked" | "pending-approval" | "success" | "failed" | "canceled";
 export type BuilderPassStatus = "queued" | "running" | "success" | "failed" | "blocked" | "canceled";
 
 export type BuilderAgentEntry = {
@@ -76,8 +77,20 @@ export type BuilderWorkflowConfig = {
     capturedAt?: string;
     transcriptSummary?: string;
     latestUserPrompt?: string;
+    assistantSummary?: string;
     touchedFiles?: string[];
+    touchedFileSummary?: string;
+    recentTurns?: Array<{
+      role: string;
+      text: string;
+    }>;
   };
+  secretNames?: string[];
+  requiresApproval?: boolean;
+  requiresTwoApprovers?: boolean;
+  requiredApproverCount?: number;
+  approvalExpiresAtMs?: number;
+  autoApplySafePlaybooks?: boolean;
 };
 
 export type BuilderWorkflowInput = {
@@ -94,6 +107,7 @@ export type BuilderWorkflowInput = {
 export type BuilderWorkflow = {
   id: string;
   projectId: string;
+  tenantId: string;
   name: string;
   projectRoot: string;
   planFile: string;
@@ -110,6 +124,7 @@ export type BuilderWorkflow = {
 export type BuilderRun = {
   id: string;
   workflowId: string;
+  tenantId: string;
   trigger: string;
   status: BuilderRunStatus;
   startedAt: number | null;
@@ -120,6 +135,7 @@ export type BuilderRun = {
   result: unknown;
   error: string | null;
   traceId: string | null;
+  orchestratorInstanceId: string | null;
 };
 
 export type BuilderPass = {
@@ -198,7 +214,36 @@ function projectIdForRoot(root: string): string {
 }
 
 function getAllowedProject(root: string): BuilderProject | null {
-  return getBuilderProjects().find((project) => project.root === root) ?? null;
+  const normalizedRoot = resolve(root);
+  const discovered = getBuilderProjects().find((project) => project.root === normalizedRoot);
+  if (discovered) return discovered;
+
+  const db = getDashboardDb();
+  if (!db) return null;
+  const row = db.query(`
+    SELECT name, root, config_json
+    FROM builder_projects
+    WHERE root = ?
+    LIMIT 1
+  `).get(normalizedRoot) as { name: string; root: string; config_json: string } | null;
+  if (!row) return null;
+
+  const stored = parseJson<Partial<BuilderProject>>(row.config_json, {});
+  return {
+    root: row.root,
+    label: stored.label ?? row.name ?? basename(row.root),
+    risk: stored.risk ?? "medium",
+    writable: stored.writable ?? true,
+    note: stored.note ?? "Registered Builder project",
+    service: stored.service,
+    internalUrl: stored.internalUrl,
+    publicUrl: stored.publicUrl,
+    defaultPlan: stored.defaultPlan,
+  };
+}
+
+export function isBuilderProjectRootAllowlisted(root: string): boolean {
+  return Boolean(getAllowedProject(root)) || isProjectRootAllowlisted(resolve(root));
 }
 
 function isWithin(candidate: string, root: string): boolean {
@@ -267,6 +312,7 @@ function upsertBuilderProject(project: BuilderProject): string {
 type DbWorkflowRow = {
   id: string;
   project_id: string;
+  tenant_id: string | null;
   name: string;
   mode: BuilderWorkflowMode;
   status: BuilderWorkflowStatus;
@@ -293,6 +339,7 @@ function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
   return {
     id: row.id,
     projectId: row.project_id,
+    tenantId: row.tenant_id ?? "mimule",
     name: row.name,
     projectRoot: config.projectRoot,
     planFile: row.plan_file,
@@ -317,13 +364,16 @@ export function createBuilderWorkflow(input: BuilderWorkflowInput): BuilderWorkf
   const id = `bw_${randomUUID()}`;
   const projectId = upsertBuilderProject(project);
 
+  const ctx = getCurrentTenantContext();
+  const tenantId = ctx.tenantId;
   db.query(`
     INSERT INTO builder_workflows
-      (id, project_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     projectId,
+    tenantId,
     input.name.trim(),
     input.mode,
     input.status,
@@ -379,12 +429,15 @@ export function updateBuilderWorkflow(id: string, input: BuilderWorkflowInput): 
 export function readBuilderWorkflows(): BuilderWorkflow[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
+    const ctx = getCurrentTenantContext();
+    const { tenantId } = ctx;
     return (getDashboardDb()!.query(`
-      SELECT id, project_id, name, mode, status, plan_file, config_json, created_at,
+      SELECT id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at,
         updated_at, last_run_id, next_run_at, paused_reason
       FROM builder_workflows
+      WHERE tenant_id = ? OR tenant_id IS NULL
       ORDER BY updated_at DESC
-    `).all() as DbWorkflowRow[]).map(mapWorkflow);
+    `).all(tenantId) as DbWorkflowRow[]).map(mapWorkflow);
   } catch (error) {
     console.error("[control-surface] readBuilderWorkflows failed", error);
     return [];
@@ -410,6 +463,7 @@ export function readBuilderWorkflow(id: string): BuilderWorkflow | null {
 type DbRunRow = {
   id: string;
   workflow_id: string;
+  tenant_id: string | null;
   trigger: string;
   status: BuilderRunStatus;
   started_at: number | null;
@@ -420,12 +474,14 @@ type DbRunRow = {
   result_json: string | null;
   error: string | null;
   trace_id: string | null;
+  orchestrator_instance_id: string | null;
 };
 
 function mapRun(row: DbRunRow): BuilderRun {
   return {
     id: row.id,
     workflowId: row.workflow_id,
+    tenantId: row.tenant_id ?? "mimule",
     trigger: row.trigger,
     status: row.status,
     startedAt: row.started_at,
@@ -436,19 +492,23 @@ function mapRun(row: DbRunRow): BuilderRun {
     result: parseJson(row.result_json, null),
     error: row.error,
     traceId: row.trace_id ?? null,
+    orchestratorInstanceId: row.orchestrator_instance_id ?? null,
   };
 }
 
 export function readBuilderRuns(workflowId?: string): BuilderRun[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
-  const params: string[] = [];
+  const ctx = getCurrentTenantContext();
+  const { tenantId } = ctx;
+  const params: (string)[] = [tenantId];
   let sql = `
     SELECT id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
-      stop_requested_at, stop_requested_by, result_json, error, trace_id
+      stop_requested_at, stop_requested_by, result_json, error, trace_id, orchestrator_instance_id
     FROM builder_runs
+    WHERE (tenant_id = ? OR tenant_id IS NULL)
   `;
   if (workflowId) {
-    sql += " WHERE workflow_id = ?";
+    sql += " AND workflow_id = ?";
     params.push(workflowId);
   }
   sql += " ORDER BY COALESCE(started_at, 0) DESC LIMIT 100";
@@ -466,7 +526,7 @@ export function readBuilderRun(id: string): BuilderRun | null {
   try {
     const row = getDashboardDb()!.query(`
       SELECT id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
-        stop_requested_at, stop_requested_by, result_json, error
+        stop_requested_at, stop_requested_by, result_json, error, trace_id, orchestrator_instance_id
       FROM builder_runs
       WHERE id = ?
     `).get(id) as DbRunRow | null;
@@ -698,7 +758,10 @@ export type ProvisionResult = {
     planFile: string | null;
     vaultNote: boolean;
     skillFile: boolean;
+    validationProfileFile: string | null;
+    runtimeScaffoldFiles: string[];
   };
+  validationCommands: string[];
   warnings: string[];
   error?: string;
 };
@@ -717,6 +780,7 @@ export function provisionProject(input: {
   gitPolicy: { commit: string; push: string };
   internalUrl?: string;
   publicUrl?: string;
+  runtimeScaffold?: boolean;
 }): ProvisionResult {
   // Import provision module lazily to avoid circular dependency at module init
   const { provisionProject: doScaffold } = require("./provision.ts") as typeof import("./provision.ts");
@@ -730,6 +794,7 @@ export function provisionProject(input: {
     owner: input.owner,
     defaultPlanPath: input.planFile,
     validationCommands: input.validationCommands,
+    runtimeScaffold: input.runtimeScaffold,
   });
 
   if (!scaffoldResult.ok) {
@@ -740,6 +805,7 @@ export function provisionProject(input: {
       workflowId: "",
       workflowStatus: "",
       provisioned: scaffoldResult.provisioned,
+      validationCommands: scaffoldResult.validationCommands,
       warnings: scaffoldResult.warnings,
       error: scaffoldResult.error,
     };
@@ -750,6 +816,11 @@ export function provisionProject(input: {
   const now = Date.now();
   const projectId = `project:${input.projectRoot}`;
 
+  const effectivePlanFile = scaffoldResult.provisioned.planFile ?? input.planFile;
+  const effectiveValidationCommands = input.validationCommands.length > 0
+    ? input.validationCommands
+    : scaffoldResult.validationCommands;
+
   const projectConfig = {
     root: input.projectRoot,
     label: input.name,
@@ -759,7 +830,7 @@ export function provisionProject(input: {
     service: undefined as string | undefined,
     internalUrl: input.internalUrl,
     publicUrl: input.publicUrl,
-    defaultPlan: input.planFile,
+    defaultPlan: effectivePlanFile,
   };
 
   db.query(`
@@ -785,8 +856,8 @@ export function provisionProject(input: {
     agentOrder: input.agentOrder,
     modelPolicy: { fallbackTargets: input.fallbackTargets },
     validationProfile: {
-      commands: input.validationCommands,
-      internal: input.validationCommands,
+      commands: effectiveValidationCommands,
+      internal: effectiveValidationCommands,
       runtime: [],
       public: [],
       playwright: { enabled: false },
@@ -809,7 +880,7 @@ export function provisionProject(input: {
     `${input.name} initial build`,
     "auto-continue",
     "draft",
-    input.planFile,
+    effectivePlanFile,
     JSON.stringify(workflowConfig),
     now,
     now,
@@ -824,6 +895,7 @@ export function provisionProject(input: {
     workflowId,
     workflowStatus: "draft",
     provisioned: scaffoldResult.provisioned,
+    validationCommands: effectiveValidationCommands,
     warnings: scaffoldResult.warnings,
   };
 }

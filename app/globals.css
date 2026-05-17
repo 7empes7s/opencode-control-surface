@@ -7,16 +7,15 @@
   --bg:        oklch(8.5% 0.012 248);   /* deepest — near-black with navy cast */
   --bg-panel:  oklch(11%  0.013 248);   /* panels, sidebar, topbar */
   --bg-card-end: oklch(10% 0.013 248);  /* lower edge of chart/widget cards */
-  --bg-hover:  oklch(14%  0.014 248);   /* hover state */
+--bg-hover:  oklch(14%  0.014 248);   /* hover state */
   --bg-active: oklch(13%  0.018 248);   /* active/selected — slightly more saturated */
-
-  /* ── Borders ────────────────────────────────────────────────────────────── */
-  --border:        oklch(20% 0.010 248); /* subtle structural lines */
-  --border-bright: oklch(27% 0.010 248); /* slightly lifted borders on hover */
+  --bg-raised: oklch(14%  0.015 248);   /* raised card surfaces */
+  --bg-base:   oklch(9%   0.013 248);   /* base background for nested elements */
 
   /* ── Text ───────────────────────────────────────────────────────────────── */
   --text:       oklch(78% 0.008 248);   /* body — warm-cool grey, not pure white */
   --text-dim:   oklch(42% 0.008 248);   /* secondary, placeholders */
+  --text-muted: oklch(42% 0.008 248);   /* muted/disabled text */
   --text-bright:oklch(93% 0.006 248);   /* headings, numbers, emphasis */
 
   /* ── Brand accent: amber #f5a623 ────────────────────────────────────────── */
@@ -40,6 +39,13 @@
   /* ── Informational blue ─────────────────────────────────────────────────── */
   --blue:    oklch(68% 0.130 240);      /* calm blue for info/links */
 
+  /* ── Trace span kinds ─────────────────────────────────────────────────── */
+  --trace-run:        oklch(60% 0.110 248);
+  --trace-pass:       oklch(64% 0.130 145);
+  --trace-tool:       oklch(70% 0.148  52);
+  --trace-gateway:    oklch(68% 0.130 240);
+  --trace-validation: oklch(62% 0.110 300);
+
   --mono: "JetBrains Mono", "Fira Code", monospace;
   --sans: "Figtree", system-ui, sans-serif;
 }
@@ -51,10 +57,13 @@
   --bg-card-end: oklch(95%  0.006 248);
   --bg-hover:   oklch(90%  0.008 248);
   --bg-active:  oklch(87%  0.012 248);
+  --bg-raised:   oklch(92%  0.006 248);
+  --bg-base:     oklch(95%  0.004 248);
   --border:        oklch(81% 0.010 248);
   --border-bright: oklch(64% 0.012 248);
   --text:       oklch(24%  0.012 248);
   --text-dim:   oklch(46%  0.012 248);
+  --text-muted: oklch(54%  0.010 248);
   --text-bright:oklch(8%   0.008 248);
   --accent:     oklch(44%  0.168  72);
   --accent-dim: oklch(88%  0.048  72);
@@ -74,10 +83,13 @@
   --bg-card-end: oklch(10%   0.022 222);
   --bg-hover:   oklch(15%   0.024 222);
   --bg-active:  oklch(13%   0.026 222);
+  --bg-raised:   oklch(16%   0.025 222);
+  --bg-base:     oklch(10%   0.022 222);
   --border:        oklch(21% 0.020 222);
   --border-bright: oklch(33% 0.024 222);
   --text:       oklch(88%   0.008 222);
   --text-dim:   oklch(64%   0.010 222);
+  --text-muted: oklch(56%   0.010 222);
   --text-bright:oklch(97%   0.005 222);
   --accent:     oklch(70%   0.128 182);  /* teal */
   --accent-dim: oklch(25%   0.054 182);
@@ -92,12 +104,15 @@
   --bg:         oklch(92%   0.008 222);
   --bg-panel:   oklch(99%   0.004 222);
   --bg-card-end: oklch(95%   0.006 222);
-  --bg-hover:   oklch(88%   0.012 222);
-  --bg-active:  oklch(85%   0.016 222);
+--bg-hover:   oklch(88%  0.012 222);
+  --bg-active:  oklch(85%  0.016 222);
+  --bg-raised:   oklch(90%  0.010 222);
+  --bg-base:     oklch(97%  0.004 222);
   --border:        oklch(80% 0.010 222);
   --border-bright: oklch(62% 0.014 222);
   --text:       oklch(12%   0.012 222);
   --text-dim:   oklch(35%   0.012 222);
+  --text-muted: oklch(46%   0.010 222);
   --text-bright:oklch(4%    0.008 222);
   --accent:     oklch(36%   0.128 182);
   --accent-dim: oklch(87%   0.038 182);
@@ -765,6 +780,15 @@ body {
   border-radius: 4px;
   background: color-mix(in oklch, white 2%, transparent);
 }
+.version-badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--accent); padding: 4px 8px;
+  border: 1px solid color-mix(in oklch, var(--accent) 40%, transparent);
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 8%, transparent);
+  letter-spacing: 0.02em;
+}
 .dash-header-link {
   display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--sans); font-size: 12px;
@@ -1142,6 +1166,53 @@ body {
 .sc-chevron { color: var(--text-dim); transition: transform 0.18s ease; flex-shrink: 0; }
 .sc-chevron-closed { transform: rotate(-90deg); }
 .section-card.closed { border-bottom: none; border-radius: 6px; }
+
+/* ── GovernancePage inline styles (moved from JSX <style> block) ──── */
+
+.gov-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+.gov-tab-btn { padding: 0.5rem 1rem; background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 0.875rem; border-bottom: 2px solid transparent; transition: color 0.15s; }
+.gov-tab-btn:hover { color: var(--text); }
+.gov-tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.approval-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.375rem; margin-bottom: 0.5rem; }
+.approval-item.completed { opacity: 0.5; }
+.approval-actions { display: flex; gap: 0.5rem; }
+.budget-summary-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.budget-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; }
+.budget-card-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+.budget-card-value { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+.budget-bar { height: 4px; background: var(--bg-base); border-radius: 2px; overflow: hidden; }
+.budget-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+.budget-bar-fill.warn { background: var(--amber-warn); }
+.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8125rem; }
+.btn-danger { color: var(--red); }
+
+/* ── ProjectsPage missing classes ─────────────────────────────────── */
+
+.project-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.project-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.project-card-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.project-name { font-weight: 600; font-size: 14px; flex: 1; }
+.project-badges { display: flex; gap: 4px; }
+.project-card-body { padding: 10px 14px; }
+.project-repo-path { font-family: var(--mono); font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+.project-validators { display: flex; flex-wrap: wrap; gap: 4px; }
+.validator-cmd { font-family: var(--mono); font-size: 10px; background: var(--bg-hover); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+.detect-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.detect-bar-input { flex: 1; background: transparent; border: none; outline: none; font-size: 13px; color: var(--text); }
+.detect-bar-input::placeholder { color: var(--text-dim); }
+.detect-bar-icon { color: var(--text-dim); flex-shrink: 0; }
+.form-field { display: flex; flex-direction: column; gap: 4px; }
+.form-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.form-input { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; color: var(--text); outline: none; transition: border-color 0.15s; }
+.form-input:focus { border-color: var(--accent); }
+.detect-success-note { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--green); background: color-mix(in oklch, var(--green) 8%, transparent); border: 1px solid var(--green-dim); border-radius: 6px; padding: 8px 12px; }
+.loading-note { font-size: 12px; color: var(--text-dim); padding: 8px 0; }
+.error-note { font-size: 12px; color: var(--red); padding: 8px 0; }
+.badge-blue { background: color-mix(in oklch, var(--blue) 12%, transparent); color: var(--blue); border: 1px solid color-mix(in oklch, var(--blue) 28%, transparent); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.badge-yellow { background: color-mix(in oklch, var(--amber-warn) 12%, transparent); color: var(--amber-warn); border: 1px solid var(--amber-warn-dim); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.badge-cyan { background: color-mix(in oklch, var(--trace-gateway) 12%, transparent); color: var(--trace-gateway); border: 1px solid color-mix(in oklch, var(--trace-gateway) 28%, transparent); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.badge-orange { background: color-mix(in oklch, var(--amber-warn) 15%, transparent); color: var(--amber-warn); border: 1px solid var(--amber-warn-dim); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
+.badge-gray { background: color-mix(in oklch, white 4%, transparent); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; }
 .section-card.closed .section-card-header { border-bottom: none; }
 .builder-detail-section.closed { border: none; border-radius: 6px; overflow: hidden; }
 

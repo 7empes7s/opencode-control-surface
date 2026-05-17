@@ -155,6 +155,41 @@ function registerSamplerTests(): void {
     expect(row.count).toBe(0);
   });
 
+  test("disk projected full detector emits event from metric trend", () => {
+    openTempDb();
+    insertDiskSample(Date.now() - 2 * 24 * 60 * 60 * 1000, 75);
+
+    runHomeSampler(stubHome({ diskUsedPct: 76 }));
+    runHomeSampler(stubHome({ diskUsedPct: 84 }));
+
+    const rows = getDashboardDb()!.query(`
+      SELECT severity, summary, payload_json
+      FROM events
+      WHERE kind = ?
+    `).all("disk.projected_full") as Array<{ severity: string; summary: string; payload_json: string }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].severity).toBe("error");
+    expect(rows[0].summary).toContain("90%");
+    expect(JSON.parse(rows[0].payload_json).daysTo90).toBeLessThanOrEqual(7);
+  });
+
+  test("disk projected full detector ignores flat or shrinking trend", () => {
+    openTempDb();
+    insertDiskSample(Date.now() - 2 * 24 * 60 * 60 * 1000, 80);
+
+    runHomeSampler(stubHome({ diskUsedPct: 78 }));
+    runHomeSampler(stubHome({ diskUsedPct: 76 }));
+
+    const row = getDashboardDb()!.query(`
+      SELECT COUNT(*) AS count
+      FROM events
+      WHERE kind = ?
+    `).get("disk.projected_full") as { count: number };
+
+    expect(row.count).toBe(0);
+  });
+
   test("doctor decision transition emits an event", () => {
     openTempDb();
 
@@ -268,6 +303,18 @@ function registerSamplerTests(): void {
 function openTempDb(): void {
   process.env.DASHBOARD_DB = "1";
   initDashboardDb({ path: join(tempDir, "dashboard.sqlite") });
+}
+
+function insertDiskSample(ts: number, diskUsedPct: number): void {
+  getDashboardDb()!.query(`
+    INSERT INTO metric_samples (ts, source, key, value_json)
+    VALUES (?, ?, ?, ?)
+  `).run(ts, "hetzner", "load", JSON.stringify({
+    load1: 0.1,
+    load5: 0.2,
+    memUsedPct: 50,
+    diskUsedPct,
+  }));
 }
 
 function stubHome(overrides: {

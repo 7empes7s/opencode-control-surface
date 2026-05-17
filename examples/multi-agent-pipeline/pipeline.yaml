@@ -1,0 +1,99 @@
+version: "1.0"
+name: "Plan → Build → Review"
+description: |
+  Three-pass development workflow with model fallback.
+  Pass 1 (plan): analyze and create a development plan
+  Pass 2 (build): implement changes from the plan
+  Pass 3 (review): security and quality review of the implementation
+trigger:
+  type: manual
+agentOrder:
+  - id: plan
+    name: "Create Development Plan"
+    agent: opencode
+    model: editorial-heavy
+    prompt: |
+      Analyze the current project at /opt/opencode-control-surface/
+      Read: package.json, server/index.ts, app/routes/
+      Identify the next highest-priority improvement or bug fix.
+      
+      Output a PLAN.md file with:
+      ## Task
+      <one sentence describing what to build/fix>
+      
+      ## Changes Required
+      <numbered list of file changes needed>
+      
+      ## Implementation Notes
+      <any important context for the builder pass>
+      
+      Write PLAN.md to the artifact directory.
+    validationProfile:
+      echo: "test -f PLAN.md && wc -l PLAN.md | awk '$1 > 10'"
+      timeoutMs: 60000
+    modelPolicy:
+      allowed: ["gemma4:26b", "editorial-heavy"]
+      fallbackChain: ["gemma4:26b", "editorial-cloud-heavy"]
+
+  - id: build
+    name: "Implement Changes"
+    agent: opencode
+    model: coding-heavy
+    prompt: |
+      Read PLAN.md from the artifact directory.
+      Implement ALL changes described in PLAN.md.
+      Focus on: correctness, type safety, no introduced warnings.
+      
+      After making changes:
+      1. Run: bun run typecheck
+      2. Fix any type errors found
+      3. Run: bun run build
+      4. Report: what files changed, build status (pass/fail)
+      
+      Write BUILD_STATUS.md with the results.
+    validationProfile:
+      echo: "bun run typecheck 2>&1 | tail -3"
+      timeoutMs: 120000
+    modelPolicy:
+      allowed: ["gemma4:26b", "qwen2.5-coder:14b", "coding-heavy"]
+      fallbackChain: ["gemma4:26b", "editorial-cloud-heavy"]
+
+  - id: review
+    name: "Security & Quality Review"
+    agent: claude
+    prompt: |
+      Review the implementation in /opt/opencode-control-surface/
+      Focus on:
+      1. Security: SQL injection, XSS, exposed secrets, improper auth checks
+      2. Correctness: logic bugs, race conditions, missing error handling
+      3. Performance: N+1 queries, missing indexes, unbounded loops
+      
+      Read the changed files from the build pass.
+      Run: bun run typecheck && bun run build (to confirm build still passes)
+      
+      Output a REVIEW.md file with verdict.
+      Write REVIEW.md to the artifact directory.
+    validationProfile:
+      echo: "test -f REVIEW.md && grep -q 'VERDICT' REVIEW.md"
+      timeoutMs: 90000
+    riskPolicy:
+      requireApprovalFor: ["deploy-*"]
+      auto remediate: false
+
+  - id: merge
+    name: "Merge Changes"
+    agent: opencode
+    prompt: |
+      Read REVIEW.md. If verdict is PASS, commit changes.
+      Write MERGE_STATUS.md with the outcome.
+    validationProfile:
+      echo: "test -f MERGE_STATUS.md"
+      timeoutMs: 30000
+    gitPolicy:
+      allowPush: false
+      commitMessageTemplate: "feat: {task}"
+
+notification:
+  channels: ["email", "webhook"]
+  email: "platform@tib.com"
+  webhookUrl: "https://internal.tib.com/alerts/review"

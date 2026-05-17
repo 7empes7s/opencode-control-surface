@@ -21,6 +21,7 @@ import {
 
 const expectedTables = [
   "schema_version",
+  "tenants",
   "metric_samples",
   "events",
   "action_audit",
@@ -40,6 +41,8 @@ const expectedTables = [
   "builder_artifacts",
   "builder_validations",
   "builder_locks",
+  "marketplace_skills",
+  "marketplace_skill_runs",
 ];
 
 let tempDir: string;
@@ -88,7 +91,7 @@ function registerDashboardDbTests(): void {
     }
 
     const version = getDashboardDb()!.query("SELECT version FROM schema_version").get() as { version: number };
-    expect(version.version).toBe(2);
+    expect(version.version).toBe(3);
   });
 
   test("operator_state write and read round-trips JSON values", () => {
@@ -181,6 +184,101 @@ function registerDashboardDbTests(): void {
     expect(db).toBeNull();
     expect(getDashboardDb()).toBeNull();
     expect(existsSync(dbPath)).toBe(false);
+  });
+
+  test("fresh DB has tenant_id columns on all scoped tables and backfills to mimule", () => {
+    process.env.DASHBOARD_DB = "1";
+    initDashboardDb({ path: tempDbPath() });
+
+    const db = getDashboardDb()!;
+    const tenantTables = [
+      "metric_samples", "events", "action_audit", "jobs", "operator_state",
+      "builder_projects", "builder_workflows", "builder_runs", "builder_passes",
+      "builder_artifacts", "builder_validations", "builder_locks", "builder_doctor_reports",
+      "governance_policies", "governance_policy_decisions", "governance_role_bindings",
+      "governance_secrets", "governance_approvals", "governance_budgets",
+      "gateway_calls",
+      "reasoner_jobs", "reasoner_diagnoses", "reasoner_incidents",
+      "reasoner_incident_members", "reasoner_playbooks", "reasoner_playbook_runs",
+      "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
+    ];
+
+    for (const table of tenantTables) {
+      const cols = db.query("PRAGMA table_info(" + table + ")").all() as Array<{ name: string }>;
+      const hasTenantCol = cols.some((c) => c.name === "tenant_id");
+      expect(hasTenantCol).toBeTrue();
+    }
+  });
+
+  test("migration backfills tenant_id on pre-existing rows", () => {
+    process.env.DASHBOARD_DB = "1";
+    const dbPath = tempDbPath();
+
+    // Create a fresh DB via migration first (full schema)
+    initDashboardDb({ path: dbPath });
+    const db = getDashboardDb()!;
+
+    // Insert rows with null tenant_id to simulate pre-migration data
+    db.run("INSERT INTO metric_samples (ts, source, key, value_json) VALUES (1000, 'svc', 'cpu', '80')");
+    db.run("INSERT INTO events (ts, kind, severity, summary) VALUES (1000, 'svc', 'warn', 'restart')");
+    db.run("INSERT INTO action_audit (ts, actor, action_kind) VALUES (1000, 'user', 'deploy')");
+    db.run("INSERT INTO jobs (id, kind, state) VALUES ('j1', 'deploy', 'pending')");
+    db.run("INSERT INTO operator_state (key, value_json, updated_at) VALUES ('key', '{}', 1000)");
+
+    // Verify they have null tenant_id
+    const nullCount = db.query(
+      "SELECT COUNT(*) AS c FROM metric_samples WHERE tenant_id IS NULL"
+    ).get() as { c: number };
+    expect(nullCount.c).toBe(1);
+
+    // Now simulate a second init (as would happen on server restart)
+    closeDashboardDb();
+    delete process.env.DASHBOARD_DB_PATH;
+    process.env.DASHBOARD_DB_PATH = dbPath;
+    initDashboardDb({ path: dbPath });
+
+    const db2 = getDashboardDb()!;
+
+    // Backfill should have set tenant_id = 'mimule' on all rows
+    const backfillTables = [
+      "metric_samples", "events", "action_audit", "jobs", "operator_state",
+    ];
+
+    for (const table of backfillTables) {
+      const row = db2.query("SELECT tenant_id FROM " + table + " LIMIT 1").get() as { tenant_id: string | null } | undefined;
+      expect(row).toBeDefined();
+      expect(row!.tenant_id).toBe("mimule");
+    }
+  });
+
+  test("tenant-leading indexes exist after migration", () => {
+    process.env.DASHBOARD_DB = "1";
+    initDashboardDb({ path: tempDbPath() });
+
+    const db = getDashboardDb()!;
+    const indexes = db.query(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%_tenant_%'"
+    ).all() as Array<{ name: string }>;
+
+    const indexNames = new Set(indexes.map((i) => i.name));
+    const expectedIndexes = [
+      "idx_metric_samples_tenant_ts",
+      "idx_events_tenant_ts",
+      "idx_action_audit_tenant_ts",
+      "idx_jobs_tenant_ts",
+      "idx_builder_workflows_tenant_project",
+      "idx_builder_runs_tenant_workflow",
+      "idx_builder_passes_tenant_workflow",
+      "idx_builder_artifacts_tenant_workflow",
+      "idx_builder_validations_tenant_workflow",
+      "idx_orchestrator_instances_tenant_status",
+      "idx_reasoner_jobs_tenant_status",
+      "idx_reasoner_incidents_tenant_status",
+    ];
+
+    for (const idx of expectedIndexes) {
+      expect(indexNames.has(idx)).toBeTrue();
+    }
   });
 }
 

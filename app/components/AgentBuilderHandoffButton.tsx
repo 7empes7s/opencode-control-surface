@@ -21,6 +21,11 @@ export type HandoffMessage = {
   filePaths?: string[];
 };
 
+type HandoffTurn = {
+  role: string;
+  text: string;
+};
+
 type ApiEnvelope<T> = {
   data?: T;
   error?: string;
@@ -65,34 +70,66 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}...` : value;
 }
 
-function extractPathCandidates(text: string): string[] {
-  const matches = text.match(/(?:\/[\w./@+-]+|[\w.-]+\/[\w./@+-]+\.(?:ts|tsx|js|jsx|json|md|css|scss|html|sqlite|yaml|yml|toml|sh|mjs|cjs))/g) ?? [];
-  return matches.map((item) => item.replace(/[),.;:]+$/, ""));
+function normalizeRole(role: string): string {
+  const value = role.toLowerCase();
+  if (["user", "assistant", "system", "tool"].includes(value)) return value;
+  return value.slice(0, 24) || "message";
 }
 
-function summarizeMessages(messages: HandoffMessage[] | undefined): {
+export function extractPathCandidates(text: string): string[] {
+  const matches = text.match(/(?:\/[\w./@+-]+|(?:\.{1,2}\/)?[\w.@+-]+\/[\w./@+-]+\.(?:test\.tsx|test\.ts|tsx|ts|jsx|js|json|md|scss|css|html|sqlite|sql|yaml|yml|toml|sh|mjs|cjs|py|go|rs))/g) ?? [];
+  return matches
+    .map((item) => item.replace(/^[`'"(]+|[`'"),.;:]+$/g, ""))
+    .filter((item) => !item.startsWith("http://") && !item.startsWith("https://") && !item.startsWith("//"));
+}
+
+export function summarizeMessages(messages: HandoffMessage[] | undefined): {
   transcriptSummary?: string;
   latestUserPrompt?: string;
+  assistantSummary?: string;
   touchedFiles?: string[];
+  touchedFileSummary?: string;
+  recentTurns?: HandoffTurn[];
 } {
   if (!messages || messages.length === 0) return {};
-  const firstUser = messages.find((message) => message.role === "user" && cleanText(message.content));
-  const lastUser = [...messages].reverse().find((message) => message.role === "user" && cleanText(message.content));
-  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant" && cleanText(message.content));
+  const turns = messages
+    .map((message) => ({
+      role: normalizeRole(message.role),
+      text: cleanText([message.content, message.toolText].filter(Boolean).join("\n")),
+    }))
+    .filter((turn) => turn.text);
+  const userTurns = turns.filter((turn) => turn.role === "user");
+  const assistantTurns = turns.filter((turn) => turn.role === "assistant");
+  const firstUser = userTurns[0];
+  const lastUser = userTurns.at(-1);
+  const lastAssistant = assistantTurns.at(-1);
+  const recentTurns = turns.slice(-8).map((turn) => ({
+    role: turn.role,
+    text: truncate(turn.text, 520),
+  }));
   const touchedFiles = Array.from(new Set(messages.flatMap((message) => [
     ...(message.filePaths ?? []),
     ...extractPathCandidates(`${message.content ?? ""}\n${message.toolText ?? ""}`),
   ]).map((path) => path.trim()).filter(Boolean))).slice(0, 30);
   const parts = [
-    firstUser ? `Started: ${truncate(cleanText(firstUser.content), 220)}` : "",
-    lastUser ? `Latest ask: ${truncate(cleanText(lastUser.content), 260)}` : "",
-    lastAssistant ? `Latest response: ${truncate(cleanText(lastAssistant.content), 320)}` : "",
-    touchedFiles.length > 0 ? `Touched files: ${touchedFiles.slice(0, 12).join(", ")}` : "",
+    `Messages: ${messages.length} captured (${userTurns.length} user, ${assistantTurns.length} assistant).`,
+    firstUser ? `Started: ${truncate(firstUser.text, 220)}` : "",
+    lastUser ? `Latest ask: ${truncate(lastUser.text, 300)}` : "",
+    lastAssistant ? `Latest response: ${truncate(lastAssistant.text, 360)}` : "",
+    recentTurns.length > 0
+      ? `Recent turns:\n${recentTurns.slice(-4).map((turn) => `${turn.role}: ${truncate(turn.text, 180)}`).join("\n")}`
+      : "",
+    touchedFiles.length > 0 ? `Touched files: ${touchedFiles.slice(0, 16).join(", ")}` : "",
   ].filter(Boolean);
   return {
     transcriptSummary: parts.length > 0 ? parts.join("\n") : undefined,
-    latestUserPrompt: lastUser ? truncate(cleanText(lastUser.content), 800) : undefined,
+    latestUserPrompt: lastUser ? truncate(lastUser.text, 1000) : undefined,
+    assistantSummary: lastAssistant ? truncate(lastAssistant.text, 1000) : undefined,
     touchedFiles,
+    touchedFileSummary: touchedFiles.length > 0
+      ? `${touchedFiles.length} file${touchedFiles.length === 1 ? "" : "s"} referenced: ${touchedFiles.slice(0, 16).join(", ")}`
+      : undefined,
+    recentTurns,
   };
 }
 

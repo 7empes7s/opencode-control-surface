@@ -1,3 +1,5 @@
+import { getActiveTenantId, getActiveProjectId } from "../hooks/useTenantContext";
+
 let loginInFlight: Promise<boolean> | null = null;
 
 async function promptForOperatorSession(): Promise<boolean> {
@@ -24,9 +26,14 @@ async function promptForOperatorSession(): Promise<boolean> {
 }
 
 export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const tenantHeaders: Record<string, string> = {
+    "x-tenant-id": getActiveTenantId(),
+    "x-project-id": getActiveProjectId(),
+  };
   const request = {
     ...init,
     credentials: "same-origin" as RequestCredentials,
+    headers: { ...tenantHeaders, ...(init.headers as Record<string, string> | undefined ?? {}) },
   };
 
   const first = await fetch(input, request);

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, GripVertical, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
+import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import { SectionCard } from "../components/SectionCard";
 import type {
@@ -774,6 +775,17 @@ function WorkflowModal({
             />
             before run
           </label>
+          <label className="builder-checkbox" title="Automatically apply safe playbooks when a pass fails (e.g. switch to OpenCode if Codex is exhausted)">
+            <input
+              type="checkbox"
+              checked={draft.config.autoApplySafePlaybooks ?? false}
+              onChange={(event) => setDraft((prev) => ({
+                ...prev,
+                config: { ...prev.config, autoApplySafePlaybooks: event.target.checked },
+              }))}
+            />
+            auto-remediate
+          </label>
         </div>
         </div>
         <div className="modal-footer">
@@ -941,11 +953,28 @@ function SourceSessionDetail({ source }: { source?: BuilderSourceSession }) {
           <div className="builder-detail-log-content"><pre>{source.latestUserPrompt}</pre></div>
         </div>
       )}
+      {source.assistantSummary && (
+        <div className="builder-detail-log" style={{ marginTop: 10 }}>
+          <div className="builder-detail-log-header"><span>latest agent response</span></div>
+          <div className="builder-detail-log-content"><pre>{source.assistantSummary}</pre></div>
+        </div>
+      )}
       {source.transcriptSummary && (
         <div className="builder-detail-log" style={{ marginTop: 10 }}>
           <div className="builder-detail-log-header"><span>handoff summary</span></div>
           <div className="builder-detail-log-content"><pre>{source.transcriptSummary}</pre></div>
         </div>
+      )}
+      {source.recentTurns && source.recentTurns.length > 0 && (
+        <div className="builder-detail-log" style={{ marginTop: 10 }}>
+          <div className="builder-detail-log-header"><span>recent transcript</span></div>
+          <div className="builder-detail-log-content">
+            <pre>{source.recentTurns.map((turn) => `${turn.role}: ${turn.text}`).join("\n\n")}</pre>
+          </div>
+        </div>
+      )}
+      {source.touchedFileSummary && (
+        <div className="text-xs text-dim" style={{ marginTop: 10 }}>{source.touchedFileSummary}</div>
       )}
       {source.touchedFiles && source.touchedFiles.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
@@ -997,6 +1026,59 @@ function RunAnalyticsCard({ summary }: { summary: BuilderRunSummaryResponse | nu
         {summary.filesCreated.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files created</span> <strong>{summary.filesCreated.length}</strong></div>}
         {summary.unresolvedErrors != null && <div><span style={{ color: "var(--text-dim)" }}>unresolved errors</span> <strong style={{ color: summary.unresolvedErrors > 0 ? "var(--text-red, red)" : undefined }}>{summary.unresolvedErrors}</strong></div>}
       </div>
+    </div>
+  );
+}
+
+function AiDiagnosisPanel({ passId }: { passId: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, loading } = useApi<{
+    id: string;
+    failureClass: string;
+    rootCauseHypothesis: string;
+    evidence: string[];
+    suggestedActions: string[];
+    confidence: string;
+  }>(`/api/reasoner/diagnoses/${passId}`, 0);
+
+  if (loading && !data) return null;
+  if (!data) return null;
+
+  const confidenceColor = data.confidence === "high" ? "var(--green)" : data.confidence === "medium" ? "var(--amber)" : "var(--text-dim)";
+
+  return (
+    <div style={{ margin: "8px 14px", border: "1px solid color-mix(in oklch, var(--amber, #c8882a) 40%, transparent)", borderRadius: 6, overflow: "hidden" }}>
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: "color-mix(in oklch, var(--amber, #c8882a) 4%, transparent)" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--amber, #c8882a)" }}>AI Diagnosis</span>
+        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>AI hypothesis — not verified</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: confidenceColor }}>{data.confidence} confidence</span>
+        <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ padding: "10px 12px", fontSize: 11, lineHeight: 1.6, color: "var(--text-dim)" }}>
+          <div><strong>Failure class:</strong> <span className="pill gray" style={{ fontSize: 9 }}>{data.failureClass}</span></div>
+          <div style={{ marginTop: 6 }}><strong>Root cause:</strong> {data.rootCauseHypothesis}</div>
+          {Array.isArray(data.evidence) && data.evidence.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <strong>Evidence:</strong>
+              <ul style={{ margin: "4px 0 0 0", paddingLeft: 16 }}>
+                {data.evidence.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+          {Array.isArray(data.suggestedActions) && data.suggestedActions.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <strong>Suggested actions:</strong>
+              <ul style={{ margin: "4px 0 0 0", paddingLeft: 16 }}>
+                {data.suggestedActions.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1105,7 +1187,7 @@ function PlanProgressWidget({ workflowId, planFile }: { workflowId: string | und
   );
 }
 
-function LivePassPanel({ runId, isRunning }: { runId: string; isRunning: boolean }) {
+function LivePassPanel({ runId, currentPassId, isRunning }: { runId: string; currentPassId: string | null; isRunning: boolean }) {
   const [lines, setLines] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -1131,7 +1213,7 @@ function LivePassPanel({ runId, isRunning }: { runId: string; isRunning: boolean
       setConnected(false);
     };
     return () => { es.close(); setConnected(false); };
-  }, [runId, isRunning]);
+  }, [runId, currentPassId, isRunning]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1230,7 +1312,9 @@ function RunDetailPanel({
             <SessionSummaryCard summary={summary} />
             <RunAnalyticsCard summary={summary} />
             <PlanProgressWidget workflowId={workflow?.id} planFile={workflow?.planFile} />
-            {run?.status === "running" && <LivePassPanel runId={run.id} isRunning={true} />}
+            {run && (run.status === "running" || passes.some((p: BuilderPass) => p.status === "running")) && (
+              <LivePassPanel runId={run.id} currentPassId={run.currentPassId ?? null} isRunning={true} />
+            )}
             {run && (
               <div className="builder-detail-meta builder-kv-grid">
                 <div><span>status</span><strong><Pill color={statusColor(run.status)}>{run.status}</Pill></strong></div>
@@ -1325,6 +1409,11 @@ function RunDetailPanel({
                     </span>
                     <span style={{ color: "var(--text-dim)" }}>{isOpen ? "▲" : "▼"}</span>
                   </div>
+                  {pass.summary && (
+                    <div style={{ padding: "6px 14px 8px", fontSize: 12, color: "var(--text-secondary, var(--text-dim))", borderTop: "1px solid var(--border)", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+                      {pass.summary}
+                    </div>
+                  )}
                   {isOpen && logs && (
                     <div style={{ borderTop: "1px solid var(--border)" }}>
                       {logs.stdout && (
@@ -1351,10 +1440,8 @@ function RunDetailPanel({
                   {isOpen && pass.status === "failed" && (
                     <FailureInvestigationPanel passId={pass.id} />
                   )}
-                  {isOpen && pass.summary && (
-                    <div style={{ padding: "4px 14px 8px", fontSize: 11, color: "var(--text-dim)", borderTop: "1px solid var(--border)" }}>
-                      <strong>Summary:</strong> {pass.summary}
-                    </div>
+                  {isOpen && pass.status === "failed" && (
+                    <AiDiagnosisPanel passId={pass.id} />
                   )}
                   {isOpen && pass.nextInstruction && (
                     <div style={{ padding: "4px 14px 8px", fontSize: 11, color: "var(--text-dim)" }}>
@@ -1454,6 +1541,7 @@ function ProvisionModal({
   const [fallbackTargets, setFallbackTargets] = useState<string[]>(data.models.fallbackTargets.slice(0, 5));
   const [internalUrl, setInternalUrl] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
+  const [runtimeScaffold, setRuntimeScaffold] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1483,6 +1571,7 @@ function ProvisionModal({
           fallbackTargets: uniqueList(fallbackTargets),
           internalUrl: internalUrl.trim() || undefined,
           publicUrl: publicUrl.trim() || undefined,
+          runtimeScaffold,
           gitPolicy: { commit: "manual", push: "never" },
         }),
       });
@@ -1553,6 +1642,14 @@ function ProvisionModal({
           <label className="modal-input-row">
             <span className="modal-input-label">Public URL</span>
             <input className="modal-input" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://myapp.example.com (optional)" />
+          </label>
+          <label className="builder-checkbox builder-form-wide" title="Generate Docker Compose, Dockerfile, and a systemd unit template inside the project without installing or starting them">
+            <input
+              type="checkbox"
+              checked={runtimeScaffold}
+              onChange={(event) => setRuntimeScaffold(event.target.checked)}
+            />
+            service/container templates
           </label>
         </div>
         </div>
@@ -1739,6 +1836,7 @@ export function BuilderPage() {
   const workflowsApi = useAuthenticatedApi<BuilderWorkflowsResponse>("/api/builder/workflows", 30_000);
   const runsApi = useAuthenticatedApi<BuilderRunsResponse>("/api/builder/runs", 15_000);
   const doctorReportsApi = useAuthenticatedApi<BuilderDoctorReportsResponse>("/api/builder/doctor-reports?limit=100", 30_000);
+  const approvalsApi = useAuthenticatedApi<{ pending: Array<{ id: string; workflow_id: string; run_id: string; requested_at: number; requested_by?: string }>; completed: unknown[] }>("/api/governance/approvals", 30_000);
   const runDetailUrl = selectedRunId ? `/api/builder/runs/${selectedRunId}` : "";
   const runDetailApi = useAuthenticatedApi<BuilderRunResponse>(runDetailUrl, 15_000);
 
@@ -1826,6 +1924,54 @@ export function BuilderPage() {
           <Plus size={14} /> workflow
         </button>
       </div>
+
+      {approvalsApi.data?.pending && approvalsApi.data.pending.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", background: "rgba(245,166,35,0.08)", border: "1px solid rgba(245,166,35,0.3)", borderRadius: 8, marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+            Pending Approvals — {approvalsApi.data.pending.length} workflow(s) awaiting approval
+          </div>
+          {approvalsApi.data.pending.map((approval) => {
+            const workflow = workflows.find((w) => w.id === approval.workflow_id);
+            const run = runs.find((r) => r.id === approval.run_id);
+            return (
+              <div key={approval.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "rgba(245,166,35,0.06)", borderRadius: 6, border: "1px solid rgba(245,166,35,0.2)" }}>
+                <Pill color="amber">pending</Pill>
+                <span style={{ flex: 1, fontSize: 13 }}>
+                  <strong>{workflow?.name ?? approval.workflow_id}</strong>
+                  {run && <span className="text-dim" style={{ marginLeft: 8 }}>run={run.id.slice(0, 12)}</span>}
+                </span>
+                <span className="text-xs text-dim">{approval.requested_by ? `by ${approval.requested_by}` : ""} at {fmtTs(approval.requested_at)}</span>
+                <button
+                  className="btn btn-xs"
+                  style={{ background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.3)", color: "#22c55e" }}
+                  onClick={async () => {
+                    try {
+                      await authFetch(`/api/governance/approvals/${approval.run_id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+                      approvalsApi.refresh();
+                      runsApi.refresh();
+                    } catch (e) { console.error("approve failed", e); }
+                  }}
+                >
+                  approve
+                </button>
+                <button
+                  className="btn btn-xs"
+                  style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", color: "#ef4444" }}
+                  onClick={async () => {
+                    try {
+                      await authFetch(`/api/governance/approvals/${approval.run_id}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+                      approvalsApi.refresh();
+                      runsApi.refresh();
+                    } catch (e) { console.error("reject failed", e); }
+                  }}
+                >
+                  reject
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="action-bar audit-filter-bar">
         <select

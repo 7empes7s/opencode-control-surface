@@ -1,0 +1,7 @@
+{
+  "name": "@tib-builder/sdk",
+  "version": "0.1.0",
+  "description": "Skill authoring SDK for the TIB marketplace",
+  "main": "index.ts",
+  "private": true
+}

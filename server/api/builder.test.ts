@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { readActionAudit } from "../db/writer.ts";
 import type { ApiEnvelope } from "./types.ts";
 import {
@@ -11,6 +11,7 @@ import {
   builderDiscoverHandler,
   builderModelsHandler,
   builderPauseWorkflowHandler,
+  builderProvisionHandler,
   builderProjectsHandler,
   builderRunHandler,
   builderResumeWorkflowHandler,
@@ -18,6 +19,7 @@ import {
   builderStartWorkflowHandler,
   builderStopWorkflowHandler,
   builderWorkflowsHandler,
+  type BuilderProvisionResponse,
   type BuilderProjectsResponse,
   type BuilderRunResponse,
   type BuilderWorkflowResponse,
@@ -30,12 +32,18 @@ import { selectModelForRole } from "../builder/modelSelector.ts";
 let tempDir: string;
 let previousDashboardDb: string | undefined;
 let previousDashboardDbPath: string | undefined;
+let previousProvisionRootsAllow: string | undefined;
+let previousProvisionedRoots: string | undefined;
+let previousPath: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
   tempDir = mkdtempSync(join(tmpdir(), "builder-api-"));
   previousDashboardDb = process.env.DASHBOARD_DB;
   previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
+  previousProvisionRootsAllow = process.env.BUILDER_PROVISION_ROOTS_ALLOW;
+  previousProvisionedRoots = process.env.BUILDER_PROVISIONED_ROOTS;
+  previousPath = process.env.PATH;
 });
 
 afterEach(() => {
@@ -44,7 +52,14 @@ afterEach(() => {
   else process.env.DASHBOARD_DB = previousDashboardDb;
   if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
   else process.env.DASHBOARD_DB_PATH = previousDashboardDbPath;
+  if (previousProvisionRootsAllow === undefined) delete process.env.BUILDER_PROVISION_ROOTS_ALLOW;
+  else process.env.BUILDER_PROVISION_ROOTS_ALLOW = previousProvisionRootsAllow;
+  if (previousProvisionedRoots === undefined) delete process.env.BUILDER_PROVISIONED_ROOTS;
+  else process.env.BUILDER_PROVISIONED_ROOTS = previousProvisionedRoots;
+  if (previousPath === undefined) delete process.env.PATH;
+  else process.env.PATH = previousPath;
   rmSync(tempDir, { recursive: true, force: true });
+  rmSync("/opt/ai-vault/projects/test-provisioned-api-project.md", { force: true });
 });
 
 function enableDb(): void {
@@ -153,7 +168,13 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
         capturedAt: "2026-05-14T00:00:00.000Z",
         transcriptSummary: "Started: continue Dashboard V4\nTouched files: app/routes/BuilderPage.tsx",
         latestUserPrompt: "Continue development from the current session.",
+        assistantSummary: "Implemented the Builder handoff controls.",
         touchedFiles: ["app/routes/BuilderPage.tsx", "server/api/builder.ts"],
+        touchedFileSummary: "2 files referenced: app/routes/BuilderPage.tsx, server/api/builder.ts",
+        recentTurns: [
+          { role: "user", text: "Continue Dashboard V4." },
+          { role: "assistant", text: "Implemented Builder handoff controls." },
+        ],
       },
     },
   };
@@ -172,7 +193,10 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
   expect(created.data.workflow?.config.sourceSession?.sessionId).toBe("cdx_test");
   expect(created.data.workflow?.config.sourceSession?.transcriptSummary).toContain("Dashboard V4");
   expect(created.data.workflow?.config.sourceSession?.latestUserPrompt).toContain("Continue development");
+  expect(created.data.workflow?.config.sourceSession?.assistantSummary).toContain("handoff controls");
   expect(created.data.workflow?.config.sourceSession?.touchedFiles).toContain("server/api/builder.ts");
+  expect(created.data.workflow?.config.sourceSession?.touchedFileSummary).toContain("2 files");
+  expect(created.data.workflow?.config.sourceSession?.recentTurns?.[1]?.role).toBe("assistant");
 
   closeDashboardDb();
   process.env.DASHBOARD_DB = "1";
@@ -196,6 +220,110 @@ test("builder runner mutations are explicitly disabled until phase three", async
   expect(payload.action).toBe("start");
 });
 
+test("builder provisioning creates project scaffold and draft workflow", async () => {
+  enableDb();
+  process.env.BUILDER_PROVISION_ROOTS_ALLOW = tempDir;
+  const projectRoot = join(tempDir, "new-project");
+
+  const response = await builderProvisionHandler(new Request("http://localhost/api/builder/provision", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Test Provisioned API Project",
+      projectRoot,
+      description: "API-provisioned project for Builder tests",
+      agentOrder: ["codex"],
+      fallbackTargets: ["opencode/gpt-5.4-mini"],
+      validationCommands: ["bun run check"],
+      gitPolicy: { commit: "manual", push: "never" },
+      runtimeScaffold: true,
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(response.status).toBe(201);
+  const envelope = await response.json() as ApiEnvelope<BuilderProvisionResponse>;
+  const result = envelope.data.result;
+
+  expect(result.error).toBeUndefined();
+  expect(result.projectRoot).toBe(projectRoot);
+  expect(result.workflowStatus).toBe("draft");
+  expect(result.provisioned.agentsMd).toBe(true);
+  expect(result.provisioned.planFile).toBe(join(projectRoot, "PLAN.md"));
+  expect(result.provisioned.vaultNote).toBe(true);
+  expect(result.provisioned.skillFile).toBe(true);
+  expect(result.provisioned.validationProfileFile).toBe(join(projectRoot, ".opencode", "validation-profile.json"));
+  expect(result.provisioned.runtimeScaffoldFiles).toEqual([
+    join(projectRoot, "Dockerfile"),
+    join(projectRoot, "compose.yaml"),
+    join(projectRoot, ".opencode", "systemd", "test-provisioned-api-project.service"),
+  ]);
+  expect(result.validationCommands).toContain("bun run check");
+  expect(existsSync(join(projectRoot, "AGENTS.md"))).toBe(true);
+  expect(readFileSync(join(projectRoot, "Dockerfile"), "utf8")).toContain("oven/bun");
+  expect(readFileSync(join(projectRoot, "compose.yaml"), "utf8")).toContain("services:");
+  expect(readFileSync(join(projectRoot, ".opencode", "systemd", "test-provisioned-api-project.service"), "utf8")).toContain(`WorkingDirectory=${projectRoot}`);
+  expect(readFileSync(join(projectRoot, "AGENTS.md"), "utf8")).toContain("Test Provisioned API Project");
+  expect(readFileSync("/opt/ai-vault/projects/test-provisioned-api-project.md", "utf8")).toContain("API-provisioned project for Builder tests");
+  expect(readFileSync(join(projectRoot, ".opencode", "skills", "project-workflow", "SKILL.md"), "utf8")).toContain("Test Provisioned API Project Project Workflow");
+  expect(readFileSync(join(projectRoot, ".opencode", "validation-profile.json"), "utf8")).toContain("bun run check");
+
+  const workflow = readBuilderWorkflow(result.workflowId);
+  expect(workflow?.planFile).toBe(join(projectRoot, "PLAN.md"));
+  expect(workflow?.config.validationProfile.commands).toContain("bun run check");
+});
+
+test("provisioned project discovery survives runtime allowlist reset", async () => {
+  enableDb();
+  process.env.BUILDER_PROVISION_ROOTS_ALLOW = tempDir;
+  const projectRoot = join(tempDir, "persisted-project");
+
+  const provisionResponse = await builderProvisionHandler(new Request("http://localhost/api/builder/provision", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Persisted Builder Project",
+      projectRoot,
+      description: "Project should stay discoverable from SQLite after restart",
+      agentOrder: ["codex"],
+      validationCommands: ["bun run check"],
+      gitPolicy: { commit: "manual", push: "never" },
+      internalUrl: "http://127.0.0.1:4321",
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(provisionResponse.status).toBe(201);
+  delete process.env.BUILDER_PROVISIONED_ROOTS;
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("BUILDER_ALLOWED_ROOT_")) delete process.env[key];
+  }
+
+  const projectsResponse = builderProjectsHandler();
+  const projectsEnvelope = await projectsResponse.json() as ApiEnvelope<BuilderProjectsResponse>;
+  const project = projectsEnvelope.data.projects.find((item) => item.root === projectRoot);
+  expect(project?.label).toBe("Persisted Builder Project");
+  expect(project?.internalUrl).toBe("http://127.0.0.1:4321");
+
+  const discoverResponse = builderDiscoverHandler(new URL(`/api/builder/discover?root=${encodeURIComponent(projectRoot)}`, "http://localhost"));
+  expect(discoverResponse.status).toBe(200);
+  const discovery = await discoverResponse.json() as ApiEnvelope<BuilderDiscovery>;
+  expect(discovery.data.project.root).toBe(projectRoot);
+  expect(discovery.data.planCandidates.some((plan) => plan.path === join(projectRoot, "PLAN.md"))).toBe(true);
+});
+
+test("builder provisioning rejects protected service roots", async () => {
+  enableDb();
+  const response = await builderProvisionHandler(new Request("http://localhost/api/builder/provision", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Bad Project",
+      projectRoot: "/opt/newsbites/child",
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(response.status).toBe(403);
+});
+
 test("builder workflow start creates run pass job and artifact rows", async () => {
   enableDb();
   const body = {
@@ -216,6 +344,23 @@ test("builder workflow start creates run pass job and artifact rows", async () =
       gitPolicy: { commit: "manual", push: "never" },
       backupPolicy: { enabled: false, beforeRun: false },
       riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      sourceSession: {
+        agent: "codex",
+        sessionId: "cdx_live_handoff",
+        title: "Scheduler plan handoff",
+        directory: "/opt/opencode-control-surface",
+        messageCount: 4,
+        capturedAt: "2026-05-17T14:45:00.000Z",
+        transcriptSummary: "Recent turns:\nuser: Dogfood the chat handoff into Builder.",
+        latestUserPrompt: "Dogfood the chat handoff into Builder.",
+        assistantSummary: "Prepared Builder source-session run detail coverage.",
+        touchedFiles: ["app/components/AgentBuilderHandoffButton.tsx", "server/api/builder.test.ts"],
+        touchedFileSummary: "2 files referenced: app/components/AgentBuilderHandoffButton.tsx, server/api/builder.test.ts",
+        recentTurns: [
+          { role: "user", text: "Dogfood the chat handoff into Builder." },
+          { role: "assistant", text: "Prepared Builder source-session run detail coverage." },
+        ],
+      },
     },
   };
 
@@ -270,6 +415,11 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   expect(detailResponse.status).toBe(200);
   const detail = await detailResponse.json() as ApiEnvelope<BuilderRunResponse>;
   expect(detail.data.workflow?.id).toBe(workflowId);
+  expect(detail.data.workflow?.config.sourceSession?.sessionId).toBe("cdx_live_handoff");
+  expect(detail.data.workflow?.config.sourceSession?.latestUserPrompt).toContain("Dogfood");
+  expect(detail.data.workflow?.config.sourceSession?.assistantSummary).toContain("run detail coverage");
+  expect(detail.data.workflow?.config.sourceSession?.touchedFiles).toContain("server/api/builder.test.ts");
+  expect(detail.data.workflow?.config.sourceSession?.recentTurns?.[1]?.role).toBe("assistant");
 
   // Stop immediately to clean up
   const stopResponse = await builderStopWorkflowHandler(workflowId, new Request("http://localhost", {
@@ -285,6 +435,158 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   const runs = readBuilderRuns(workflowId);
   expect(runs.length).toBeGreaterThan(0);
   expect(runs[0].status).toBe("canceled");
+});
+
+test("builder child helpers execute disposable child and record lifecycle evidence", async () => {
+  enableDb();
+  const fakeBin = join(tempDir, "bin");
+  mkdirSync(fakeBin, { recursive: true });
+  const fakeCodex = join(fakeBin, "codex");
+  writeFileSync(fakeCodex, `#!/bin/bash
+set -euo pipefail
+echo "fake codex invoked: $*"
+if [ -n "\${BUILDER_CHILD_ID:-}" ]; then
+  echo "fake child completed for $BUILDER_CHILD_ID"
+fi
+`, { encoding: "utf8" });
+  chmodSync(fakeCodex, 0o755);
+  process.env.PATH = `${fakeBin}:${process.env.PATH ?? ""}`;
+
+  const body = {
+    name: "Child helper smoke workflow",
+    projectRoot: "/opt/opencode-control-surface",
+    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    mode: "once",
+    status: "draft",
+    config: {
+      projectRoot: "/opt/opencode-control-surface",
+      agentOrder: ["codex"],
+      modelPolicy: { fallbackTargets: [] },
+      validationProfile: {
+        commands: ["true"],
+        internalUrl: "http://127.0.0.1:3000",
+        publicUrl: "https://control.techinsiderbytes.com",
+      },
+      gitPolicy: { commit: "manual", push: "never" },
+      backupPolicy: { enabled: false, beforeRun: false },
+      riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+    },
+  };
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+
+  const startResponse = await builderStartWorkflowHandler(created.data.workflow!.id, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(startResponse.status).toBe(201);
+  const started = await startResponse.json() as ApiEnvelope<BuilderRunResponse>;
+  const run = started.data.run!;
+  const scriptArtifact = started.data.artifacts.find((artifact) => artifact.kind === "command-script");
+  expect(scriptArtifact).toBeTruthy();
+  const builderDir = scriptArtifact!.path.replace(/\/pass-\d+\.sh$/, "");
+
+  const smokeScript = `
+set -euo pipefail
+source "$BUILDER_DIR/builder-child-helpers.sh"
+printf "Disposable child helper smoke for %s\\n" "$RUN_ID" > "$BUILDER_DIR/child-context.txt"
+pid="$(builder_spawn_child codex fake-child-model "write harmless child output")"
+echo "spawned pid=$pid"
+status="$(builder_child_wait "$pid" 20)"
+echo "child wait status=$status"
+builder_child_output "$pid"
+test "$status" = "DONE"
+test -s "$BUILDER_DIR/children-manifest.jsonl"
+`;
+  const smoke = spawnSync("bash", ["-lc", smokeScript], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      BUILDER_DIR: builderDir,
+      RUN_ID: run.id,
+      BUILDER_PROJECT_ROOT: "/opt/opencode-control-surface",
+    },
+  });
+
+  if (smoke.status !== 0) {
+    throw new Error(`child helper smoke failed (${smoke.status})\nstdout:\n${smoke.stdout}\nstderr:\n${smoke.stderr}`);
+  }
+  expect(smoke.stdout).toContain("child wait status=DONE");
+  expect(smoke.stdout).toContain("fake child completed");
+  const manifest = readFileSync(join(builderDir, "children-manifest.jsonl"), "utf8");
+  expect(manifest).toContain('"agent":"codex"');
+  expect(manifest).toContain('"model":"fake-child-model"');
+  const passLog = readFileSync(join(builderDir, "pass-1-stdout.log"), "utf8");
+  expect(passLog).toContain("[builder-child]");
+
+  const stopResponse = await builderStopWorkflowHandler(created.data.workflow!.id, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(stopResponse.status).toBe(200);
+});
+
+test("builder workflow start rejects tampered project roots before spawning", async () => {
+  enableDb();
+  const body = {
+    name: "Tampered workflow",
+    projectRoot: "/opt/opencode-control-surface",
+    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    mode: "once",
+    status: "draft",
+    config: {
+      projectRoot: "/opt/opencode-control-surface",
+      agentOrder: ["codex"],
+      modelPolicy: { fallbackTargets: [] },
+      validationProfile: {
+        commands: ["bun run typecheck"],
+        internalUrl: "http://127.0.0.1:3000",
+        publicUrl: "https://control.techinsiderbytes.com",
+      },
+      gitPolicy: { commit: "manual", push: "never" },
+      backupPolicy: { enabled: false, beforeRun: false },
+      riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+    },
+  };
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflow = created.data.workflow!;
+  const workflowId = workflow.id;
+  const rogueRoot = join(tempDir, "rogue-project");
+
+  const db = getDashboardDb();
+  expect(db).not.toBeNull();
+  db!.query(`UPDATE builder_workflows SET config_json = ? WHERE id = ?`).run(
+    JSON.stringify({ ...workflow.config, projectRoot: rogueRoot }),
+    workflowId,
+  );
+
+  const startResponse = await builderStartWorkflowHandler(workflowId, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(startResponse.status).toBe(400);
+  const payload = await startResponse.json() as { error?: string };
+  expect(payload.error).toContain("project root is not allowlisted");
+  expect(readBuilderRuns(workflowId).length).toBe(0);
 });
 
 test("builder pause and resume toggle workflow status", async () => {

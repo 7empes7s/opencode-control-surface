@@ -4,14 +4,18 @@ import { normalizeWorkspace } from "./api/workspaces.ts";
 import { initDashboardDb } from "./db/dashboard.ts";
 import { startIngestor } from "./db/ingestor.ts";
 import { startBuilderReconciler } from "./builder/runner.ts";
+import { startReasonerWatcher } from "./reasoner/index.ts";
+import { seedPlaybooks } from "./reasoner/playbooks.ts";
 import { createWorkflow, getWorkflow, listWorkflows, updateWorkflow, deleteWorkflow } from "./db/workflows.js";
 import { readFileSync } from "fs";
+import { startRetentionScheduler } from "./governance/retention.ts";
+import { setLaneLimit } from "./orchestrator/lanes.ts";
+import { seedDefaultTenant } from "./tenancy/store.ts";
+import { upsertProject } from "./projects/index.ts";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
-const PORT = parseInt(process.env.PORT || "3000");
 const DIST_PATH = new URL("../dist", import.meta.url).pathname;
 
-// Map common extensions to MIME types
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript",
@@ -32,7 +36,6 @@ function mimeFor(pathname: string): string {
 }
 
 async function serveStatic(pathname: string): Promise<Response> {
-  // Client-side routes should always receive the SPA shell.
   if (pathname === "/" || !pathname.includes(".")) {
     try {
       return new Response(readFileSync(`${DIST_PATH}/index.html`), {
@@ -96,13 +99,10 @@ async function proxyOpenCode(req: Request, pathname: string, search: string): Pr
     } as RequestInit);
 
     const headers = new Headers(resp.headers);
-    // Bun fetch transparently decodes compressed upstream responses. Forwarding
-    // the original encoding headers makes browsers try to decode the body again.
     headers.delete("content-encoding");
     headers.delete("content-length");
     headers.delete("transfer-encoding");
 
-    // Stream the response body through unchanged
     return new Response(resp.body, {
       status: resp.status,
       headers,
@@ -115,40 +115,92 @@ async function proxyOpenCode(req: Request, pathname: string, search: string): Pr
   }
 }
 
-const dashboardDb = initDashboardDb();
-if (process.env.DASHBOARD_DB === "1" && !dashboardDb) {
-  console.error("[control-surface] DASHBOARD_DB=1 but dashboard SQLite is unavailable; continuing without durable history");
+export async function startServer(): Promise<{ stop: () => void }> {
+  const dashboardDb = initDashboardDb();
+  if (process.env.DASHBOARD_DB === "1" && !dashboardDb) {
+    console.error("[control-surface] DASHBOARD_DB=1 but dashboard SQLite is unavailable; continuing without durable history");
+  }
+  if (dashboardDb) {
+    seedPlaybooks(dashboardDb);
+    setLaneLimit("builder-passes", 3);
+    seedDefaultTenant();
+    for (const tbl of ["builder_workflows", "builder_runs", "builder_passes", "builder_artifacts", "builder_validations", "action_audit", "jobs"]) {
+      try { dashboardDb.run(`UPDATE ${tbl} SET tenant_id = 'mimule' WHERE tenant_id IS NULL`); } catch { /* table may not exist yet */ }
+    }
+    upsertProject({
+      id: "opencode-control-surface",
+      tenantId: "mimule",
+      name: "Control Surface",
+      repoPath: "/opt/opencode-control-surface",
+      language: "typescript",
+      framework: "bun+react",
+      validatorCommands: ["bun run check", "bun test server/db/ server/api/", "bun run build"],
+      defaultModelRoster: [],
+      defaultPolicies: {},
+      status: "active",
+    });
+
+    const { installSkill, listSkills } = await import("./marketplace/registry.ts");
+    const { parseManifest } = await import("./marketplace/manifest.ts");
+    const echoBundlePath = new URL("./marketplace/builtin/echo-skill", import.meta.url).pathname;
+    const echoManifestPath = `${echoBundlePath}/manifest.json`;
+    try {
+      const existing = listSkills("mimule").filter((s) => s.name === "echo");
+      if (existing.length === 0) {
+        const manifestJson = await Bun.file(echoManifestPath).text();
+        installSkill("mimule", echoBundlePath, manifestJson);
+        console.log("[control-surface] echo skill auto-installed");
+      }
+    } catch (e) {
+      console.warn("[control-surface] echo skill auto-install failed:", e);
+    }
+  }
+
+  const ingestor = startIngestor();
+  if (ingestor) {
+    console.log("[control-surface] dashboard ingestor started");
+  }
+
+  const builderReconciler = startBuilderReconciler();
+  if (builderReconciler) {
+    console.log("[control-surface] builder reconciler started");
+  }
+
+  startReasonerWatcher();
+
+  startRetentionScheduler();
+
+  const shutdown = () => {
+    ingestor?.stop();
+    builderReconciler?.stop();
+    process.exit(0);
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+
+  return {
+    stop: () => {
+      ingestor?.stop();
+      builderReconciler?.stop();
+    },
+  };
 }
 
-const ingestor = startIngestor();
-if (ingestor) {
-  console.log("[control-surface] dashboard ingestor started");
-}
+startServer().catch(console.error);
 
-const builderReconciler = startBuilderReconciler();
-if (builderReconciler) {
-  console.log("[control-surface] builder reconciler started");
-}
-
-const shutdown = () => {
-  ingestor?.stop();
-  builderReconciler?.stop();
-  process.exit(0);
-};
-process.once("SIGTERM", shutdown);
-process.once("SIGINT", shutdown);
+const PORT = parseInt(process.env.PORT || "3000");
 
 const server = Bun.serve({
   port: PORT,
   hostname: "0.0.0.0",
-  idleTimeout: 0, // SSE and Claude streaming need no idle cutoff
+  idleTimeout: 0,
 
   async fetch(req) {
     const url = new URL(req.url);
     const { pathname, search } = url;
 
     if (pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true }), {
+      return new Response(JSON.stringify({ ok: true, version: "0.8.0" }), {
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -192,7 +244,6 @@ const server = Bun.serve({
     }
 
     if (pathname === "/api/models") {
-      // Let the router handle this for proper formatting
       return handleApi(req, url);
     }
 

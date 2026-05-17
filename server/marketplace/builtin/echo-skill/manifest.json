@@ -1,0 +1,10 @@
+{
+  "name": "echo",
+  "version": "1.0.0",
+  "kind": "workflow-skill",
+  "description": "Returns its input as output",
+  "entrypoint": "index.ts",
+  "inputs": {},
+  "outputs": {},
+  "permissions": []
+}

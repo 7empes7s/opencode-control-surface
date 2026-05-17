@@ -19,6 +19,13 @@ import { BuilderPage } from "./routes/BuilderPage";
 import { GeminiPage } from "./routes/GeminiPage";
 import { TracePage } from "./routes/TracePage";
 import { GatewayPage } from "./routes/GatewayPage";
+import { GovernancePage } from "./routes/GovernancePage";
+import { WorkflowsPage } from "./routes/WorkflowsPage";
+import { ProjectsPage } from "./routes/ProjectsPage";
+import { AboutPage } from "./routes/AboutPage";
+import { MarketplacePage } from "./routes/MarketplacePage";
+import { InstallWizardPage } from "./routes/InstallWizardPage";
+import { CompliancePage } from "./routes/CompliancePage";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -98,11 +105,32 @@ export function App() {
         <Route path="/builder">
           <DashLayout><BuilderPage /></DashLayout>
         </Route>
+        <Route path="/governance">
+          <DashLayout><GovernancePage /></DashLayout>
+        </Route>
         <Route path="/traces">
           <DashLayout><TracePage /></DashLayout>
         </Route>
         <Route path="/gateway">
           <DashLayout><GatewayPage /></DashLayout>
+        </Route>
+        <Route path="/workflows">
+          <DashLayout><WorkflowsPage /></DashLayout>
+        </Route>
+        <Route path="/projects">
+          <DashLayout><ProjectsPage /></DashLayout>
+        </Route>
+        <Route path="/about">
+          <DashLayout><AboutPage /></DashLayout>
+        </Route>
+        <Route path="/marketplace">
+          <DashLayout><MarketplacePage /></DashLayout>
+        </Route>
+        <Route path="/install">
+          <DashLayout><InstallWizardPage /></DashLayout>
+        </Route>
+        <Route path="/compliance">
+          <DashLayout><CompliancePage /></DashLayout>
         </Route>
 
         <Route>
