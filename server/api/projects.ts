@@ -2,6 +2,7 @@ import { checkToken } from "./actions.ts";
 import { upsertProject, getProject, listProjects, deleteProject, detectProject } from "../projects/index.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import type { Project } from "../projects/types.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -18,8 +19,8 @@ function operatorOnly(req: Request): Response | null {
 export function projectsListHandler(req: Request, url: URL): Response {
   const guard = operatorOnly(req);
   if (guard) return guard;
-  const tenantId = url.searchParams.get("tenantId");
-  if (!tenantId) return json({ error: "tenantId query param required" }, 400);
+  const paramTenantId = url.searchParams.get("tenantId");
+  const tenantId = paramTenantId || getCurrentTenantContext().tenantId;
   return json({ projects: listProjects(tenantId) });
 }
 

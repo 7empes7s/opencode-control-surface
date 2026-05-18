@@ -57,6 +57,17 @@ export async function autopipelineHandler(): Promise<Response> {
       const age = item.createdAt ? now - item.createdAt : 0;
       if (oldestApprovalMs === null || age > oldestApprovalMs) oldestApprovalMs = age;
     }
+    let dossierDate: string | undefined;
+    let dossierSlug: string | undefined;
+    if (item.slug) {
+      dossierSlug = item.slug;
+      const tsMatch = item.id.match(/^story-(\d{13})-/);
+      if (tsMatch) {
+        const unixSec = Math.floor(Number(tsMatch[1]) / 1000);
+        const d = new Date(unixSec * 1000);
+        dossierDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      }
+    }
     return {
       id: item.id,
       slug: item.slug,
@@ -66,6 +77,8 @@ export async function autopipelineHandler(): Promise<Response> {
       running: item.running ?? false,
       createdAt: item.createdAt,
       elapsedMs: item.createdAt ? now - item.createdAt : undefined,
+      dossierDate,
+      dossierSlug,
     };
   });
 

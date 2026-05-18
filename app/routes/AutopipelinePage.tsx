@@ -183,10 +183,9 @@ export function AutopipelinePage() {
                     <td className="mono">{item.stage}</td>
                     <td><div style={{ display: "flex", gap: 4 }} className="queue-actions">
                         <button className="btn btn-sm btn-ghost" onClick={() => {
-                          // Navigate to dossier inspector page
-                          const date = item.id.split('T')[0]; // Extract date from ID
-                          window.location.hash = `#/autopipeline/dossier/${date}/${item.slug ?? item.id}`;
-                        }}>inspect</button>
+                          if (!item.dossierDate || !item.dossierSlug) return;
+                          window.location.hash = `#/autopipeline/dossier/${item.dossierDate}/${item.dossierSlug}`;
+                        }} disabled={!item.dossierDate || !item.dossierSlug}>inspect</button>
                         {item.stage === "publish" && item.waitingApproval && (
                           <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>
                         )}

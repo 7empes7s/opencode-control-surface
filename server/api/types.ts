@@ -225,6 +225,8 @@ export interface AutopipelineDetail {
     running: boolean;
     createdAt?: number;
     elapsedMs?: number;
+    dossierDate?: string;
+    dossierSlug?: string;
   }[];
   current: { id: string; slug?: string; stage: string } | null;
   paused: boolean;

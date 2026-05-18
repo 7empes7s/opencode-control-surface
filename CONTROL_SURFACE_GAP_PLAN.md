@@ -1047,3 +1047,5 @@ New severity items were added above:
 <!-- Builder run br_3e001: failed at 2026-05-18T10:12:14.250Z — details: /opt/ai-vault/builder/2026-05-18-bw_b3f8c-br_3e001.md -->
 
 <!-- Builder run br_7db0e: success at 2026-05-18T10:45:03.337Z — details: /opt/ai-vault/builder/2026-05-18-bw_ede5b-br_7db0e.md -->
+
+<!-- Builder run br_3eb9d: failed at 2026-05-18T11:05:38.046Z — details: /opt/ai-vault/builder/2026-05-18-bw_88215-br_3eb9d.md -->

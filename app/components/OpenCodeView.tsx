@@ -12,6 +12,7 @@ import { AgentComposer } from "./AgentComposer";
 import { AgentVaultLogButton } from "./AgentVaultLogButton";
 import { AgentBuilderHandoffButton } from "./AgentBuilderHandoffButton";
 import { TranscriptControls, type ActionFilter, type TranscriptMode } from "./TranscriptControls";
+import { ConfirmModal } from "./ConfirmModal";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 
 const PRESET_DIRS = [

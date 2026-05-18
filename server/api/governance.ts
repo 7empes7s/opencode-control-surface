@@ -16,6 +16,8 @@ export async function loadPolicies() {
   if (doc) loadedPolicies.push(doc);
 }
 
+import { checkToken } from "./actions.ts";
+
 function parseCookies(req: Request): Record<string, string> {
   const cookieHeader = req.headers.get("cookie") || "";
   return cookieHeader.split(";").reduce((acc, cookie) => {
@@ -26,11 +28,11 @@ function parseCookies(req: Request): Record<string, string> {
 }
 
 export function getGovernanceRole(req: Request): string {
-  const headerToken = req.headers.get("x-operator-token");
+  if (checkToken(req)) return "owner";
   const cookies = parseCookies(req);
   const sessionToken = cookies["operator_session"] || cookies["auth_token"] || "";
-  const token = headerToken || sessionToken;
-  return resolveRole(token);
+  if (sessionToken) return "viewer";
+  return "viewer";
 }
 
 export function requireRole(action: string) {

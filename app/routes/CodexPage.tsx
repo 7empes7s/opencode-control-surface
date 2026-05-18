@@ -10,6 +10,7 @@ import { AgentComposer } from "../components/AgentComposer";
 import { AgentVaultLogButton } from "../components/AgentVaultLogButton";
 import { AgentBuilderHandoffButton } from "../components/AgentBuilderHandoffButton";
 import { TranscriptControls, type ActionFilter, type TranscriptMode } from "../components/TranscriptControls";
+import { ConfirmModal } from "../components/ConfirmModal";
 import { useSessionEndPrompt } from "../hooks/useSessionEndPrompt";
 import { authFetch } from "../lib/authFetch";
 
@@ -131,6 +132,7 @@ export function CodexPage() {
   const [loading, setLoading] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,9 +209,16 @@ export function CodexPage() {
   };
 
   const deleteSession = async (id: string) => {
-    if (!confirm("Delete this Codex session? (Codex's own history file will not be deleted.)")) return;
-    await authFetch(`/api/codex/sessions/${id}`, { method: "DELETE" });
-    if (active?.id === id) setActive(null);
+    const session = sessions.find((s) => s.id === id);
+    if (!session) return;
+    setDeleteTarget({ id, title: session.title });
+  };
+
+  const confirmDeleteSession = async () => {
+    if (!deleteTarget) return;
+    await authFetch(`/api/codex/sessions/${deleteTarget.id}`, { method: "DELETE" });
+    if (active?.id === deleteTarget.id) setActive(null);
+    setDeleteTarget(null);
     loadList();
   };
 
@@ -550,6 +559,16 @@ export function CodexPage() {
         />
       )}
       {sessionEndPromptModal}
+      {deleteTarget && (
+        <ConfirmModal
+          title="Delete Session"
+          message={`Delete "${deleteTarget.title}"? Codex's own history file will not be deleted.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={confirmDeleteSession}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }
