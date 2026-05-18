@@ -743,7 +743,7 @@ export function readBuilderDoctorReports(workflowId?: string, runId?: string, li
       conditions.push("run_id = ?");
       params.push(runId);
     }
-    const clauseStr = tenantWhere.clause.trim().replace(/^ AND /, "");
+    const clauseStr = tenantWhere.clause.replace(/^\s*AND\s+/i, "").trim();
     if (clauseStr) conditions.push(clauseStr);
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");

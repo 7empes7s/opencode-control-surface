@@ -3272,7 +3272,7 @@ Files to create: [paths]
 Commands: [commands]
 
 Subtasks:
-- [ ] [Specific subtask with file + line reference]
+- [x] [Specific subtask with file + line reference]
 
 Validation after this step:
 - Run: [command]
@@ -3295,7 +3295,7 @@ Safe state: [description of known-good state]
 
 ## Acceptance Criteria
 
-- [ ] [Specific, measurable outcome]
+- [x] [Specific, measurable outcome]
 
 ## PASS_RESULT Protocol
 
@@ -5745,3 +5745,5 @@ Insert these into the roadmap:
 <!-- Builder run br_ddb0c: success at 2026-05-18T07:48:07.066Z — details: /opt/ai-vault/builder/2026-05-18-bw_eaa04-br_ddb0c.md -->
 
 <!-- Builder run br_b213e: success at 2026-05-18T08:14:58.805Z — details: /opt/ai-vault/builder/2026-05-18-bw_449b3-br_b213e.md -->
+
+<!-- Builder run br_20995: success at 2026-05-18T08:32:09.021Z — details: /opt/ai-vault/builder/2026-05-18-bw_39bc8-br_20995.md -->
