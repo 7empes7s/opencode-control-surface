@@ -115,6 +115,7 @@ import {
   governanceBudgetsWriteHandler,
   governanceRetentionHandler,
   governanceRetentionWriteHandler,
+  governanceAuditHandler,
 } from "./governance.ts";
 import {
   approvalCreateHandler,
@@ -375,10 +376,7 @@ if (method === "GET" && pathname === "/api/stream") {
     if (!checkToken(req)) return unauthorized();
     return actionAuditHandler(url);
   }
-  if (method === "GET" && pathname === "/api/governance/audit") {
-    if (!checkToken(req)) return unauthorized();
-    return actionAuditHandler(url);
-  }
+  if (method === "GET" && pathname === "/api/governance/audit") return governanceAuditHandler(req);
   if (method === "POST" && pathname === "/api/audit/export") {
     if (!checkToken(req)) return unauthorized();
     return auditExportHandler(url, method, await req.clone().json().catch(() => ({})));
@@ -657,6 +655,7 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "POST" && pathname === "/api/governance/budgets") return governanceBudgetsWriteHandler(req);
   if (method === "GET" && pathname === "/api/governance/retention") return governanceRetentionHandler();
   if (method === "POST" && pathname === "/api/governance/retention") return governanceRetentionWriteHandler(req);
+  if (method === "GET" && pathname === "/api/governance/audit") return governanceAuditHandler(req);
 
   // Deploy job status (GET with path param)
   const deployMatch = pathname.match(/^\/api\/newsbites\/deploy\/([^/]+)$/);

@@ -26,7 +26,10 @@ function parseCookies(req: Request): Record<string, string> {
 }
 
 export function getGovernanceRole(req: Request): string {
-  const token = req.headers.get("x-operator-token") || parseCookies(req)["auth_token"] || "";
+  const headerToken = req.headers.get("x-operator-token");
+  const cookies = parseCookies(req);
+  const sessionToken = cookies["operator_session"] || cookies["auth_token"] || "";
+  const token = headerToken || sessionToken;
   return resolveRole(token);
 }
 
@@ -208,6 +211,68 @@ export async function governanceBudgetsWriteHandler(req: Request): Promise<Respo
     projectId: body.projectId,
   }, ctx);
   return Response.json({ ok: true });
+}
+
+export async function governanceAuditHandler(req: Request): Promise<Response> {
+  const db = getDashboardDb();
+  if (!db) return Response.json({ error: "db not available" }, { status: 500 });
+
+  const url = new URL(req.url);
+  const from = parseInt(url.searchParams.get("from") || "0");
+  const to = parseInt(url.searchParams.get("to") || "0");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "100"), 1000);
+  const offset = parseInt(url.searchParams.get("offset") || "0");
+  const actionKind = url.searchParams.get("action_kind") || undefined;
+  const tenant_filter = url.searchParams.get("tenant") || undefined;
+
+  const fromTs = from || Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const toTs = to || Date.now();
+
+  const ctx = getCurrentTenantContext();
+  const isMimule = ctx.tenantId === "mimule";
+  const conditions: (string | number)[] = [];
+  const whereParts: string[] = [];
+
+  whereParts.push("ts >= ?");
+  conditions.push(fromTs);
+  whereParts.push("ts <= ?");
+  conditions.push(toTs);
+
+  if (!isMimule) {
+    whereParts.push("tenant_id = ?");
+    conditions.push(ctx.tenantId);
+  } else if (tenant_filter) {
+    whereParts.push("tenant_id = ?");
+    conditions.push(tenant_filter);
+  }
+
+  if (actionKind) {
+    whereParts.push("action_kind = ?");
+    conditions.push(actionKind);
+  }
+
+  const whereClause = whereParts.length > 0 ? "WHERE " + whereParts.join(" AND ") : "";
+
+  const rows = db.query(
+    `SELECT id, ts, tenant_id, actor, actor_source, action_kind, action, action_id,
+            reason, target_type, target_id, risk, result_status, prev_hash, row_hash, event_id
+     FROM action_audit ${whereClause}
+     ORDER BY ts DESC LIMIT ? OFFSET ?`
+  ).all(...conditions, limit, offset);
+
+  const countRow = db.query(
+    `SELECT COUNT(*) as total FROM action_audit ${whereClause}`
+  ).get(...conditions) as { total: number };
+
+  return Response.json({
+    events: rows,
+    pagination: {
+      total: countRow.total,
+      limit,
+      offset,
+      hasMore: offset + rows.length < countRow.total,
+    },
+  });
 }
 
 export async function governanceRetentionHandler(): Promise<Response> {

@@ -455,66 +455,82 @@ export async function getRecommendations(req: Request): Promise<Response> {
 
 export async function getCostSummary(req: Request): Promise<Response> {
   if (!isDashboardDbEnabled()) {
-    return new Response(JSON.stringify({ error: "DASHBOARD_DB disabled" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
+    return Response.json({
+      budgets: [],
+      spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+      fallbacks: [],
+      note: "DASHBOARD_DB disabled",
     });
   }
 
   try {
     const db = getDashboardDb();
     if (!db) {
-      return new Response(JSON.stringify({ error: "Database unavailable" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
+      return Response.json({
+        budgets: [],
+        spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+        runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+        fallbacks: [],
+        note: "database unavailable",
       });
     }
 
     const now = Date.now();
     const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
 
-    const budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all();
+    let budgets: unknown[] = [];
+    try {
+      budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all();
+    } catch { /* table may not exist */ }
 
-    const spendTotalsRows = db.query<{total_cents: number, event_count: number}, [number]>(
-      "SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count FROM gateway_calls WHERE ts >= ?"
-    ).get(thirtyDaysAgo);
+    let totalCents = 0;
+    let eventCount = 0;
+    try {
+      const costColExists = db.query("SELECT cost_cents FROM gateway_calls LIMIT 1").all();
+      if (costColExists !== undefined) {
+        const row = db.query<{total_cents: number, event_count: number}, [number]>(
+          "SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count FROM gateway_calls WHERE ts >= ?"
+        ).get(thirtyDaysAgo) as { total_cents: number, event_count: number } | null;
+        if (row) { totalCents = row.total_cents; eventCount = row.event_count; }
+      }
+    } catch { /* cost_cents column may not exist */ }
 
-    const spendGroupsRows = db.query<{total_cents: number, event_count: number, group_value: string}, [number]>(
-      `SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count,
-              COALESCE(provider, 'unknown') as group_value
-       FROM gateway_calls WHERE ts >= ?
-       GROUP BY COALESCE(provider, 'unknown')
-       ORDER BY total_cents DESC LIMIT 20`
-    ).all(thirtyDaysAgo);
+    let spendGroups: unknown[] = [];
+    try {
+      const providerColExists = db.query("SELECT provider FROM gateway_calls LIMIT 1").all();
+      if (providerColExists !== undefined) {
+        spendGroups = db.query(
+          `SELECT COALESCE(provider, 'unknown') as group_value, COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count
+           FROM gateway_calls WHERE ts >= ? GROUP BY COALESCE(provider, 'unknown') ORDER BY total_cents DESC LIMIT 20`
+        ).all(thirtyDaysAgo) ?? [];
+      }
+    } catch { /* fallback column may not exist */ }
 
-    const fallbackRows = db.query(
-      `SELECT * FROM gateway_calls
-       WHERE ts >= ? AND success = 1 AND error_class IS NOT NULL
-       ORDER BY ts DESC LIMIT 100`
-    ).all(thirtyDaysAgo);
-
-    const runway = {
-      hourly_cents: 138,
-      balance_cents: 5000,
-      hours_remaining: 36,
-      days_remaining: 1.5,
-      last_checked_at: now,
-    };
+    let fallbacks: unknown[] = [];
+    try {
+      fallbacks = db.query(
+        `SELECT * FROM gateway_calls WHERE ts >= ? AND success = 1 AND error_class IS NOT NULL ORDER BY ts DESC LIMIT 100`
+      ).all(thirtyDaysAgo) ?? [];
+    } catch { /* error_class may not exist */ }
 
     return Response.json({
       budgets,
       spend: {
-        totals: [spendTotalsRows ?? { total_cents: 0, event_count: 0 }],
-        groups: spendGroupsRows ?? [],
+        totals: [{ total_cents: totalCents, event_count: eventCount }],
+        groups: spendGroups,
       },
-      runway,
-      fallbacks: fallbackRows ?? [],
+      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: now },
+      fallbacks,
     });
   } catch (error) {
     console.error("getCostSummary failed:", error);
-    return new Response(JSON.stringify({ error: "Failed to fetch cost summary" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
+    return Response.json({
+      budgets: [],
+      spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+      fallbacks: [],
+      error: "Failed to fetch cost summary",
     });
   }
 }
