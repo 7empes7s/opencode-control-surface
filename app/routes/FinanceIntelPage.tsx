@@ -70,14 +70,14 @@ export function FinanceIntelPage() {
     // Load stats
     authFetch("/api/finance-intel/stats")
       .then(res => res.json())
-      .then(setStats)
+      .then(d => setStats(d.data ?? d))
       .catch(err => setError(`Failed to load stats: ${err.message}`));
 
     // Load runs
     authFetch("/api/finance-intel/runs")
       .then(res => res.json())
-      .then(data => {
-        setRuns(data);
+      .then(d => {
+        setRuns(Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : []);
         setLoading(false);
       })
       .catch(err => {
@@ -88,13 +88,13 @@ export function FinanceIntelPage() {
     // Load enrichments
     authFetch("/api/finance-intel/enrichments")
       .then(res => res.json())
-      .then(setEnrichments)
+      .then(d => setEnrichments(Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : []))
       .catch(err => setError(`Failed to load enrichments: ${err.message}`));
 
     // Load configs
     authFetch("/api/finance-intel/portfolio-configs")
       .then(res => res.json())
-      .then(setConfigs)
+      .then(d => setConfigs(d.data?.portfolio ?? (Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : [])))
       .catch(err => setError(`Failed to load configs: ${err.message}`));
   }, []);
 

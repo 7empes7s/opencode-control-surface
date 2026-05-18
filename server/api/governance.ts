@@ -16,7 +16,14 @@ export async function loadPolicies() {
   if (doc) loadedPolicies.push(doc);
 }
 
+import { createHmac } from "node:crypto";
 import { checkToken } from "./actions.ts";
+
+function expectedSessionValue(token: string): string {
+  return createHmac("sha256", token)
+    .update("opencode-control-surface.operator-session.v1")
+    .digest("base64url");
+}
 
 function parseCookies(req: Request): Record<string, string> {
   const cookieHeader = req.headers.get("cookie") || "";
@@ -30,8 +37,12 @@ function parseCookies(req: Request): Record<string, string> {
 export function getGovernanceRole(req: Request): string {
   if (checkToken(req)) return "owner";
   const cookies = parseCookies(req);
-  const sessionToken = cookies["operator_session"] || cookies["auth_token"] || "";
-  if (sessionToken) return "viewer";
+  const sessionCookie = cookies["operator_session"] || cookies["auth_token"] || "";
+  if (!sessionCookie) return "viewer";
+  const token = process.env.OPERATOR_TOKEN;
+  if (!token) return "viewer";
+  const expected = expectedSessionValue(token);
+  if (sessionCookie === expected) return "owner";
   return "viewer";
 }
 

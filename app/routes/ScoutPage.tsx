@@ -60,9 +60,10 @@ const ScoutPage: React.FC = () => {
       const runsResponse = await authFetch('/api/scout/runs');
       if (runsResponse.ok) {
         const runsData = await runsResponse.json();
-        setScoutRuns(runsData.runs || []);
-        if (runsData.runs && runsData.runs.length > 0) {
-          setSelectedRun(runsData.runs[0]);
+        const runs = runsData.data?.runs ?? runsData.runs ?? [];
+        setScoutRuns(runs);
+        if (runs.length > 0) {
+          setSelectedRun(runs[0]);
         }
       }
 
@@ -70,7 +71,7 @@ const ScoutPage: React.FC = () => {
       const configResponse = await authFetch('/api/scout/config');
       if (configResponse.ok) {
         const configData = await configResponse.json();
-        setScoutConfig(configData);
+        setScoutConfig(configData.data ?? configData);
       }
     } catch (error) {
       console.error('Error loading scout data:', error);

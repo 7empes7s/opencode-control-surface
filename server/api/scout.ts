@@ -2,98 +2,96 @@ import fs from 'fs/promises';
 import path from 'path';
 import { ok, type ApiEnvelope, type ScoutRun } from './types.ts';
 
-// Check if a file exists
+// Real scout runs live in the autopipeline's runs/ directory
+const RUNS_ROOT = '/opt/mimoun/openclaw-config/workspace/newsbites_editorial/runs';
+
 async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+  try { await fs.access(filePath); return true; } catch { return false; }
 }
 
-// Get all scout runs
+// Map a deduped.json payload to the ScoutRun shape the UI expects
+function dedupedToScoutRun(dateDir: string, tsDir: string, deduped: any): ScoutRun {
+  const maxScore = Math.max(20, ...( deduped.items ?? []).map((i: any) => i.score ?? 0));
+
+  const selected: any[] = (deduped.items ?? []).map((item: any) => ({
+    headline: item.title ?? '',
+    vertical: item.vertical ?? '',
+    source: item.sourceName ?? item.sourceId ?? '',
+    recencyScore: Math.min(1, (item.score ?? 0) / maxScore),
+    noveltyScore: Math.min(1, (item.score ?? 0) / maxScore),
+    finalScore: item.score ?? 0,
+    selected: true,
+    reason: 'selected',
+  }));
+
+  const dropped: any[] = (deduped.dropped ?? []).map((item: any) => ({
+    headline: item.title ?? '',
+    vertical: '',
+    source: '',
+    recencyScore: 0,
+    noveltyScore: 0,
+    finalScore: 0,
+    selected: false,
+    reason: item.reason ?? 'dropped',
+  }));
+
+  return {
+    id: `${dateDir}/${tsDir}`,
+    runAt: deduped.generatedAt ?? `${dateDir}T${tsDir.slice(9)}Z`,
+    trigger: 'scheduled',
+    topics: [...selected, ...dropped],
+    queued: [],
+    config: {},
+  };
+}
+
+// Walk RUNS_ROOT/<date>/<timestamp>/deduped.json — last 30 days, most recent first
+async function loadAllRuns(limit = 50): Promise<ScoutRun[]> {
+  if (!(await fileExists(RUNS_ROOT))) return [];
+
+  const dateDirs = (await fs.readdir(RUNS_ROOT)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse().slice(0, 30);
+  const runs: ScoutRun[] = [];
+
+  for (const dateDir of dateDirs) {
+    if (runs.length >= limit) break;
+    const datePath = path.join(RUNS_ROOT, dateDir);
+    let tsDirs: string[];
+    try { tsDirs = (await fs.readdir(datePath)).sort().reverse(); } catch { continue; }
+    for (const tsDir of tsDirs) {
+      if (runs.length >= limit) break;
+      const dedupedPath = path.join(datePath, tsDir, 'deduped.json');
+      try {
+        const deduped = JSON.parse(await fs.readFile(dedupedPath, 'utf-8'));
+        runs.push(dedupedToScoutRun(dateDir, tsDir, deduped));
+      } catch { continue; }
+    }
+  }
+
+  return runs;
+}
+
 export async function getScoutRuns(_req: Request): Promise<Response> {
   try {
-    const scoutRunsDir = '/var/lib/mimule/scout-runs';
-    
-    // Check if directory exists
-    if (!(await fileExists(scoutRunsDir))) {
-      const envelope: ApiEnvelope<{ runs: ScoutRun[] }> = ok({ runs: [] }, {});
-      return new Response(JSON.stringify(envelope), { 
-        headers: { "Content-Type": "application/json" } 
-      });
-    }
-
-    // Read all JSON files in the directory
-    const files = await fs.readdir(scoutRunsDir);
-    const jsonFiles = files.filter(file => file.endsWith('.json'));
-    
-    const runs: ScoutRun[] = [];
-    for (const file of jsonFiles) {
-      try {
-        const filePath = path.join(scoutRunsDir, file);
-        const content = await fs.readFile(filePath, 'utf-8');
-        const runData = JSON.parse(content);
-        
-        // Extract run ID from filename (YYYYMMDDTHHMMSSZ.json)
-        const runId = file.replace('.json', '');
-        
-        runs.push({
-          id: runId,
-          ...runData
-        });
-      } catch (error) {
-        console.error(`Error reading scout run file ${file}:`, error);
-        continue;
-      }
-    }
-
-    // Sort by runAt (most recent first)
-    runs.sort((a, b) => new Date(b.runAt).getTime() - new Date(a.runAt).getTime());
-
-    const envelope: ApiEnvelope<{ runs: ScoutRun[] }> = ok({ runs }, {});
-    return new Response(JSON.stringify(envelope), { 
-      headers: { "Content-Type": "application/json" } 
-    });
+    const runs = await loadAllRuns();
+    return new Response(JSON.stringify(ok({ runs }, {})), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
-    console.error('Error fetching scout runs:', error);
-    return new Response(JSON.stringify({ error: 'Failed to fetch scout runs' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return new Response(JSON.stringify({ error: 'Failed to fetch scout runs' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
 
-// Get specific scout run
 export async function getScoutRun(_req: Request, runId: string): Promise<Response> {
+  // runId is "<date>/<tsDir>" — url-encoded slash arrives as %2F, already decoded by router
+  const [dateDir, tsDir] = runId.split('/');
+  if (!dateDir || !tsDir) {
+    return new Response(JSON.stringify({ error: 'Invalid run ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+  const dedupedPath = path.join(RUNS_ROOT, dateDir, tsDir, 'deduped.json');
   try {
-    const scoutRunsDir = '/var/lib/mimule/scout-runs';
-    const filePath = path.join(scoutRunsDir, `${runId}.json`);
-
-    if (!(await fileExists(filePath))) {
-      return new Response(JSON.stringify({ error: 'Scout run not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    const content = await fs.readFile(filePath, 'utf-8');
-    const runData = JSON.parse(content);
-
-    const envelope: ApiEnvelope<any> = ok({
-      id: runId,
-      ...runData
-    }, {});
-    return new Response(JSON.stringify(envelope), { 
-      headers: { "Content-Type": "application/json" } 
-    });
-  } catch (error) {
-    console.error('Error fetching scout run:', error);
-    return new Response(JSON.stringify({ error: 'Failed to fetch scout run' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    const deduped = JSON.parse(await fs.readFile(dedupedPath, 'utf-8'));
+    const run = dedupedToScoutRun(dateDir, tsDir, deduped);
+    return new Response(JSON.stringify(ok(run, {})), { headers: { 'Content-Type': 'application/json' } });
+  } catch {
+    return new Response(JSON.stringify({ error: 'Scout run not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
   }
 }
 

@@ -81,9 +81,9 @@ describe("POST + GET /api/projects CRUD round-trip", () => {
     expect(body.projects.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("returns 400 when tenantId missing from list", () => {
+  test("returns 200 with tenant defaulted from context when tenantId param absent", () => {
     const res = projectsListHandler(authedReq("GET", "http://localhost/api/projects"), new URL("http://localhost/api/projects"));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 });
 
