@@ -1042,3 +1042,6 @@ New severity items were added above:
 - P1 16C: Report catalog is missing the required operator report types.
 - P1 16D: Public API contract drifts from implemented internal routes.
 - P1 16E: Trace Explorer is a span table, not the promised trace analysis tool.
+
+
+<!-- Builder run br_3e001: failed at 2026-05-18T10:12:14.250Z — details: /opt/ai-vault/builder/2026-05-18-bw_b3f8c-br_3e001.md -->

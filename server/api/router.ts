@@ -12,7 +12,19 @@ import { getVersionInfo, VERSION } from "../version.ts";
 import { getCachedUpdateInfo, shouldRefreshCache, checkForUpdate, setCachedUpdateInfo } from "../updater.ts";
 import { autopipelineHandler } from "./autopipeline.ts";
 import { doctorHandler } from "./doctor.ts";
-import { modelsHandler } from "./models.ts";
+import {
+  paperclipAgentsHandler,
+  paperclipTasksHandler,
+} from "./paperclip.ts";
+import { fsBrowseHandler } from "./fs.ts";
+import { getDossierArtifacts, injectDossierNotes } from "./dossier.ts";
+import {
+  modelsHandler,
+  getRoutingLogs,
+  getRoutingStats,
+  forceRouteModel,
+  clearForceRoute,
+} from "./models.ts";
 import { newsBitesHandler } from "./newsbites.ts";
 import { infraHandler } from "./infra.ts";
 import { incidentsHandler } from "./incidents.ts";
@@ -29,7 +41,8 @@ import {
   getVastRunway, 
   getAttribution, 
   getFallbacks, 
-  getRecommendations 
+  getRecommendations,
+  getCostSummary,
 } from "./cost.ts";
 import {
   builderProjectsHandler,
@@ -197,6 +210,28 @@ import {
   notificationRulesHandler,
   notificationRuleUpsertHandler,
 } from "./channels.ts";
+import {
+  litellmStatusHandler,
+  litellmRoutingHandler,
+  litellmConfigHandler,
+} from "./litellm.ts";
+import {
+  getScoutRuns,
+  getScoutConfig,
+  updateScoutConfig,
+  triggerScoutRun,
+} from "./scout.ts";
+import {
+  getFinanceStats,
+  getFinanceRuns,
+  getFinanceEnrichments,
+  getPortfolioConfigs,
+} from "./financeIntel.ts";
+import {
+  getSystemConfig,
+  getSystemConfigHistory,
+  updateSystemConfig,
+} from "./systemConfig.ts";
 
 export const handleApi = withTenantContext(handleApiInner);
 
@@ -340,6 +375,10 @@ if (method === "GET" && pathname === "/api/stream") {
     if (!checkToken(req)) return unauthorized();
     return actionAuditHandler(url);
   }
+  if (method === "GET" && pathname === "/api/governance/audit") {
+    if (!checkToken(req)) return unauthorized();
+    return actionAuditHandler(url);
+  }
   if (method === "POST" && pathname === "/api/audit/export") {
     if (!checkToken(req)) return unauthorized();
     return auditExportHandler(url, method, await req.clone().json().catch(() => ({})));
@@ -445,6 +484,7 @@ if (method === "GET" && pathname === "/api/stream") {
     return builderRunnerDisabledHandler(action);
   }
   if (method === "GET" && pathname === "/api/builder/doctor-reports") return builderDoctorReportsHandler(url);
+  if (method === "GET" && pathname === "/api/builder/doctor/reports") return builderDoctorReportsHandler(url);
   if (method === "GET" && pathname === "/api/builder/runs") return builderRunsHandler(url);
   if (method === "GET" && pathname === "/api/workload") return workloadHandler(req);
   const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
@@ -488,11 +528,75 @@ if (method === "GET" && pathname === "/api/stream") {
   // Audit chain
   if (method === "GET" && pathname === "/api/audit/chain-status") return auditChainStatusHandler();
 
+  // ── LiteLLM ─────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/litellm/status") return litellmStatusHandler();
+  if (method === "GET" && pathname === "/api/litellm/routing") return litellmRoutingHandler();
+  if (method === "GET" && pathname === "/api/litellm/config") return litellmConfigHandler();
+
+  // ── Scout ───────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/scout/runs") return getScoutRuns(req);
+  const scoutRunMatch = pathname.match(/^\/api\/scout\/runs\/([^/]+)$/);
+  if (method === "GET" && scoutRunMatch) {
+    const { getScoutRun } = await import("./scout.ts");
+    return getScoutRun(req, scoutRunMatch[1]);
+  }
+  if (method === "GET" && pathname === "/api/scout/config") return getScoutConfig(req);
+  if (method === "PUT" && pathname === "/api/scout/config") return updateScoutConfig(req);
+  if (method === "POST" && pathname === "/api/scout/trigger") return triggerScoutRun(req);
+
+  // ── Finance Intel ────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/finance-intel/stats") return getFinanceStats(req);
+  if (method === "GET" && pathname === "/api/finance-intel/runs") return getFinanceRuns(req);
+  if (method === "GET" && pathname === "/api/finance-intel/enrichments") return getFinanceEnrichments(req);
+  if (method === "GET" && pathname === "/api/finance-intel/portfolio-configs") return getPortfolioConfigs(req);
+  const financeTriggerMatch = pathname.match(/^\/api\/finance-intel\/(trigger-analysis|portfolio-configs?)$/);
+  if (method === "POST" && financeTriggerMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const { triggerAnalysis } = await import("./financeIntel.ts");
+    if (financeTriggerMatch[1] === "trigger-analysis") return triggerAnalysis(req);
+    if (financeTriggerMatch[1] === "portfolio-config" || financeTriggerMatch[1] === "portfolio-configs") {
+      const { upsertPortfolioConfig } = await import("./financeIntel.ts");
+      return upsertPortfolioConfig(req);
+    }
+  }
+
+  // ── System Config ─────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/system-config") return getSystemConfig(req);
+  if (method === "PUT" && pathname === "/api/system-config") {
+    if (!checkToken(req)) return unauthorized();
+    return updateSystemConfig(req);
+  }
+  if (method === "GET" && pathname === "/api/system-config/history") return getSystemConfigHistory(req);
+
+  // ── Paperclip ────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/paperclip/agents") return paperclipAgentsHandler();
+  if (method === "GET" && pathname === "/api/paperclip/tasks") return paperclipTasksHandler();
+
+  // ── Filesystem ──────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/fs/browse") return fsBrowseHandler(url);
+
+  // ── Dossier ─────────────────────────────────────────────────────────────────
+  const dossierMatch = pathname.match(/^\/api\/dossier\/([^/]+)\/([^/]+)$/);
+  if (method === "GET" && dossierMatch) return getDossierArtifacts(req, dossierMatch[1], dossierMatch[2]);
+  const dossierInjectMatch = pathname.match(/^\/api\/dossier\/([^/]+)\/([^/]+)\/inject$/);
+  if (method === "POST" && dossierInjectMatch) return injectDossierNotes(req, dossierInjectMatch[1], dossierInjectMatch[2]);
+
+  // ── Model Routing ────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/models/routing-log") return getRoutingLogs(req);
+  if (method === "GET" && pathname === "/api/models/routing-stats") return getRoutingStats(req);
+  if (method === "POST" && pathname === "/api/models/force-route") return forceRouteModel(req);
+  const modelForceMatch = pathname.match(/^\/api\/models\/force-route\/([^/]+)$/);
+  if (method === "DELETE" && modelForceMatch) return clearForceRoute(req);
+
   // Gateway
   if (method === "GET" && pathname === "/api/gateway/status") return gatewayStatusHandler();
+  if (method === "GET" && pathname === "/api/gateway") return gatewayStatusHandler();
   if (method === "GET" && pathname === "/api/gateway/models") return gatewayModelsHandler();
   if (method === "GET" && pathname === "/api/gateway/ledger") return gatewayLedgerHandler(url);
   if (method === "GET" && pathname === "/api/gateway/stats") return gatewayStatsHandler(url);
+
+  // Cost Alias
+  if (method === "GET" && pathname === "/api/cost") return getCostSummary(req);
   // OpenAI-compatible surface
   if (method === "POST" && pathname === "/v1/chat/completions") return v1ChatCompletionsHandler(req);
   if (method === "GET" && pathname === "/v1/models") return v1ModelsHandler();
@@ -789,6 +893,7 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname.startsWith("/api/cost/attribution/")) return getAttribution(req);
   if (method === "GET" && pathname === "/api/cost/fallbacks") return getFallbacks(req);
   if (method === "POST" && pathname === "/api/cost/recommendations") return getRecommendations(req);
+  if (method === "GET" && pathname === "/api/cost/summary") return getCostSummary(req);
 
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/compliance/dpa") return complianceDpaHandler(req);

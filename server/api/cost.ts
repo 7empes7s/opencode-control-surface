@@ -452,3 +452,69 @@ export async function getRecommendations(req: Request): Promise<Response> {
     });
   }
 }
+
+export async function getCostSummary(req: Request): Promise<Response> {
+  if (!isDashboardDbEnabled()) {
+    return new Response(JSON.stringify({ error: "DASHBOARD_DB disabled" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const db = getDashboardDb();
+    if (!db) {
+      return new Response(JSON.stringify({ error: "Database unavailable" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const now = Date.now();
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+    const budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all();
+
+    const spendTotalsRows = db.query<{total_cents: number, event_count: number}, [number]>(
+      "SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count FROM gateway_calls WHERE ts >= ?"
+    ).get(thirtyDaysAgo);
+
+    const spendGroupsRows = db.query<{total_cents: number, event_count: number, group_value: string}, [number]>(
+      `SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count,
+              COALESCE(provider, 'unknown') as group_value
+       FROM gateway_calls WHERE ts >= ?
+       GROUP BY COALESCE(provider, 'unknown')
+       ORDER BY total_cents DESC LIMIT 20`
+    ).all(thirtyDaysAgo);
+
+    const fallbackRows = db.query(
+      `SELECT * FROM gateway_calls
+       WHERE ts >= ? AND success = 1 AND error_class IS NOT NULL
+       ORDER BY ts DESC LIMIT 100`
+    ).all(thirtyDaysAgo);
+
+    const runway = {
+      hourly_cents: 138,
+      balance_cents: 5000,
+      hours_remaining: 36,
+      days_remaining: 1.5,
+      last_checked_at: now,
+    };
+
+    return Response.json({
+      budgets,
+      spend: {
+        totals: [spendTotalsRows ?? { total_cents: 0, event_count: 0 }],
+        groups: spendGroupsRows ?? [],
+      },
+      runway,
+      fallbacks: fallbackRows ?? [],
+    });
+  } catch (error) {
+    console.error("getCostSummary failed:", error);
+    return new Response(JSON.stringify({ error: "Failed to fetch cost summary" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}

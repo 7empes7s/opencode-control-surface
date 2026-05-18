@@ -34,6 +34,10 @@ export function useAuthApi<T>(path: string, intervalMs = 30_000): AuthApiResult<
     async function fetchData() {
       try {
         const response = await authFetch(path);
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${response.status}`);
+        }
         const json = await response.json() as { data: T };
         if (!cancelled) setDataIfChanged(json.data);
       } catch (e: unknown) {

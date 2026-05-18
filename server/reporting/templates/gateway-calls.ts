@@ -11,8 +11,8 @@ export async function runGatewayCallsReport(params: GatewayCallsParams): Promise
   if (!db) return [];
 
   const rows = db.query(
-    `SELECT * FROM action_audit 
-     WHERE tenant_id = ? AND action_kind = 'gateway.call' AND ts >= ? AND ts <= ? 
+    `SELECT * FROM gateway_calls 
+     WHERE tenant_id = ? AND ts >= ? AND ts <= ? 
      ORDER BY ts DESC`,
   ).all(params.tenantId, params.fromTs, params.toTs);
 

@@ -34,6 +34,10 @@ export function useApi<T>(path: string, intervalMs = 30_000): ApiResult<T> {
     async function fetchData() {
       try {
         const r = await authFetch(path);
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${r.status}`);
+        }
         const json = await r.json() as { data: T };
         if (!cancelled) setDataIfChanged(json.data);
       } catch (e: unknown) {

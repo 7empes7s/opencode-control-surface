@@ -16,8 +16,17 @@ export async function loadPolicies() {
   if (doc) loadedPolicies.push(doc);
 }
 
+function parseCookies(req: Request): Record<string, string> {
+  const cookieHeader = req.headers.get("cookie") || "";
+  return cookieHeader.split(";").reduce((acc, cookie) => {
+    const [name, ...rest] = cookie.split("=");
+    if (name) acc[name.trim()] = rest.join("=").trim();
+    return acc;
+  }, {} as Record<string, string>);
+}
+
 export function getGovernanceRole(req: Request): string {
-  const token = req.headers.get("x-operator-token") || "";
+  const token = req.headers.get("x-operator-token") || parseCookies(req)["auth_token"] || "";
   return resolveRole(token);
 }
 

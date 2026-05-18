@@ -1139,8 +1139,25 @@ export function builderPassLiveHandler(runId: string): Response {
       const passes = readBuilderPasses(runId);
       const running = passes.find((p) => p.status === "running");
       if (!running) return null;
-      const logPath = `/var/lib/control-surface/builder-runs/${runId}/pass-${running.sequence}-stdout.log`;
-      return { passSeq: running.sequence, logPath, agent: running.agent ?? "" };
+      const { existsSync: fsExists, readdirSync } = require("node:fs") as typeof import("node:fs");
+      const filename = `pass-${running.sequence}-stdout.log`;
+      // 1. flat legacy path
+      const flat = `/var/lib/control-surface/builder-runs/${runId}/${filename}`;
+      if (fsExists(flat)) return { passSeq: running.sequence, logPath: flat, agent: running.agent ?? "" };
+      // 2. tenant-aware scan (same pattern as builderArtifactContentHandler)
+      const tenantsBase = "/var/lib/control-surface/tenants";
+      if (fsExists(tenantsBase)) {
+        for (const tid of readdirSync(tenantsBase)) {
+          const projectsBase = `${tenantsBase}/${tid}/projects`;
+          if (!fsExists(projectsBase)) continue;
+          for (const pid of readdirSync(projectsBase)) {
+            const candidate = `${projectsBase}/${pid}/builder-runs/${runId}/${filename}`;
+            if (fsExists(candidate)) return { passSeq: running.sequence, logPath: candidate, agent: running.agent ?? "" };
+          }
+        }
+      }
+      // return with flat path anyway so polling continues while log is created
+      return { passSeq: running.sequence, logPath: flat, agent: running.agent ?? "" };
     } catch { return null; }
   };
 
