@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useApi } from "../hooks/useApi";
+import { authFetch } from "../lib/authFetch";
 
 interface ReasonerIncident {
   id: string;
@@ -97,7 +98,7 @@ function ExpandedIncidentCard({
     if (!matchingPlaybook || !detail) return;
     setApplying(true);
     try {
-      await fetch(`/api/reasoner/playbooks/${matchingPlaybook.id}/apply`, {
+      await authFetch(`/api/reasoner/playbooks/${matchingPlaybook.id}/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ incidentId: detail.id }),
@@ -111,7 +112,7 @@ function ExpandedIncidentCard({
     if (!detail) return;
     setResolving(true);
     try {
-      await fetch(`/api/reasoner/incidents/${detail.id}`, { method: "POST" });
+      await authFetch(`/api/reasoner/incidents/${detail.id}`, { method: "POST" });
       onResolve();
     } finally {
       setResolving(false);

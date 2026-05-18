@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FolderOpen, Plus, RefreshCw, Search, Edit2, X, CheckCircle2 } from "lucide-react";
-import { useApi } from "../hooks/useApi";
+import { useAuthApi } from "../hooks/useAuthApi";
 import { authFetch } from "../lib/authFetch";
 import { getActiveTenantId } from "../hooks/useTenantContext";
 
@@ -50,9 +50,8 @@ function langColor(lang: string): string {
 
 export function ProjectsPage() {
   const tenantId = getActiveTenantId();
-  const { data, loading, error, refresh } = useApi<{ projects: Project[] }>(
-    `/api/projects?tenantId=${encodeURIComponent(tenantId)}`,
-    0
+  const { data, loading, error, refresh } = useAuthApi<{ projects: Project[] }>(
+    "/api/projects"
   );
 
   const [detectPath, setDetectPath] = useState("");

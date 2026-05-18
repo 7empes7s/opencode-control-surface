@@ -7,10 +7,12 @@ export type RoleBinding = {
   projectId?: string;
 };
 
-const OPERATOR_TOKEN = process.env.OPERATOR_TOKEN || "";
+function getOperatorToken(): string {
+  return process.env.OPERATOR_TOKEN || "";
+}
 
 export function resolveRole(token: string): RbacRole {
-  if (token && token === OPERATOR_TOKEN) return "owner";
+  if (token && token === getOperatorToken()) return "owner";
   if (token) return "viewer";
   return "viewer";
 }

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Shield, Download, FileText, Users, AlertTriangle } from "lucide-react";
-import { useApi } from "../hooks/useApi";
+import { useAuthApi } from "../hooks/useAuthApi";
+import { useAuthStatus } from "../hooks/useAuthStatus";
+import { authFetch } from "../lib/authFetch";
 
 interface TenantSettings {
   tenantId: string;
@@ -67,14 +69,19 @@ export function CompliancePage() {
 }
 
 function ReportsPanel() {
-  const { data: templates } = useApi<ReportTemplate[]>("/api/reports/templates", 0);
+  const { data: templates } = useAuthApi<ReportTemplate[]>("/api/reports/templates", 0);
+  const { authStatus } = useAuthStatus();
   const [results, setResults] = useState<Record<string, Record<string, unknown>[]>>({});
   const [running, setRunning] = useState<string | null>(null);
 
+  const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
+
   const runReport = async (templateId: string) => {
+    if (!isAuthenticated) return;
+    
     setRunning(templateId);
     try {
-      const res = await fetch("/api/reports/run", {
+      const res = await authFetch("/api/reports/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -100,6 +107,11 @@ function ReportsPanel() {
       <div className="section-card">
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Report Templates</h2>
+          {!isAuthenticated && (
+            <div className="text-sm text-[var(--text-dim)] mb-3">
+              Authentication required to run reports
+            </div>
+          )}
           <div className="space-y-3">
             {templates.map((t) => (
               <div key={t.id} className="flex items-center justify-between gap-4">
@@ -135,7 +147,7 @@ function ReportsPanel() {
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => runReport(t.id)}
-                    disabled={running === t.id}
+                    disabled={running === t.id || !isAuthenticated}
                   >
                     {running === t.id ? "…" : "Run"}
                   </button>
@@ -150,15 +162,20 @@ function ReportsPanel() {
 }
 
 function AuditExportPanel() {
+  const { authStatus } = useAuthStatus();
   const [exporting, setExporting] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [chainResult, setChainResult] = useState<boolean | null>(null);
   const [dateRange, setDateRange] = useState({ from: "", to: "" });
 
+  const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
+
   const runExport = async () => {
+    if (!isAuthenticated) return;
+    
     setExporting(true);
     try {
-      const res = await fetch("/api/audit/export", {
+      const res = await authFetch("/api/audit/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -180,10 +197,12 @@ function AuditExportPanel() {
   };
 
   const verifyChain = async () => {
+    if (!isAuthenticated) return;
+    
     setVerifying(true);
     setChainResult(null);
     try {
-      const res = await fetch("/api/audit/chain-status");
+      const res = await authFetch("/api/audit/chain-status");
       const json = await res.json();
       setChainResult(json.data?.pass ?? false);
     } finally {
@@ -196,6 +215,11 @@ function AuditExportPanel() {
       <div className="section-card">
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Audit Export</h2>
+          {!isAuthenticated && (
+            <div className="text-sm text-[var(--text-dim)] mb-3">
+              Authentication required for audit operations
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-xs text-[var(--text-muted)] block mb-1">From Date</label>
@@ -217,17 +241,27 @@ function AuditExportPanel() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
-              className="btn btn-sm btn-primary"
-              onClick={runExport}
-              disabled={exporting}
-            >
-              {exporting ? "…" : <><Download size={14} /> Export JSONL</>}
-            </button>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={runExport}
+                disabled={exporting || !isAuthenticated}
+              >
+                {exporting ? "…" : <><Download size={14} /> Export JSONL</>}
+              </button>
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={async () => {
+                  if (!isAuthenticated) return;
+                  window.open("/api/compliance/evidence-bundle", "_blank");
+                }}
+                disabled={!isAuthenticated}
+              >
+                <Download size={14} /> Evidence Bundle
+              </button>
             <button
               className="btn btn-sm btn-ghost"
               onClick={verifyChain}
-              disabled={verifying}
+              disabled={verifying || !isAuthenticated}
             >
               {verifying ? "…" : <><Shield size={14} /> Verify Chain</>}
             </button>
@@ -244,14 +278,19 @@ function AuditExportPanel() {
 }
 
 function TenantSettingsPanel() {
-  const { data: settings, refresh } = useApi<TenantSettings>("/api/tenant/settings", 0);
+  const { data: settings, refresh } = useAuthApi<TenantSettings>("/api/tenant/settings", 0);
+  const { authStatus } = useAuthStatus();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<Partial<TenantSettings>>({});
 
+  const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
+
   const save = async () => {
+    if (!isAuthenticated) return;
+    
     setSaving(true);
     try {
-      await fetch("/api/tenant/settings", {
+      await authFetch("/api/tenant/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
@@ -270,6 +309,11 @@ function TenantSettingsPanel() {
       <div className="section-card">
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Tenant Settings</h2>
+          {!isAuthenticated && (
+            <div className="text-sm text-[var(--text-dim)] mb-3">
+              Authentication required to modify settings
+            </div>
+          )}
           <div className="space-y-3">
             <div>
               <label className="text-xs text-[var(--text-muted)] block mb-1">Data Residency Region</label>
@@ -277,6 +321,7 @@ function TenantSettingsPanel() {
                 className="filter-input"
                 value={form.dataResidencyRegion ?? settings.dataResidencyRegion ?? "auto"}
                 onChange={(e) => setForm({ ...form, dataResidencyRegion: e.target.value })}
+                disabled={!isAuthenticated}
               >
                 <option value="auto">Auto</option>
                 <option value="us-east">US East</option>
@@ -292,6 +337,7 @@ function TenantSettingsPanel() {
                 className="filter-input"
                 value={form.storageRoot ?? settings.storageRoot ?? ""}
                 onChange={(e) => setForm({ ...form, storageRoot: e.target.value })}
+                disabled={!isAuthenticated}
               />
             </div>
             <div>
@@ -301,6 +347,7 @@ function TenantSettingsPanel() {
                 className="filter-input"
                 value={form.auditRetentionDays ?? settings.auditRetentionDays ?? 90}
                 onChange={(e) => setForm({ ...form, auditRetentionDays: parseInt(e.target.value) || 0 })}
+                disabled={!isAuthenticated}
               />
             </div>
             <div>
@@ -309,6 +356,7 @@ function TenantSettingsPanel() {
                   type="checkbox"
                   checked={form.requireTwoApprovers ?? settings.requireTwoApprovers ?? false}
                   onChange={(e) => setForm({ ...form, requireTwoApprovers: e.target.checked })}
+                  disabled={!isAuthenticated}
                 />
                 <span className="text-xs text-[var(--text)]">Require Two Approvers (4-Eyes)</span>
               </label>
@@ -316,7 +364,7 @@ function TenantSettingsPanel() {
             <button
               className="btn btn-sm btn-primary"
               onClick={save}
-              disabled={saving}
+              disabled={saving || !isAuthenticated}
             >
               {saving ? "…" : "Save Settings"}
             </button>
@@ -346,17 +394,20 @@ interface Soc2MappingResult {
 }
 
 function DpaPanel() {
-  const { data: summary } = useApi<ComplianceSummary>("/api/compliance/summary", 0);
-  const { data: subproc } = useApi<SubprocessorResult>("/api/compliance/subprocessors", 0);
-  const { data: mapping } = useApi<Soc2MappingResult>("/api/compliance/soc2-mapping", 0);
+  const { data: summary } = useAuthApi<ComplianceSummary>("/api/compliance/summary", 0);
+  const { data: subproc } = useAuthApi<SubprocessorResult>("/api/compliance/subprocessors", 0);
+  const { data: mapping } = useAuthApi<Soc2MappingResult>("/api/compliance/soc2-mapping", 0);
+  const { authStatus } = useAuthStatus();
   const [customerName, setCustomerName] = useState("");
   const [generating, setGenerating] = useState(false);
 
+  const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
+
   const downloadDpa = async () => {
-    if (!customerName.trim()) return;
+    if (!isAuthenticated || !customerName.trim()) return;
     setGenerating(true);
     try {
-      const res = await fetch(`/api/compliance/dpa?customerName=${encodeURIComponent(customerName)}`);
+      const res = await authFetch(`/api/compliance/dpa?customerName=${encodeURIComponent(customerName)}`);
       const json = await res.json();
       if (json.data?.document) {
         const blob = new Blob([json.data.document], { type: "text/markdown" });
@@ -378,6 +429,11 @@ function DpaPanel() {
           <h2 className="text-sm font-medium text-[var(--text)] flex items-center gap-2">
             <FileText size={14} /> DPA Document
           </h2>
+          {!isAuthenticated && (
+            <div className="text-sm text-[var(--text-dim)] mb-3">
+              Authentication required to generate DPA documents
+            </div>
+          )}
           <div className="flex gap-2">
             <input
               type="text"
@@ -385,11 +441,12 @@ function DpaPanel() {
               placeholder="Customer name"
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
+              disabled={!isAuthenticated}
             />
             <button
               className="btn btn-sm btn-primary"
               onClick={downloadDpa}
-              disabled={generating || !customerName.trim()}
+              disabled={generating || !customerName.trim() || !isAuthenticated}
             >
               {generating ? "…" : <><Download size={14} /> Download DPA</>}
             </button>

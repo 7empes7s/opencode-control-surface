@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Boxes, ChevronRight, PlugZap, Search, TerminalSquare, X } from "lucide-react";
+import { authFetch } from "../lib/authFetch";
 
 type AgentId = "claude" | "codex" | "opencode" | "gemini";
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
@@ -185,7 +186,7 @@ export function AgentDiscoveryStrip({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/agents/summary")
+    authFetch("/api/agents/summary")
       .then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         return res.json() as Promise<DiscoveryData>;

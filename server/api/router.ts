@@ -22,6 +22,15 @@ import { actionAuditHandler, auditExportHandler } from "./audit.ts";
 import { eventsHandler } from "./events.ts";
 import { jobHandler, jobsHandler } from "./jobs.ts";
 import { metricsHandler } from "./metrics.ts";
+import { 
+  getBudgets, 
+  createBudget, 
+  getSpend, 
+  getVastRunway, 
+  getAttribution, 
+  getFallbacks, 
+  getRecommendations 
+} from "./cost.ts";
 import {
   builderProjectsHandler,
   builderDiscoverHandler,
@@ -58,6 +67,7 @@ import {
   codexListHandler, codexCreateHandler, codexGetHandler,
   codexDeleteHandler, codexSendHandler, codexStreamHandler, codexStopHandler,
 } from "./codex.ts";
+import { workloadHandler } from "./workload.ts";
 import {
   claudeHealthHandler,
   claudeListHandler, claudeCreateHandler, claudeGetHandler,
@@ -173,12 +183,20 @@ import { complianceDpaHandler,
   complianceSubprocessorsHandler,
   complianceSoc2MappingHandler,
   complianceSummaryHandler,
+  complianceEvidenceBundleHandler,
 } from "./compliance.ts";
 import { getActiveLicense } from "../licensing/index.ts";
 import { getTelemetryConsent, setTelemetryConsent, collectTelemetryPayload } from "../telemetry/index.ts";
 import { onboardingStatusHandler, onboardingStepHandler } from "./onboarding.ts";
 import { docsTutorialsHandler } from "./docs.ts";
 import { cloudTierStatusHandler } from "./cloud-tier.ts";
+import {
+  channelsBriefPreviewHandler,
+  channelsBriefSendHandler,
+  channelsHandler,
+  notificationRulesHandler,
+  notificationRuleUpsertHandler,
+} from "./channels.ts";
 
 export const handleApi = withTenantContext(handleApiInner);
 
@@ -271,7 +289,52 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   if (method === "POST" && pathname === "/api/auth/session") return authSessionHandler(req);
 
   // ── Read endpoints ─────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/stream") return streamHandler();
+  // Connection bounding for SSE streams
+const MAX_SSE_CONNECTIONS = 100;
+let currentSseConnections = 0;
+
+// ── Read endpoints ─────────────────────────────────────────────────────────
+if (method === "GET" && pathname === "/api/stream") {
+  if (currentSseConnections >= MAX_SSE_CONNECTIONS) {
+    return new Response(JSON.stringify({ error: "too many concurrent SSE connections" }), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  currentSseConnections++;
+  const response = streamHandler();
+  // Override the response to decrement the counter when the connection closes
+  const originalBody = response.body;
+  if (originalBody) {
+    const wrappedBody = new ReadableStream({
+      async start(controller) {
+        const reader = originalBody.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        } catch (err) {
+          console.error("SSE stream error:", err);
+        } finally {
+          currentSseConnections--;
+          controller.close();
+          reader.releaseLock();
+        }
+      },
+      cancel() {
+        currentSseConnections--;
+      }
+    });
+    return new Response(wrappedBody, {
+      headers: response.headers,
+      status: response.status,
+    });
+  }
+  currentSseConnections--; // Decrement if we somehow don't have a body
+  return response;
+}
   if (method === "GET" && pathname === "/api/actions/catalog") return actionCatalogHandler(url);
   if (method === "GET" && pathname === "/api/actions/audit") {
     if (!checkToken(req)) return unauthorized();
@@ -344,6 +407,14 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
     return handleApiInner(req, new URL(`/api/onboarding${suffix}`, url.origin));
   }
   if (method === "GET" && pathname === "/api/infra") return infraHandler();
+  if (method === "GET" && pathname === "/api/channels") {
+    if (!checkToken(req)) return unauthorized();
+    return channelsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/notifications/rules") {
+    if (!checkToken(req)) return unauthorized();
+    return notificationRulesHandler(url);
+  }
   if (method === "GET" && pathname === "/api/incidents") return incidentsHandler();
   if (method === "GET" && pathname === "/api/agents/skills") return agentsSkillsHandler(url);
   if (method === "GET" && pathname === "/api/agents/quick-prompts") return agentsQuickPromptsHandler(url);
@@ -375,6 +446,7 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   }
   if (method === "GET" && pathname === "/api/builder/doctor-reports") return builderDoctorReportsHandler(url);
   if (method === "GET" && pathname === "/api/builder/runs") return builderRunsHandler(url);
+  if (method === "GET" && pathname === "/api/workload") return workloadHandler(req);
   const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
   if (method === "GET" && builderRunMatch) {
     // Reconcile running status on every GET
@@ -430,9 +502,10 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
     return builderProvisionHandler(req);
   }
 
-  // Mission Control, Today, Settings
+  // Mission Control, Today, Workload, Settings
   if (method === "GET" && pathname === "/api/mission-control") return missionControlHandler();
   if (method === "GET" && pathname === "/api/today") return todayHandler();
+  if (method === "GET" && pathname === "/api/workload") return workloadHandler(req);
   if (method === "GET" && pathname === "/api/settings/auth-status") return settingsAuthStatusHandler();
   if (method === "GET" && pathname === "/api/settings/state") {
     if (!checkToken(req)) return unauthorized();
@@ -448,7 +521,7 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   if (method === "GET" && pathname === "/api/governance/policies") return governancePoliciesHandler();
   if (method === "POST" && pathname === "/api/governance/policies/reload") return governancePoliciesReloadHandler();
   if (method === "GET" && pathname === "/api/governance/rbac/me") return governanceRbacMeHandler(req);
-  if (method === "GET" && pathname === "/api/governance/approvals") return governanceApprovalsListHandler();
+  if (method === "GET" && pathname === "/api/governance/approvals") return governanceApprovalsListHandler(req);
   const govApprovalMatch = pathname.match(/^\/api\/governance\/approvals\/([^/]+)\/(approve|reject)$/);
   if (method === "POST" && govApprovalMatch) {
     return governanceApprovalDecideHandler(req, govApprovalMatch[1], govApprovalMatch[2] as "approve" | "reject");
@@ -476,7 +549,7 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   if (method === "DELETE" && govSecretDeleteMatch) {
     return governanceSecretsDeleteHandler(req, govSecretDeleteMatch[1]);
   }
-  if (method === "GET" && pathname === "/api/governance/budgets") return governanceBudgetsListHandler();
+  if (method === "GET" && pathname === "/api/governance/budgets") return governanceBudgetsListHandler(req);
   if (method === "POST" && pathname === "/api/governance/budgets") return governanceBudgetsWriteHandler(req);
   if (method === "GET" && pathname === "/api/governance/retention") return governanceRetentionHandler();
   if (method === "POST" && pathname === "/api/governance/retention") return governanceRetentionWriteHandler(req);
@@ -492,6 +565,23 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   if (method === "POST" && pathname === "/api/newsbites/deploy") return newsBitesDeployHandler(req);
   if (method === "POST" && pathname === "/api/infra/service-restart") return infraServiceRestartHandler(req);
   if (method === "POST" && pathname === "/api/infra/run-timer") return infraRunTimerHandler(req);
+  if (method === "POST" && pathname === "/api/notifications/rules") {
+    if (!checkToken(req)) return unauthorized();
+    return notificationRuleUpsertHandler(req);
+  }
+  const notificationRuleMatch = pathname.match(/^\/api\/notifications\/rules\/([^/]+)$/);
+  if (method === "POST" && notificationRuleMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return notificationRuleUpsertHandler(req, notificationRuleMatch[1]);
+  }
+  if (method === "POST" && pathname === "/api/channels/brief/preview") {
+    if (!checkToken(req)) return unauthorized();
+    return channelsBriefPreviewHandler();
+  }
+  if (method === "POST" && pathname === "/api/channels/brief/send") {
+    if (!checkToken(req)) return unauthorized();
+    return channelsBriefSendHandler();
+  }
   if (method === "POST" && pathname === "/api/agents/vault-log") {
     if (!checkToken(req)) return unauthorized();
     return agentsVaultLogHandler(req);
@@ -691,11 +781,21 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   // ── Cloud Tier ────────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/cloud-tier/status") return cloudTierStatusHandler();
 
+  // ── Cost Management ───────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/cost/budgets") return getBudgets(req);
+  if (method === "POST" && pathname === "/api/cost/budgets") return createBudget(req);
+  if (method === "GET" && pathname === "/api/cost/spend") return getSpend(req);
+  if (method === "GET" && pathname === "/api/cost/runway/vast") return getVastRunway(req);
+  if (method === "GET" && pathname.startsWith("/api/cost/attribution/")) return getAttribution(req);
+  if (method === "GET" && pathname === "/api/cost/fallbacks") return getFallbacks(req);
+  if (method === "POST" && pathname === "/api/cost/recommendations") return getRecommendations(req);
+
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/compliance/dpa") return complianceDpaHandler(req);
   if (method === "GET" && pathname === "/api/compliance/subprocessors") return complianceSubprocessorsHandler();
   if (method === "GET" && pathname === "/api/compliance/soc2-mapping") return complianceSoc2MappingHandler();
   if (method === "GET" && pathname === "/api/compliance/summary") return complianceSummaryHandler(req);
+  if (method === "GET" && pathname === "/api/compliance/evidence-bundle") return complianceEvidenceBundleHandler(req);
 
   return new Response(JSON.stringify({ error: "not found" }), {
     status: 404,

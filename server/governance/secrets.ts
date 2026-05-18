@@ -3,6 +3,9 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "n
 import { dirname } from "node:path";
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { whereTenant, tenantParams, withTenantInsert } from "../db/tenantScope.ts";
+import type { TenantContext } from "../tenancy/context.ts";
 
 const KEK_PATH = "/etc/tib-builder/master.key";
 const KEK_DIR = dirname(KEK_PATH);
@@ -82,16 +85,29 @@ function decryptPlaintext(encryptedValue: string, encryptedDek: string, iv: stri
   return decrypted.toString("utf8");
 }
 
-export function writeSecret(name: string, plaintext: string, description = ""): SecretEntry {
+export function writeSecret(name: string, plaintext: string, description = "", ctx?: TenantContext): SecretEntry {
   const db = requireDb();
   const kek = loadOrCreateKek();
   const { encryptedValue, encryptedDek, iv, keyId } = encryptPlaintext(plaintext, kek);
   const now = Date.now();
   const id = `sec_${randomUUID()}`;
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+
+  const row = withTenantInsert(tenantCtx, {
+    id,
+    name,
+    description,
+    encrypted_value: encryptedValue,
+    encrypted_dek: encryptedDek,
+    iv,
+    key_id: keyId,
+    created_at: now,
+    updated_at: now,
+  });
 
   db.query(`
-    INSERT INTO governance_secrets (id, name, description, encrypted_value, encrypted_dek, iv, key_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO governance_secrets (id, name, description, encrypted_value, encrypted_dek, iv, key_id, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       description = excluded.description,
       encrypted_value = excluded.encrypted_value,
@@ -99,14 +115,30 @@ export function writeSecret(name: string, plaintext: string, description = ""): 
       iv = excluded.iv,
       key_id = excluded.key_id,
       updated_at = excluded.updated_at
-  `).run(id, name, description, encryptedValue, encryptedDek, iv, keyId, now, now);
+  `).run(
+    row.id,
+    row.name,
+    row.description,
+    row.encrypted_value,
+    row.encrypted_dek,
+    row.iv,
+    row.key_id,
+    row.created_at,
+    row.updated_at,
+    row.tenant_id,
+  );
 
   return { id, name, description, encryptedValue, keyId, createdAt: now, updatedAt: now };
 }
 
-export function readSecretPlaintext(name: string): string | null {
+export function readSecretPlaintext(name: string, ctx?: TenantContext): string | null {
   const db = requireDb();
-  const row = db.query("SELECT * FROM governance_secrets WHERE name = ?").get(name) as {
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause, params } = whereTenant(tenantCtx);
+
+  const row = db.query(
+    `SELECT * FROM governance_secrets WHERE name = ? ${clause}`
+  ).get(name, ...params) as {
     encrypted_value: string;
     encrypted_dek: string;
     iv: string;
@@ -117,9 +149,14 @@ export function readSecretPlaintext(name: string): string | null {
   return decryptPlaintext(row.encrypted_value, row.encrypted_dek, row.iv, kek, row.key_id);
 }
 
-export function listSecrets(): SecretEntry[] {
+export function listSecrets(ctx?: TenantContext): SecretEntry[] {
   const db = requireDb();
-  const rows = db.query("SELECT id, name, description, created_at, updated_at FROM governance_secrets ORDER BY name").all() as {
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause, params } = whereTenant(tenantCtx);
+
+  const rows = db.query(
+    `SELECT id, name, description, created_at, updated_at FROM governance_secrets WHERE 1=1 ${clause} ORDER BY name`
+  ).all(...params) as {
     id: string;
     name: string;
     description: string;
@@ -137,10 +174,17 @@ export function listSecrets(): SecretEntry[] {
   }));
 }
 
-export function deleteSecret(name: string): boolean {
+export function deleteSecret(name: string, ctx?: TenantContext): boolean {
   const db = requireDb();
-  const before = db.query("SELECT id FROM governance_secrets WHERE name = ?").get(name);
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause, params } = whereTenant(tenantCtx);
+
+  const before = db.query(
+    `SELECT id FROM governance_secrets WHERE name = ? ${clause}`
+  ).get(name, ...params);
   if (!before) return false;
-  db.query("DELETE FROM governance_secrets WHERE name = ?").run(name);
+  db.query(
+    `DELETE FROM governance_secrets WHERE name = ? ${clause}`
+  ).run(name, ...params);
   return true;
 }

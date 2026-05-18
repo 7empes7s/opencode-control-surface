@@ -2,6 +2,7 @@ import { getDashboardDb } from "../db/dashboard.ts";
 import { emitSignal } from "../orchestrator/signals.ts";
 import { getLaneStatus } from "../orchestrator/lanes.ts";
 import { listOrchestratorInstances, getInstanceWithHistory } from "../orchestrator/adapter.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 type DbSignalRow = {
   id: string;
@@ -18,6 +19,7 @@ export async function orchestratorSignalsListHandler(url: URL): Promise<Response
     return Response.json({ signals: [] });
   }
 
+  const tenantId = getCurrentTenantContext().tenantId;
   const instanceId = url.searchParams.get("instanceId");
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "100", 10), 500);
 
@@ -25,13 +27,13 @@ export async function orchestratorSignalsListHandler(url: URL): Promise<Response
   if (instanceId) {
     rows = db
       .query(
-        `SELECT * FROM orchestrator_signals WHERE instance_id = ? ORDER BY created_at DESC LIMIT ?`,
+        `SELECT * FROM orchestrator_signals WHERE instance_id = ? AND (tenant_id = ? OR tenant_id IS NULL) ORDER BY created_at DESC LIMIT ?`,
       )
-      .all(instanceId, limit) as DbSignalRow[];
+      .all(instanceId, tenantId, limit) as DbSignalRow[];
   } else {
     rows = db
-      .query(`SELECT * FROM orchestrator_signals ORDER BY created_at DESC LIMIT ?`)
-      .all(limit) as DbSignalRow[];
+      .query(`SELECT * FROM orchestrator_signals WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY created_at DESC LIMIT ?`)
+      .all(tenantId, limit) as DbSignalRow[];
   }
 
   return Response.json({
@@ -60,9 +62,10 @@ export async function orchestratorLanesHandler(): Promise<Response> {
     return Response.json({ lanes: [] });
   }
 
+  const tenantId = getCurrentTenantContext().tenantId;
   const rows = db
-    .query(`SELECT * FROM orchestrator_lanes ORDER BY lane_name ASC`)
-    .all() as DbLaneRow[];
+    .query(`SELECT * FROM orchestrator_lanes WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY lane_name ASC`)
+    .all(tenantId) as DbLaneRow[];
 
   return Response.json({
     lanes: rows.map((r) => ({
@@ -93,7 +96,8 @@ export async function orchestratorSignalEmitHandler(req: Request): Promise<Respo
     return Response.json({ error: "Database not available" }, { status: 503 });
   }
 
-  const id = emitSignal(body.instanceId, body.signalName, body.payload ?? null);
+  const tenantId = getCurrentTenantContext().tenantId;
+  const id = emitSignal(body.instanceId, body.signalName, body.payload ?? null, tenantId);
   return Response.json({ id, ok: true });
 }
 

@@ -1,5 +1,7 @@
 import { Link } from "wouter";
 import { useApi, fmtAge } from "../hooks/useApi";
+import { PriorityDeck } from "../components/PriorityDeck";
+import { WorkloadGraphTable } from "../components/WorkloadGraphTable";
 
 interface TodayData {
   date: string;
@@ -244,6 +246,12 @@ export function TodayPage() {
           <div className="w-caption">No tasks suggested - everything looks good!</div>
         )}
       </div>
+
+      {/* Priority Deck */}
+      <PriorityDeck />
+
+      {/* Workload Graph */}
+      <WorkloadGraphTable />
 
       {/* Actions Bar */}
       <div className="dash-section">

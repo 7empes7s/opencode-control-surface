@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { writeSecret, readSecretPlaintext, listSecrets, deleteSecret } from "../governance/secrets.ts";
 import { checkBudget, upsertBudget, getBudgetSpending } from "../governance/budgets.ts";
 import { getRetentionPolicy, setRetentionPolicy } from "../governance/retention.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 const DEFAULT_POLICY_PATH = "/etc/tib-builder/policies/default.yaml";
 let loadedPolicies: Awaited<ReturnType<typeof loadPolicyDocument>>[] = [];
@@ -67,15 +68,20 @@ export async function governanceRbacMeHandler(req: Request): Promise<Response> {
   });
 }
 
-export async function governanceApprovalsListHandler(): Promise<Response> {
+export async function governanceApprovalsListHandler(req: Request): Promise<Response> {
   const db = getDashboardDb();
   if (!db) return Response.json({ error: "db not available" }, { status: 500 });
+  const ctx = getCurrentTenantContext();
+  const { clause, params } = ctx.tenantId === "mimule" 
+    ? { clause: "", params: [] } // For mimule tenant, show all approvals for backward compatibility
+    : { clause: "AND tenant_id = ?", params: [ctx.tenantId] }; // For other tenants, scope to tenant
+  
   const pending = db
-    .query("SELECT * FROM governance_approvals WHERE decision IS NULL ORDER BY requested_at DESC")
-    .all();
+    .query(`SELECT * FROM governance_approvals WHERE decision IS NULL ${clause} ORDER BY requested_at DESC`)
+    .all(...params);
   const completed = db
-    .query("SELECT * FROM governance_approvals WHERE decision IS NOT NULL ORDER BY decided_at DESC LIMIT 50")
-    .all();
+    .query(`SELECT * FROM governance_approvals WHERE decision IS NOT NULL ${clause} ORDER BY decided_at DESC LIMIT 50`)
+    .all(...params);
   return Response.json({ pending, completed });
 }
 
@@ -84,16 +90,21 @@ export async function governanceApprovalDecideHandler(
   runId: string,
   decision: "approve" | "reject",
 ): Promise<Response> {
-  const roleErr = requireRole("secrets.write")?.(req);
+  const roleErr = requireRole("secrets.write")(req);
   if (roleErr) return roleErr;
   const body = await req.json().catch(() => ({}));
   const reason: string | undefined = body.reason;
   const db = getDashboardDb();
   if (!db) return Response.json({ error: "db not available" }, { status: 500 });
 
+  const ctx = getCurrentTenantContext();
+  const { clause, params } = ctx.tenantId === "mimule" 
+    ? { clause: "", params: [] } // For mimule tenant, show all approvals for backward compatibility
+    : { clause: "AND tenant_id = ?", params: [ctx.tenantId] }; // For other tenants, scope to tenant
+
   const existing = db
-    .query("SELECT * FROM governance_approvals WHERE run_id = ? AND decision IS NULL")
-    .all(runId);
+    .query(`SELECT * FROM governance_approvals WHERE run_id = ? AND decision IS NULL ${clause}`)
+    .all(runId, ...params);
 
   if (!existing.length) {
     return Response.json({ error: "approval not found" }, { status: 404 });
@@ -101,8 +112,8 @@ export async function governanceApprovalDecideHandler(
 
   const now = Date.now();
   db.query(
-    "UPDATE governance_approvals SET decided_at = ?, decided_by = ?, decision = ?, reason = ? WHERE run_id = ? AND decision IS NULL",
-  ).run(now, "owner", decision, reason ?? null, runId);
+    `UPDATE governance_approvals SET decided_at = ?, decided_by = ?, decision = ?, reason = ? WHERE run_id = ? AND decision IS NULL ${clause}`,
+  ).run(now, "owner", decision, reason ?? null, runId, ...params);
 
   if (decision === "approve") {
     try {
@@ -120,10 +131,11 @@ export async function governanceApprovalDecideHandler(
 }
 
 export async function governanceSecretsListHandler(req: Request): Promise<Response> {
-  const roleErr = requireRole("secrets.read")?.(req);
+  const roleErr = requireRole("secrets.read")(req);
   if (roleErr) return roleErr;
   try {
-    const secrets = listSecrets();
+    const ctx = getCurrentTenantContext();
+    const secrets = listSecrets(ctx);
     return Response.json({ secrets });
   } catch {
     return Response.json({ error: "failed to list secrets" }, { status: 500 });
@@ -131,14 +143,15 @@ export async function governanceSecretsListHandler(req: Request): Promise<Respon
 }
 
 export async function governanceSecretsWriteHandler(req: Request): Promise<Response> {
-  const roleErr = requireRole("secrets.write")?.(req);
+  const roleErr = requireRole("secrets.write")(req);
   if (roleErr) return roleErr;
   const body = await req.json().catch(() => null);
   if (!body?.name || !body?.value) {
     return Response.json({ error: "name and value required" }, { status: 400 });
   }
   try {
-    const entry = writeSecret(body.name, body.value, body.description ?? "");
+    const ctx = getCurrentTenantContext();
+    const entry = writeSecret(body.name, body.value, body.description ?? "", ctx);
     return Response.json({ ok: true, id: entry.id, name: entry.name });
   } catch {
     return Response.json({ error: "failed to write secret" }, { status: 500 });
@@ -146,38 +159,45 @@ export async function governanceSecretsWriteHandler(req: Request): Promise<Respo
 }
 
 export async function governanceSecretsDeleteHandler(req: Request, name: string): Promise<Response> {
-  const roleErr = requireRole("secrets.write")?.(req);
+  const roleErr = requireRole("secrets.write")(req);
   if (roleErr) return roleErr;
   try {
-    const deleted = deleteSecret(name);
+    const ctx = getCurrentTenantContext();
+    const deleted = deleteSecret(name, ctx);
     return Response.json({ ok: deleted });
   } catch {
     return Response.json({ error: "failed to delete secret" }, { status: 500 });
   }
 }
 
-export async function governanceBudgetsListHandler(): Promise<Response> {
+export async function governanceBudgetsListHandler(req: Request): Promise<Response> {
   const db = getDashboardDb();
   if (!db) return Response.json({ error: "db not available" }, { status: 500 });
-  const budgets = db.query("SELECT * FROM governance_budgets").all();
-  const spending = getBudgetSpending("global", undefined);
+  const ctx = getCurrentTenantContext();
+  const { clause, params } = ctx.tenantId === "mimule" 
+    ? { clause: "", params: [] } // For mimule tenant, show all budgets for backward compatibility
+    : { clause: "WHERE tenant_id = ?", params: [ctx.tenantId] }; // For other tenants, scope to tenant
+  
+  const budgets = db.query(`SELECT * FROM governance_budgets ${clause}`).all(...params);
+  const spending = getBudgetSpending("global", undefined, ctx);
   return Response.json({ budgets, spending });
 }
 
 export async function governanceBudgetsWriteHandler(req: Request): Promise<Response> {
-  const roleErr = requireRole("secrets.write")?.(req);
+  const roleErr = requireRole("secrets.write")(req);
   if (roleErr) return roleErr;
   const body = await req.json().catch(() => null);
   if (!body?.scope) {
     return Response.json({ error: "scope required" }, { status: 400 });
   }
   const scope = body.scope as "global" | "project";
+  const ctx = getCurrentTenantContext();
   upsertBudget(scope, {
     dailyCapUsd: body.dailyCapUsd,
     monthlyCapUsd: body.monthlyCapUsd,
     warnPct: body.warnPct,
     projectId: body.projectId,
-  });
+  }, ctx);
   return Response.json({ ok: true });
 }
 

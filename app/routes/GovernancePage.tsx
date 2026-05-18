@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useApi } from "../hooks/useApi";
+import { useAuthApi } from "../hooks/useAuthApi";
+import { authFetch } from "../lib/authFetch";
 import { Shield, RefreshCw, Trash2, Plus } from "lucide-react";
 
 interface PolicyInfo {
@@ -63,19 +65,19 @@ export function GovernancePage() {
   const [pendingApprovalRunId, setPendingApprovalRunId] = useState<string | null>(null);
   const [pendingApprovalDecision, setPendingApprovalDecision] = useState<"approve" | "reject" | null>(null);
 
-  const { data: policiesData, refresh: reloadPolicies } = useApi<{ policies: PolicyInfo[]; decisionCount: number }>("/api/governance/policies", 30_000);
-  const { data: secretsData, refresh: reloadSecrets } = useApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
-  const { data: approvalsData, refresh: reloadApprovals } = useApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
-  const { data: budgetsData, refresh: reloadBudgets } = useApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
+  const { data: policiesData, refresh: reloadPolicies } = useAuthApi<{ policies: PolicyInfo[]; decisionCount: number }>("/api/governance/policies", 30_000);
+  const { data: secretsData, refresh: reloadSecrets } = useAuthApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
+  const { data: approvalsData, refresh: reloadApprovals } = useAuthApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
+  const { data: budgetsData, refresh: reloadBudgets } = useAuthApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
 
   async function handleReloadPolicies() {
-    await fetch("/api/governance/policies/reload", { method: "POST" });
+    await authFetch("/api/governance/policies/reload", { method: "POST" });
     reloadPolicies();
   }
 
   async function handleAddSecret() {
     if (!newSecretName || !newSecretValue) return;
-    const res = await fetch("/api/governance/secrets", {
+    const res = await authFetch("/api/governance/secrets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: newSecretName, description: newSecretDesc, value: newSecretValue }),
@@ -94,7 +96,7 @@ export function GovernancePage() {
       setDeleteConfirmId(name);
       return;
     }
-    const res = await fetch(`/api/governance/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const res = await authFetch(`/api/governance/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
     if (res.ok) reloadSecrets();
     setDeleteConfirmId(null);
   }
@@ -108,7 +110,7 @@ export function GovernancePage() {
 
   async function handleApprovalSubmit() {
     if (pendingApprovalRunId == null || pendingApprovalDecision == null) return;
-    await fetch(`/api/governance/approvals/${pendingApprovalRunId}/${pendingApprovalDecision}`, {
+    await authFetch(`/api/governance/approvals/${pendingApprovalRunId}/${pendingApprovalDecision}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: approvalReason || undefined }),
@@ -121,7 +123,7 @@ export function GovernancePage() {
   }
 
   async function handleSetBudget() {
-    await fetch("/api/governance/budgets", {
+    await authFetch("/api/governance/budgets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -225,7 +227,7 @@ export function GovernancePage() {
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
                   <button className="btn-ghost" onClick={() => setShowApprovalModal(false)}>Cancel</button>
-                  <button className="btn-primary" onClick={handleApprovalSubmit}>Submit</button>
+                  <button className="btn-primary" onClick={handleApprovalSubmit}>Submit Decision</button>
                 </div>
               </div>
             </div>

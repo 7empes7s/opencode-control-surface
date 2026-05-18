@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Package, Play, Trash2, Ban, Plus, X, AlertCircle, Clock } from "lucide-react";
-import { useApi } from "../hooks/useApi";
+import { useAuthApi } from "../hooks/useAuthApi";
+import { authFetch } from "../lib/authFetch";
 import { SectionCard } from "../components/SectionCard";
 import type { InstalledSkill } from "../../server/marketplace/types";
 
@@ -52,7 +53,7 @@ type Modal =
   | { type: "install" };
 
 export function MarketplacePage() {
-  const { data, loading, error, refresh } = useApi<MarketplaceData>("/api/marketplace/skills", 30_000);
+  const { data, loading, error, refresh } = useAuthApi<MarketplaceData>("/api/marketplace/skills", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
   const [runInput, setRunInput] = useState("{}");
   const [runOutput, setRunOutput] = useState<string | null>(null);
@@ -82,7 +83,7 @@ export function MarketplacePage() {
     setRunError(null);
     setSelectedSkill(skill.id);
     try {
-      const res = await fetch(`/api/marketplace/skills/${skill.id}/runs`);
+      const res = await authFetch(`/api/marketplace/skills/${skill.id}/runs`);
       if (res.ok) {
         const d = await res.json();
         setRunsData(d.data);
@@ -97,7 +98,7 @@ export function MarketplacePage() {
     setRunError(null);
     try {
       const input = JSON.parse(runInput);
-      const res = await fetch(`/api/marketplace/skills/${modal.skill.id}/run`, {
+      const res = await authFetch(`/api/marketplace/skills/${modal.skill.id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input }),
@@ -117,12 +118,12 @@ export function MarketplacePage() {
   }
 
   async function handleDisable(skill: InstalledSkill) {
-    await fetch(`/api/marketplace/skills/${skill.id}`, { method: "DELETE" });
+    await authFetch(`/api/marketplace/skills/${skill.id}`, { method: "DELETE" });
     refresh();
   }
 
   async function handleEnable(skill: InstalledSkill) {
-    await fetch(`/api/marketplace/skills/${skill.id}/enable`, { method: "POST" });
+    await authFetch(`/api/marketplace/skills/${skill.id}/enable`, { method: "POST" });
     refresh();
   }
 
@@ -131,7 +132,7 @@ export function MarketplacePage() {
       setUninstallConfirmId(skill.id);
       return;
     }
-    await fetch(`/api/marketplace/skills/${skill.id}`, { method: "DELETE" });
+    await authFetch(`/api/marketplace/skills/${skill.id}`, { method: "DELETE" });
     refresh();
     setUninstallConfirmId(null);
   }
@@ -142,7 +143,7 @@ export function MarketplacePage() {
     setInstallError(null);
     try {
       const manifestJson = JSON.stringify(JSON.parse(installManifest));
-      const res = await fetch("/api/marketplace/skills", {
+      const res = await authFetch("/api/marketplace/skills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bundlePath: installPath, manifestJson }),

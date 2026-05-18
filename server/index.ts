@@ -2,6 +2,7 @@ import { handleApi } from "./api/router.ts";
 import { checkToken } from "./api/actions.ts";
 import { normalizeWorkspace } from "./api/workspaces.ts";
 import { initDashboardDb } from "./db/dashboard.ts";
+import { initObservabilityDb } from "./db/observability.ts";
 import { startIngestor } from "./db/ingestor.ts";
 import { startBuilderReconciler } from "./builder/runner.ts";
 import { startReasonerWatcher } from "./reasoner/index.ts";
@@ -117,8 +118,12 @@ async function proxyOpenCode(req: Request, pathname: string, search: string): Pr
 
 export async function startServer(): Promise<{ stop: () => void }> {
   const dashboardDb = initDashboardDb();
+  const observabilityDb = initObservabilityDb();
   if (process.env.DASHBOARD_DB === "1" && !dashboardDb) {
     console.error("[control-surface] DASHBOARD_DB=1 but dashboard SQLite is unavailable; continuing without durable history");
+  }
+  if (observabilityDb) {
+    console.log("[control-surface] observability SQLite initialized");
   }
   if (dashboardDb) {
     seedPlaybooks(dashboardDb);
@@ -189,6 +194,10 @@ export async function startServer(): Promise<{ stop: () => void }> {
 startServer().catch(console.error);
 
 const PORT = parseInt(process.env.PORT || "3000");
+
+// Connection bounding for SSE streams
+const MAX_SSE_CONNECTIONS = 100;
+let currentSseConnections = 0;
 
 const server = Bun.serve({
   port: PORT,

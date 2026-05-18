@@ -1,5 +1,6 @@
 import { checkToken } from "./actions.ts";
 import { upsertProject, getProject, listProjects, deleteProject, detectProject } from "../projects/index.ts";
+import { writeActionAudit } from "../db/writer.ts";
 import type { Project } from "../projects/types.ts";
 
 function json(data: unknown, status = 200): Response {
@@ -43,6 +44,17 @@ export async function projectsCreateHandler(req: Request): Promise<Response> {
     defaultModelRoster: body.defaultModelRoster ?? [],
     defaultPolicies: body.defaultPolicies ?? {},
     status: body.status ?? "active",
+  });
+  writeActionAudit({
+    actionKind: "project.create",
+    actionId: `project:create:${project.id}`,
+    targetType: "project",
+    targetId: project.id,
+    risk: "low",
+    request: body,
+    result: `created project ${project.name}`,
+    resultStatus: "success",
+    evidence: [{ label: "Project", kind: "db", ref: `projects:${project.id}` }],
   });
   return json({ project }, 201);
 }

@@ -182,6 +182,8 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
             topFailingModels: doctor.value.topFailingModels,
             topFailingStages: doctor.value.topFailingStages,
             verdictMix: doctor.value.verdictMix,
+            rateLimitProviders: doctor.value.rateLimitProviders,
+            fallbackCascades: doctor.value.fallbackCascades,
           },
           lastDecision: doctor.value.lastDecision,
         }

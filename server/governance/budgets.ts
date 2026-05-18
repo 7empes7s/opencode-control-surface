@@ -1,5 +1,8 @@
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { randomUUID } from "node:crypto";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { whereTenant, tenantParams } from "../db/tenantScope.ts";
+import type { TenantContext } from "../tenancy/context.ts";
 
 export type BudgetScope = "global" | "project";
 
@@ -35,14 +38,17 @@ function getStartOfMonth(): number {
   return d.getTime();
 }
 
-export function checkBudget(scope: BudgetScope, projectId?: string): BudgetCheckResult {
+export function checkBudget(scope: BudgetScope, projectId?: string, ctx?: TenantContext): BudgetCheckResult {
   if (!isDashboardDbEnabled()) return { allowed: true };
   const db = getDashboardDb();
   if (!db) return { allowed: true };
 
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause: tenantClause, params: tenantParams } = whereTenant(tenantCtx);
+
   const budgets = db.query(
-    "SELECT * FROM governance_budgets WHERE scope = ?",
-  ).all(scope) as GovernanceBudget[];
+    `SELECT * FROM governance_budgets WHERE scope = ? ${tenantClause}`,
+  ).all(scope, ...tenantParams) as GovernanceBudget[];
 
   if (!budgets.length) return { allowed: true };
 
@@ -52,12 +58,12 @@ export function checkBudget(scope: BudgetScope, projectId?: string): BudgetCheck
   const monthStart = getStartOfMonth();
 
   const dayRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ?`,
-  ).get(dayStart) as { total: number | null };
+    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
+  ).get(dayStart, ...tenantParams) as { total: number | null };
 
   const monthRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ?`,
-  ).get(monthStart) as { total: number | null };
+    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
+  ).get(monthStart, ...tenantParams) as { total: number | null };
 
   const daySpent = dayRow?.total ?? 0;
   const monthSpent = monthRow?.total ?? 0;
@@ -75,10 +81,13 @@ export function checkBudget(scope: BudgetScope, projectId?: string): BudgetCheck
 export function upsertBudget(
   scope: BudgetScope,
   opts: { dailyCapUsd?: number | null; monthlyCapUsd?: number | null; warnPct?: number; projectId?: string | null },
+  ctx?: TenantContext,
 ): GovernanceBudget {
   const db = getDashboardDb()!;
   const now = Date.now();
-  const id = scope === "global" ? "global" : (opts.projectId ?? randomUUID());
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const tenantId = tenantCtx.tenantId;
+  const id = scope === "global" ? `global-${tenantId}` : `${opts.projectId ?? randomUUID()}-${tenantId}`;
 
   const existing = db.query("SELECT id FROM governance_budgets WHERE id = ?").get(id);
   if (existing) {
@@ -93,30 +102,55 @@ export function upsertBudget(
       id,
     );
   } else {
+    const row = {
+      id,
+      scope,
+      project_id: opts.projectId ?? null,
+      daily_cap_usd: opts.dailyCapUsd ?? null,
+      monthly_cap_usd: opts.monthlyCapUsd ?? null,
+      warn_pct: opts.warnPct ?? 0.8,
+      created_at: now,
+      updated_at: now,
+      tenant_id: tenantId,
+    };
+
     db.query(
-      `INSERT INTO governance_budgets (id, scope, project_id, daily_cap_usd, monthly_cap_usd, warn_pct, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, scope, opts.projectId ?? null, opts.dailyCapUsd ?? null, opts.monthlyCapUsd ?? null, opts.warnPct ?? 0.8, now, now);
+      `INSERT INTO governance_budgets (id, scope, project_id, daily_cap_usd, monthly_cap_usd, warn_pct, created_at, updated_at, tenant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.id,
+      row.scope,
+      row.project_id,
+      row.daily_cap_usd,
+      row.monthly_cap_usd,
+      row.warn_pct,
+      row.created_at,
+      row.updated_at,
+      row.tenant_id,
+    );
   }
 
   return db.query("SELECT * FROM governance_budgets WHERE id = ?").get(id) as GovernanceBudget;
 }
 
-export function getBudgetSpending(scope: BudgetScope, projectId?: string): { daily: number; monthly: number } {
+export function getBudgetSpending(scope: BudgetScope, projectId?: string, ctx?: TenantContext): { daily: number; monthly: number } {
   if (!isDashboardDbEnabled()) return { daily: 0, monthly: 0 };
   const db = getDashboardDb();
   if (!db) return { daily: 0, monthly: 0 };
+
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause: tenantClause, params: tenantParams } = whereTenant(tenantCtx);
 
   const dayStart = getStartOfDay();
   const monthStart = getStartOfMonth();
 
   const dayRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ?`,
-  ).get(dayStart) as { total: number | null };
+    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
+  ).get(dayStart, ...tenantParams) as { total: number | null };
 
   const monthRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ?`,
-  ).get(monthStart) as { total: number | null };
+    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
+  ).get(monthStart, ...tenantParams) as { total: number | null };
 
   return {
     daily: dayRow?.total ?? 0,

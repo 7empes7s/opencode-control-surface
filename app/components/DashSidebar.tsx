@@ -30,9 +30,14 @@ import {
   Info,
   Wrench,
   Package,
+  TrendingUp,
+  Radar,
+  Paperclip,
+  Bell,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
+import { getRouteStatus, isExperimental, type RouteStatus } from "../lib/navRegistry";
 
 type NavItem = {
   href: string;
@@ -40,6 +45,7 @@ type NavItem = {
   icon: typeof LayoutGrid;
   match?: (loc: string) => boolean;
   condition?: () => boolean;
+  status?: RouteStatus;
 };
 type Theme = "dark" | "light";
 type Variant = "terminal" | "compact";
@@ -50,6 +56,7 @@ const NAV: NavItem[] = [
   { href: "/autopipeline", label: "Pipeline", icon: Workflow },
   { href: "/doctor", label: "Doctor", icon: Stethoscope },
   { href: "/models", label: "Models", icon: Cpu },
+  { href: "/cost", label: "Cost", icon: TrendingUp },
   { href: "/newsbites", label: "NewsBites", icon: Newspaper },
   { href: "/infra", label: "Infra", icon: Server },
   { href: "/incidents", label: "Incidents", icon: AlertTriangle },
@@ -66,22 +73,30 @@ const NAV: NavItem[] = [
   { href: "/settings", label: "Settings", icon: Settings2 },
   { href: "/about", label: "About", icon: Info },
   { href: "/install", label: "Setup", icon: Wrench, condition: () => localStorage.getItem("tib-install-wizard-done") !== "true" },
+  { href: "/litellm", label: "LiteLLM", icon: Route },
+  { href: "/paperclip", label: "Paperclip", icon: Paperclip },
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },
   { href: "/claude", label: "Claude Code", icon: Sparkles },
   { href: "/gemini", label: "Gemini", icon: Sparkles },
+  { href: "/finance-intel", label: "Finance Intel", icon: TrendingUp },
+  { href: "/scout", label: "Scout", icon: Radar },
+  { href: "/channels", label: "Channels", icon: Bell },
 ];
 
-const PRIMARY_NAV: NavItem[] = [
-  NAV[0],  // Home
-  NAV[2],  // Pipeline
-  NAV[3],  // Doctor
-  NAV[5],  // NewsBites
-  NAV[12], // OpenCode
-];
+const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");
+const ADVANCED_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "advanced");
+
+const PRIMARY_NAV: NavItem[] = ["/", "/today", "/autopipeline", "/models", "/opencode"]
+  .map((href) => CORE_NAV.find((item) => item.href === href))
+  .filter((item): item is NavItem => Boolean(item));
 
 function isActive(item: NavItem, location: string): boolean {
   return item.match ? item.match(location) : location.startsWith(item.href);
+}
+
+function ExperimentalBadge() {
+  return <span className="pill amber" style={{ fontSize: 9, padding: "1px 5px", marginLeft: 6, lineHeight: 1 }}>Labs</span>;
 }
 
 function usePreferences() {
@@ -155,7 +170,7 @@ export function DashSidebar() {
     };
   }, [drawerOpen]);
 
-  const moreActive = !PRIMARY_NAV.some((n) => isActive(n, location));
+  const moreActive = !CORE_NAV.some((n) => isActive(n, location));
 
   return (
     <>
@@ -168,12 +183,14 @@ export function DashSidebar() {
         </div>
 
 <nav className="topnav-links" aria-label="Main navigation">
-          {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
+          {CORE_NAV.concat(ADVANCED_NAV).filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
             const active = match ? match(location) : location.startsWith(href);
+            const exp = isExperimental(href);
             return (
               <Link key={href} href={href} className={`topnav-link${active ? " active" : ""}`}>
                 <Icon size={13} strokeWidth={1.75} />
                 <span>{label}</span>
+                {exp && <ExperimentalBadge />}
               </Link>
             );
           })}
@@ -181,8 +198,9 @@ export function DashSidebar() {
 
         {topnavExpanded && (
           <div className="topnav-links-expanded open" role="navigation" aria-label="All pages">
-            {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
+            {CORE_NAV.concat(ADVANCED_NAV).filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
               const active = match ? match(location) : location.startsWith(href);
+              const exp = isExperimental(href);
               return (
                 <Link
                   key={href}
@@ -192,6 +210,7 @@ export function DashSidebar() {
                 >
                   <Icon size={15} strokeWidth={1.75} />
                   <span>{label}</span>
+                  {exp && <ExperimentalBadge />}
                 </Link>
               );
             })}
@@ -283,17 +302,19 @@ export function DashSidebar() {
               </button>
             </div>
             <div className="drawer-nav-grid">
-              {NAV.filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
+              {NAV.filter(item => (!item.condition || item.condition()) && getRouteStatus(item.href) !== "hidden").map(({ href, label, icon: Icon, match }) => {
                 const active = match ? match(location) : location.startsWith(href);
+                const exp = isExperimental(href);
                 return (
                   <Link
                     key={href}
                     href={href}
-                    className={`drawer-nav-item${active ? " active" : ""}`}
+                    className={`drawer-nav-item${active ? " active" : ""}${exp ? " experimental" : ""}`}
                     onClick={() => setDrawerOpen(false)}
                   >
                     <Icon size={22} strokeWidth={1.5} />
                     <span>{label}</span>
+                    {exp && <ExperimentalBadge />}
                   </Link>
                 );
               })}

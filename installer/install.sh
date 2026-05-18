@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== TIB Builder Installer ==="
+echo "=== Control Surface Installer ==="
 
 if [ "$(uname -s)" != "Linux" ] || [ "$(uname -r)" != "Linux" ]; then
   echo "This script only supports Ubuntu/Debian Linux."
@@ -25,37 +25,37 @@ else
   echo "Bun already installed"
 fi
 
-# Download tib-builder binary
-echo "Installing tib-builder..."
+# Download control-surface binary
+echo "Installing control-surface..."
 mkdir -p /usr/local/bin
-curl -fsSL https://releases.tib-builder.dev/latest/tib-builder-linux-x64 -o /usr/local/bin/tib-builder
-chmod +x /usr/local/bin/tib-builder
+curl -fsSL https://releases.control-surface.dev/latest/control-surface-linux-x64 -o /usr/local/bin/control-surface
+chmod +x /usr/local/bin/control-surface
 
 # Create data directory
 echo "Creating data directory..."
-mkdir -p /var/lib/tib-builder
+mkdir -p /var/lib/control-surface
 
 # Create config
 echo "Creating config..."
-mkdir -p /etc/tib-builder
-cat > /etc/tib-builder/config.yaml << 'EOF'
+mkdir -p /etc/control-surface
+cat > /etc/control-surface/config.yaml << 'EOF'
 port: 3000
-data_dir: /var/lib/tib-builder
+data_dir: /var/lib/control-surface
 operator_token: CHANGEME
 EOF
 
 # Write and enable systemd unit
 echo "Installing systemd service..."
-cat > /etc/systemd/system/tib-builder.service << 'EOF'
+cat > /etc/systemd/system/control-surface.service << 'EOF'
 [Unit]
-Description=TIB Builder Platform
+Description=Control Surface Platform
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tib-builder
-EnvironmentFile=-/etc/tib-builder/config.env
-WorkingDirectory=/var/lib/tib-builder
+ExecStart=/usr/local/bin/control-surface
+EnvironmentFile=-/etc/control-surface/config.env
+WorkingDirectory=/var/lib/control-surface
 Restart=always
 RestartSec=5
 
@@ -64,15 +64,15 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable tib-builder
-systemctl start tib-builder
+systemctl enable control-surface
+systemctl start control-surface
 
 echo ""
 echo "=== Installation Complete ==="
 echo "Dashboard reachable at http://localhost:3000 — open to complete setup"
 echo ""
 echo "Use the following commands to manage the service:"
-echo "  systemctl start tib-builder   # start"
-echo "  systemctl stop tib-builder    # stop"
-echo "  systemctl restart tib-builder # restart"
-echo "  journalctl -u tib-builder      # view logs"
+echo "  systemctl start control-surface   # start"
+echo "  systemctl stop control-surface    # stop"
+echo "  systemctl restart control-surface # restart"
+echo "  journalctl -u control-surface      # view logs"

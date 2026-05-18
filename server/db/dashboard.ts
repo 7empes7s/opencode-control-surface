@@ -49,6 +49,7 @@ export function initDashboardDb(options: InitDashboardDbOptions = {}): Database 
 
     db = new Database(dbPath);
     db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA busy_timeout = 5000;");
     migrateDashboardDb(db);
 
     dashboardDb = db;
@@ -376,6 +377,14 @@ function migrateDashboardDb(db: Database): void {
       acquired_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
       holder TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_locks (
+      project_root TEXT PRIMARY KEY,
+      locked_by TEXT NOT NULL,
+      acquired_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      reason TEXT
     );
 
     CREATE TABLE IF NOT EXISTS builder_doctor_reports (
@@ -770,6 +779,69 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     );
     CREATE INDEX IF NOT EXISTS idx_marketplace_skill_runs_skill ON marketplace_skill_runs (skill_id, started_at DESC);
+
+    -- Cost Management Tables
+    CREATE TABLE IF NOT EXISTS cost_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      logical_model TEXT,
+      provider TEXT,
+      tier TEXT NOT NULL,
+      workflow_type TEXT,
+      workflow_id TEXT,
+      project TEXT,
+      article_slug TEXT,
+      dossier_id TEXT,
+      builder_run_id TEXT,
+      gateway_call_id TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cost_cents REAL NOT NULL DEFAULT 0,
+      cost_basis TEXT NOT NULL,
+      fallback_reason TEXT,
+      metadata_json TEXT,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events (ts);
+    CREATE INDEX IF NOT EXISTS idx_cost_events_scope ON cost_events (workflow_type, workflow_id);
+    CREATE INDEX IF NOT EXISTS idx_cost_events_model ON cost_events (logical_model, ts);
+    CREATE INDEX IF NOT EXISTS idx_cost_events_article ON cost_events (article_slug);
+    CREATE INDEX IF NOT EXISTS idx_cost_events_tenant_ts ON cost_events (tenant_id, ts);
+
+    CREATE TABLE IF NOT EXISTS provider_price_catalog (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      logical_model TEXT,
+      tier TEXT NOT NULL,
+      input_cents_per_1k REAL,
+      output_cents_per_1k REAL,
+      hourly_cents REAL,
+      effective_from INTEGER NOT NULL,
+      effective_to INTEGER,
+      source_note TEXT,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_price_catalog_provider_model ON provider_price_catalog (provider, logical_model);
+    CREATE INDEX IF NOT EXISTS idx_price_catalog_tenant_provider ON provider_price_catalog (tenant_id, provider);
+
+    CREATE TABLE IF NOT EXISTS spend_anomalies (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT,
+      baseline_cents REAL NOT NULL,
+      observed_cents REAL NOT NULL,
+      multiplier REAL NOT NULL,
+      status TEXT NOT NULL,
+      alert_firing_id TEXT,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_spend_anomalies_ts_status ON spend_anomalies (ts, status);
+    CREATE INDEX IF NOT EXISTS idx_spend_anomalies_tenant_ts ON spend_anomalies (tenant_id, ts);
   `);
 
   // Add columns to tables created above (must run after CREATE TABLE)
@@ -858,6 +930,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     "governance_policies", "governance_policy_decisions", "governance_role_bindings",
     "governance_secrets", "governance_approvals", "governance_budgets",
     "gateway_calls",
+    "cost_events", "provider_price_catalog", "spend_anomalies",
     "reasoner_jobs", "reasoner_diagnoses", "reasoner_incidents",
     "reasoner_incident_members", "reasoner_playbooks", "reasoner_playbook_runs",
     "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
@@ -895,6 +968,16 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON builder_artifacts (tenant_id, workflow_id);
     CREATE INDEX IF NOT EXISTS idx_builder_validations_tenant_workflow
       ON builder_validations (tenant_id, workflow_id);
+  `);
+
+  // Cost Management: (tenant_id, ts)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cost_events_tenant_ts
+      ON cost_events (tenant_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_provider_price_catalog_tenant_ts
+      ON provider_price_catalog (tenant_id, effective_from);
+    CREATE INDEX IF NOT EXISTS idx_spend_anomalies_tenant_ts
+      ON spend_anomalies (tenant_id, ts);
   `);
 
   // Orchestrator / reasoner: (tenant_id, status)

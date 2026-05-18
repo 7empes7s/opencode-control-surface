@@ -19,6 +19,54 @@ export interface EvidenceRef {
   redacted?: boolean;
 }
 
+// ── Dossier types ─────────────────────────────────────────────────────
+
+export interface DossierSource {
+  url: string;
+  type: string;
+  publisher: string;
+  date: string;
+  notes: string;
+}
+
+export interface DossierClaim {
+  claim: string;
+  sources: string;
+  evidenceQuality: string;
+  confidence: string;
+  notes: string;
+}
+
+export interface AgentRun {
+  id: string;
+  stage: string;
+  startedAt: string;
+  durationMs: number | null;
+  metadata: any;
+  response: any;
+}
+
+export interface DossierArtifacts {
+  slug: string;
+  date: string;
+  header: {
+    slug: string;
+    headline: string;
+    vertical: string;
+    owner: string;
+    created: string;
+    updated: string;
+    status: string;
+  };
+  sources: DossierSource[];
+  claims: DossierClaim[];
+  draftContent: string;
+  verifyContent: string | null;
+  publishContent: string;
+  notesContent: string;
+  agentRuns: AgentRun[];
+}
+
 export interface ActionDescriptor {
   id: string;
   label: string;
@@ -141,6 +189,8 @@ export interface DoctorWidget {
     topFailingModels: { model: string; count: number }[];
     topFailingStages: { stage: string; count: number }[];
     verdictMix: { action: string; count: number }[];
+    rateLimitProviders?: { provider: string; count: number; models: string[]; storySlugs: string[] }[];
+    fallbackCascades?: { model: string; stage: string; count: number; errorType: string; storySlugs: string[] }[];
   };
   lastDecision: { ts: string; slug: string; action: string; reason: string } | null;
 }
@@ -330,4 +380,154 @@ export interface InfraDetail {
     name: string; active: boolean;
     lastTrigger: string | null; nextElapse: string | null; lastResult: string | null;
   }[];
+}
+
+// ── Scout types ─────────────────────────────────────────────────────
+
+export interface ScoutTopic {
+  headline: string;
+  vertical: string;
+  source: string;
+  recencyScore: number;
+  noveltyScore: number;
+  finalScore: number;
+  selected: boolean;
+  reason: string;
+}
+
+export interface ScoutRun {
+  id: string;
+  runAt: string;
+  trigger: string;
+  topics: ScoutTopic[];
+  queued: string[];
+  config: Record<string, any>;
+}
+
+export interface ScoutTrace extends ScoutRun {
+  id: string;
+}
+
+export interface ScoutConfig {
+  enabled: boolean;
+  frequency: string;
+  verticals: string[];
+  maxTopicsPerRun: number;
+  minNoveltyScore: number;
+  minRecencyHours: number;
+  autoQueueThreshold: number;
+}
+
+// ── System Config types ─────────────────────────────────────────────
+
+export interface SystemConfig {
+  id?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  config: {
+    financeAgent?: {
+      enabled: boolean;
+      modelOverride?: string;
+      processingTimeout?: number;
+    };
+    pipelineStages?: {
+      research?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      write?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      publishPrep?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      verify?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      scout?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      rank?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+    };
+    alertThresholds?: {
+      pipelineFailureRate: number;
+      modelResponseTimeMs: number;
+      gpuUtilization: number;
+    };
+    autoPublish?: {
+      enabled: boolean;
+      verticals: string[];
+      approvalRequired: string[];
+    };
+    approvalWorkflows?: {
+      enabled: boolean;
+      requiredVerticals: string[];
+      maxArticlesPerDay: number;
+    };
+  };
+}
+
+export interface SystemConfigHistory {
+  id: string;
+  timestamp: string;
+  changedBy: string;
+  changes: string[];
+  configSnapshot: Record<string, any>;
+}
+
+// ── LiteLLM Routing Types ──────────────────────────────────────────────────────
+
+export interface LiteLLMRoutingLogEntry {
+  id: number;
+  loggedAt: string;
+  logicalName: string;
+  triedModels: Array<{
+    model: string;
+    status: string;
+    latencyMs: number;
+    errorCode?: string;
+  }>;
+  finalModel: string | null;
+  totalLatencyMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  caller: string | null;
+  status: 'ok' | 'fallback' | 'failed';
+}
+
+export interface LiteLLMRoutingStats {
+  logicalName: string;
+  totalRequests: number;
+  avgLatencyMs: number;
+  successCount: number;
+  fallbackCount: number;
+  failedCount: number;
+  avgPromptTokens: number | null;
+  avgCompletionTokens: number | null;
+}
+
+export interface ForceRouteRequest {
+  logicalName: string;
+  targetModel: string;
+  reason?: string;
+}
+
+export interface ForceRouteResponse {
+  success: boolean;
+  logicalName: string;
+  targetModel: string;
+  message: string;
 }

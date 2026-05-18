@@ -6,7 +6,10 @@ import { buildHomeData } from "../api/home.ts";
 import type { HomeData } from "../api/types.ts";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "./dashboard.ts";
 import {
+  parseTelegramChannelLogLine,
+  setChannelLogReaderForTests,
   setBuildHomeDataForTests,
+  setLiteLLMHealthProbeForTests,
   startIngestor,
   type IngestorController,
 } from "./ingestor.ts";
@@ -24,6 +27,17 @@ function registerIngestorTests(): void {
     tempDir = mkdtempSync(join(tmpdir(), "dashboard-ingestor-"));
     previousDashboardDb = process.env.DASHBOARD_DB;
     previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
+    setLiteLLMHealthProbeForTests(async () => ({
+      url: "http://127.0.0.1:4000",
+      reachable: true,
+      healthStatus: 200,
+      healthOk: true,
+      latencyMs: 1,
+      authConfigured: false,
+      authRequired: false,
+      error: null,
+    }));
+    setChannelLogReaderForTests(async () => []);
   });
 
   afterEach(() => {
@@ -32,6 +46,17 @@ function registerIngestorTests(): void {
     closeDashboardDb();
     __resetSamplerStateForTests();
     setBuildHomeDataForTests(buildHomeData);
+    setLiteLLMHealthProbeForTests(async () => ({
+      url: "http://127.0.0.1:4000",
+      reachable: true,
+      healthStatus: 200,
+      healthOk: true,
+      latencyMs: 1,
+      authConfigured: false,
+      authRequired: false,
+      error: null,
+    }));
+    setChannelLogReaderForTests(async () => []);
 
     if (previousDashboardDb === undefined) {
       delete process.env.DASHBOARD_DB;
@@ -60,8 +85,18 @@ function registerIngestorTests(): void {
   test("manual tick writes through sampler", async () => {
     openTempDb();
     setBuildHomeDataForTests(async () => ({ data: stubHome(), sources: {} }));
+    setLiteLLMHealthProbeForTests(async () => ({
+      url: "http://127.0.0.1:4000",
+      reachable: true,
+      healthStatus: 200,
+      healthOk: true,
+      latencyMs: 5,
+      authConfigured: true,
+      authRequired: false,
+      error: null,
+    }));
 
-    const controller = startIngestor({ intervalMs: 10_000 });
+    const controller = startIngestor({ intervalMs: 10_000, litellmProbeIntervalMs: 1 });
     if (!controller) throw new Error("expected ingestor controller");
     controllerToStop = controller;
 
@@ -72,6 +107,16 @@ function registerIngestorTests(): void {
       .get() as { count: number };
 
     expect(row.count).toBeGreaterThan(0);
+
+    const litellm = getDashboardDb()!.query(`
+      SELECT value_json
+      FROM metric_samples
+      WHERE source = ? AND key = ?
+      ORDER BY ts DESC
+      LIMIT 1
+    `).get("litellm", "health") as { value_json: string } | null;
+
+    expect(JSON.parse(litellm?.value_json ?? "{}").healthOk).toBe(true);
     controller.stop();
     controller.stop();
   });
@@ -91,6 +136,42 @@ function registerIngestorTests(): void {
 
     expect(row.count).toBeGreaterThan(0);
     controller.stop();
+  });
+
+  test("parses and ingests Telegram channel log lines once", async () => {
+    openTempDb();
+    setBuildHomeDataForTests(async () => ({ data: stubHome(), sources: {} }));
+    setChannelLogReaderForTests(async () => [
+      "2026-05-18T03:11:00Z openclaw_gateway telegram received callback_query story=abc token=secret123",
+      "2026-05-18T03:11:01Z openclaw_gateway Telegram sent morning brief delivery ok",
+      "2026-05-18T03:11:02Z openclaw_gateway health check ok",
+    ]);
+
+    const parsed = parseTelegramChannelLogLine("2026-05-18T03:11:00Z telegram received hello token=secret123", 1);
+    expect(parsed?.direction).toBe("in");
+    expect(parsed?.summary).toContain("token=[REDACTED]");
+
+    const controller = startIngestor({
+      intervalMs: 10_000,
+      litellmProbeIntervalMs: 60_000,
+      channelsProbeIntervalMs: 1,
+    });
+    if (!controller) throw new Error("expected ingestor controller");
+    controllerToStop = controller;
+
+    await controller.tick();
+    await controller.tick();
+
+    const rows = getDashboardDb()!.query(`
+      SELECT direction, summary, payload_json
+      FROM channels_log
+      ORDER BY ts ASC
+    `).all() as Array<{ direction: string; summary: string; payload_json: string }>;
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.direction)).toEqual(["in", "out"]);
+    expect(rows[0].summary).toContain("token=[REDACTED]");
+    expect(JSON.parse(rows[0].payload_json).raw).toContain("token=[REDACTED]");
   });
 }
 

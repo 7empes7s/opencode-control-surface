@@ -11,6 +11,8 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/autopipeline": { title: "Autopipeline", sub: "Editorial queue, stages, throughput" },
   "/doctor": { title: "Doctor", sub: "Auto-repair history & error analysis" },
   "/models": { title: "Models", sub: "Inventory, health, discovery" },
+  "/litellm": { title: "LiteLLM", sub: "Routing config, health, fallback chains" },
+  "/paperclip": { title: "Paperclip", sub: "Agent roster, task ledger, adapter health" },
   "/newsbites": { title: "NewsBites", sub: "Articles, deploys, site health" },
   "/infra": { title: "Infrastructure", sub: "Hetzner · Vast · GPU · services" },
   "/incidents": { title: "Incidents", sub: "Cross-cutting failure timeline" },

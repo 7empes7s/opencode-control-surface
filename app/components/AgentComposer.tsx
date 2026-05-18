@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Mic, MicOff, Send, Square } from "lucide-react";
 import { useVoice } from "../hooks/useVoice";
+import { authFetch } from "../lib/authFetch";
 
 type AgentId = "claude" | "codex" | "opencode" | "gemini";
 
@@ -137,11 +138,11 @@ export function AgentComposer({
     let cancelled = false;
     const quickUrl = `/api/agents/quick-prompts?agent=${agent}${workspace ? `&cwd=${encodeURIComponent(workspace)}` : ""}`;
     Promise.all([
-      fetch(quickUrl).then(async (res) => {
+      authFetch(quickUrl).then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         return res.json() as Promise<CatalogResponse>;
       }),
-      fetch(`/api/agents/skills?agent=${agent}`).then(async (res) => {
+      authFetch(`/api/agents/skills?agent=${agent}`).then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         return res.json() as Promise<CatalogResponse>;
       }),

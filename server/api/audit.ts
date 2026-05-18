@@ -134,7 +134,7 @@ export async function auditExportHandler(
          WHERE id = ?`,
       ).run("completed", rowCount, chainHash, outputPath, Date.now(), jobId);
 
-      return new Response(JSON.stringify(ok({ jobId, status: "completed", rowCount, chainHash })), {
+      return new Response(JSON.stringify(ok({ jobId, status: "completed", rowCount, chainHash, downloadUrl: `/api/audit/export/${jobId}/download` })), {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {

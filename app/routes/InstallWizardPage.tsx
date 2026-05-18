@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { FileBrowser } from "../components/FileBrowser";
+import { authFetch } from "../lib/authFetch";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -34,7 +36,7 @@ export function InstallWizardPage() {
     if (!token.trim()) return;
     setSaving(true);
     try {
-      await fetch("/api/settings/state", {
+      await authFetch("/api/settings/state", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ operator_token_set: "true" }),
@@ -52,7 +54,7 @@ export function InstallWizardPage() {
   async function handleDetectProject() {
     setDetecting(true);
     try {
-      const res = await fetch("/api/projects/detect", { method: "POST" });
+      const res = await authFetch("/api/projects/detect", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         setProjectPath(data.path ?? "");
@@ -66,7 +68,7 @@ export function InstallWizardPage() {
     setSaving(true);
     try {
       if (projectPath.trim()) {
-        await fetch("/api/projects", {
+        await authFetch("/api/projects", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path: projectPath }),
@@ -181,12 +183,11 @@ export function InstallWizardPage() {
               {detecting ? "Detecting…" : "Auto-detect"}
             </button>
           </div>
-          <input
-            type="text"
+          <FileBrowser
             value={projectPath}
-            onChange={e => setProjectPath(e.target.value)}
+            onChange={(path) => setProjectPath(path)}
+            type="directory"
             placeholder="/opt/my-project"
-            className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-amber-500"
           />
           <button
             onClick={handleProjectNext}

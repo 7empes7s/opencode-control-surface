@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeSecret, readSecretPlaintext, listSecrets, deleteSecret } from "./secrets.ts";
+import { initDashboardDb, closeDashboardDb } from "../db/dashboard.ts";
 
 const TEST_DIR = "/tmp/control-surface-test-secrets";
 const TEST_KEK_FILE = join(TEST_DIR, "test-master.key");
@@ -18,6 +19,15 @@ describe("secrets", () => {
   beforeAll(() => {
     // Stub KEK path for tests
     process.env.TIB_BUILDER_TEST = "1";
+    process.env.DASHBOARD_DB = "1";
+  });
+
+  beforeEach(() => {
+    initDashboardDb({ enabled: true, path: `:memory:` });
+  });
+
+  afterEach(() => {
+    closeDashboardDb();
   });
 
   it("round-trip encrypt/decrypt", () => {

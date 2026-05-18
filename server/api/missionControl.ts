@@ -9,7 +9,7 @@ function readJson<T>(path: string): T | null {
   catch { return null; }
 }
 
-interface DecisionQueueItem {
+export interface DecisionQueueItem {
   id: string;
   severity: "info" | "warn" | "critical";
   title: string;
@@ -20,7 +20,7 @@ interface DecisionQueueItem {
   sourceRoute?: string;
 }
 
-interface NextBestAction {
+export interface NextBestAction {
   id: string;
   label: string;
   description: string;
@@ -28,14 +28,14 @@ interface NextBestAction {
   targetRoute?: string;
 }
 
-interface RiskStripItem {
+export interface RiskStripItem {
   kind: "runway" | "stale_telemetry" | "failed_check" | "incident" | "disk" | "queue";
   label: string;
   severity: "ok" | "warn" | "critical";
   value?: string;
 }
 
-interface MissionControlData {
+export interface MissionControlData {
   nowCard: {
     posture: "ok" | "warn" | "critical";
     summary: string;

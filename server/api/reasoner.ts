@@ -5,16 +5,19 @@ import {
   applyPlaybookAction,
   recordPlaybookRun,
 } from "../reasoner/playbooks.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 export async function reasonerJobsHandler(): Promise<Response> {
   if (!isDashboardDbEnabled()) return json([]);
   const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
   const rows = db.query(`
     SELECT id, pass_id, run_id, workflow_id, status, attempts, created_at, finished_at, error
     FROM reasoner_jobs
+    WHERE tenant_id = ? OR tenant_id IS NULL
     ORDER BY created_at DESC
     LIMIT 50
-  `).all() as Array<{
+  `).all(tenantId) as Array<{
     id: string;
     pass_id: string;
     run_id: string;
@@ -41,13 +44,15 @@ export async function reasonerJobsHandler(): Promise<Response> {
 export async function reasonerDiagnosesHandler(): Promise<Response> {
   if (!isDashboardDbEnabled()) return json([]);
   const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
   const rows = db.query(`
     SELECT id, pass_id, run_id, workflow_id, failure_class, root_cause,
            evidence_json, suggested_actions_json, confidence, raw_llm_response, diagnosed_at
     FROM reasoner_diagnoses
+    WHERE tenant_id = ? OR tenant_id IS NULL
     ORDER BY diagnosed_at DESC
     LIMIT 50
-  `).all() as Array<{
+  `).all(tenantId) as Array<{
     id: string;
     pass_id: string;
     run_id: string;
@@ -78,14 +83,15 @@ export async function reasonerDiagnosesHandler(): Promise<Response> {
 export async function reasonerDiagnosisByPassHandler(passId: string): Promise<Response> {
   if (!isDashboardDbEnabled()) return json({ error: "not found" }, 404);
   const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
   const row = db.query(`
     SELECT id, pass_id, run_id, workflow_id, failure_class, root_cause,
            evidence_json, suggested_actions_json, confidence, raw_llm_response, diagnosed_at
     FROM reasoner_diagnoses
-    WHERE pass_id = ?
+    WHERE pass_id = ? AND (tenant_id = ? OR tenant_id IS NULL)
     ORDER BY diagnosed_at DESC
     LIMIT 1
-  `).get(passId) as {
+  `).get(passId, tenantId) as {
     id: string;
     pass_id: string;
     run_id: string;
@@ -117,15 +123,16 @@ export async function reasonerDiagnosisByPassHandler(passId: string): Promise<Re
 export async function reasonerIncidentsHandler(url?: URL): Promise<Response> {
   if (!isDashboardDbEnabled()) return json([]);
   const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
   const statusParam = url?.searchParams.get("status") ?? "open";
-  const whereClause = statusParam === "all" ? "" : `WHERE status = '${statusParam === "resolved" ? "resolved" : "open"}'`;
+  const whereClause = statusParam === "all" ? "" : `AND status = '${statusParam === "resolved" ? "resolved" : "open"}'`;
   const rows = db.query(`
     SELECT id, cluster_key, failure_class, title, first_seen, last_seen,
            occurrence_count, representative_pass_id, representative_diagnosis_id, status
     FROM reasoner_incidents
-    ${whereClause}
+    WHERE (tenant_id = ? OR tenant_id IS NULL) ${whereClause}
     ORDER BY occurrence_count DESC, last_seen DESC
-  `).all() as Array<{
+  `).all(tenantId) as Array<{
     id: string;
     cluster_key: string;
     failure_class: string;
@@ -154,12 +161,13 @@ export async function reasonerIncidentsHandler(url?: URL): Promise<Response> {
 export async function reasonerIncidentByIdHandler(id: string): Promise<Response> {
   if (!isDashboardDbEnabled()) return json({ error: "not found" }, 404);
   const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
   const row = db.query(`
     SELECT id, cluster_key, failure_class, title, first_seen, last_seen,
            occurrence_count, representative_pass_id, representative_diagnosis_id, status
     FROM reasoner_incidents
-    WHERE id = ?
-  `).get(id) as {
+    WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+  `).get(id, tenantId) as {
     id: string;
     cluster_key: string;
     failure_class: string;
@@ -178,9 +186,9 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
            rd.failure_class, rd.root_cause, rd.confidence
     FROM reasoner_incident_members rim
     JOIN reasoner_diagnoses rd ON rd.id = rim.diagnosis_id
-    WHERE rim.incident_id = ?
+    WHERE rim.incident_id = ? AND (rim.tenant_id = ? OR rim.tenant_id IS NULL)
     ORDER BY rim.added_at DESC
-  `).all(id) as Array<{
+  `).all(id, tenantId) as Array<{
     id: string;
     pass_id: string;
     diagnosis_id: string;
@@ -216,7 +224,8 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
 export async function reasonerResolveIncidentHandler(id: string): Promise<Response> {
   if (!isDashboardDbEnabled()) return json({ error: "not found" }, 404);
   const db = getDashboardDb()!;
-  const existing = db.query(`SELECT id FROM reasoner_incidents WHERE id = ?`).get(id);
+  const tenantId = getCurrentTenantContext().tenantId;
+  const existing = db.query(`SELECT id FROM reasoner_incidents WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)`).get(id, tenantId);
   if (!existing) return json({ error: "not found" }, 404);
   db.query(`UPDATE reasoner_incidents SET status = 'resolved' WHERE id = ?`).run(id);
   return json({ ok: true });

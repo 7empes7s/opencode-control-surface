@@ -12,6 +12,7 @@ import {
   readBuilderWorkflow,
   readBuilderValidations,
 } from "../builder/store.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 function requireDb() {
   if (!isDashboardDbEnabled()) throw new Error("DASHBOARD_DB disabled");
@@ -24,18 +25,20 @@ export function queueDiagnosis(passId: string, runId: string, workflowId: string
   const db = requireDb();
   const id = `rq_${randomUUID()}`;
   const ts = Date.now();
+  const tenantId = getCurrentTenantContext().tenantId;
   db.query(`
-    INSERT INTO reasoner_jobs (id, pass_id, run_id, workflow_id, status, attempts, created_at)
-    VALUES (?, ?, ?, ?, 'pending', 0, ?)
-  `).run(id, passId, runId, workflowId, ts);
+    INSERT INTO reasoner_jobs (id, pass_id, run_id, workflow_id, status, attempts, created_at, tenant_id)
+    VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+  `).run(id, passId, runId, workflowId, ts, tenantId);
   return id;
 }
 
 function getJob(db: ReturnType<typeof requireDb>, jobId: string): ReasonerJob | null {
+  const tenantId = getCurrentTenantContext().tenantId;
   const row = db.query(`
     SELECT id, pass_id, run_id, workflow_id, status, attempts, created_at, finished_at, error
-    FROM reasoner_jobs WHERE id = ?
-  `).get(jobId) as {
+    FROM reasoner_jobs WHERE id = ? AND tenant_id = ?
+  `).get(jobId, tenantId) as {
     id: string;
     pass_id: string;
     run_id: string;
@@ -62,11 +65,12 @@ function getJob(db: ReturnType<typeof requireDb>, jobId: string): ReasonerJob | 
 function upsertDiagnosis(diagnosis: DiagnosisResult, rawLLMResponse: string): string {
   const db = requireDb();
   const id = `rd_${randomUUID()}`;
+  const tenantId = getCurrentTenantContext().tenantId;
   db.query(`
     INSERT INTO reasoner_diagnoses
       (id, pass_id, run_id, workflow_id, failure_class, root_cause, evidence_json,
-       suggested_actions_json, confidence, raw_llm_response, diagnosed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       suggested_actions_json, confidence, raw_llm_response, diagnosed_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     diagnosis.passId,
@@ -79,6 +83,7 @@ function upsertDiagnosis(diagnosis: DiagnosisResult, rawLLMResponse: string): st
     diagnosis.confidence,
     rawLLMResponse.slice(0, 10000),
     diagnosis.diagnosedAt,
+    tenantId,
   );
   return id;
 }
@@ -198,13 +203,15 @@ function pollPendingJobs(): void {
   if (!db) return;
 
   if (activeCount >= MAX_CONCURRENT) return;
+  
+  const tenantId = getCurrentTenantContext().tenantId;
 
   const rows = db.query(`
     SELECT id FROM reasoner_jobs
-    WHERE status = 'pending'
+    WHERE status = 'pending' AND tenant_id = ?
     ORDER BY created_at ASC
     LIMIT ?
-  `).all(MAX_CONCURRENT - activeCount) as Array<{ id: string }>;
+  `).all(tenantId, MAX_CONCURRENT - activeCount) as Array<{ id: string }>;
 
   for (const row of rows) {
     const job = getJob(db, row.id);

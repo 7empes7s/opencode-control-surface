@@ -11,4 +11,5 @@ export type Project = {
   status: string;
   createdAt: number;
   updatedAt: number;
+  planFiles?: string[];
 };

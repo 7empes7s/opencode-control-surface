@@ -22,6 +22,7 @@ describe("reasoner agent", () => {
   const testDbPath = `/tmp/test-reasoner-${Date.now()}.sqlite`;
 
   beforeAll(() => {
+    process.env.DASHBOARD_DB = "1";
     initDashboardDb({ enabled: true, path: testDbPath });
   });
 

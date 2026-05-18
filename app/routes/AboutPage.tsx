@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { authFetch } from "../lib/authFetch";
 
 interface VersionData {
   version: string;
@@ -24,8 +25,8 @@ export function AboutPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/version").then(r => r.json()),
-      fetch("/api/home").then(r => r.json()),
+      authFetch("/api/version").then(r => r.json()),
+      authFetch("/api/home").then(r => r.json()),
     ]).then(([v, h]) => {
       setVersionData(v);
       setHomeData(h);
@@ -36,7 +37,7 @@ export function AboutPage() {
   async function checkForUpdates() {
     setChecking(true);
     try {
-      const res = await fetch("/api/update-check", { method: "POST" });
+      const res = await authFetch("/api/update-check", { method: "POST" });
       const data = await res.json();
       setVersionData(prev => prev ? { ...prev, updateAvailable: data.updateAvailable } : null);
     } finally {
@@ -48,7 +49,7 @@ export function AboutPage() {
 
   return (
     <div className="p-6 max-w-2xl space-y-6">
-      <h1 className="text-2xl font-semibold text-[var(--text-bright)]">About TIB Builder</h1>
+      <h1 className="text-2xl font-semibold text-[var(--text-bright)]">About Control Surface</h1>
 
       {versionData?.updateAvailable && (
         <div className="w-card" style={{ background: "color-mix(in oklch, var(--amber-warn) 7%, transparent)", border: "1px solid color-mix(in oklch, var(--amber-warn) 30%, transparent)", borderRadius: 6, padding: "14px 16px" }}>

@@ -309,7 +309,7 @@ export function WorkflowsPage() {
     setExpandedId(id);
     if (!detailMap[id]) {
       try {
-        const res = await fetch(`/api/orchestrator/instances/${id}`);
+        const res = await authFetch(`/api/orchestrator/instances/${id}`);
         const json = await res.json();
         setDetailMap((m) => ({ ...m, [id]: json.data ?? null }));
       } catch {

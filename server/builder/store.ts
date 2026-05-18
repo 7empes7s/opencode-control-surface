@@ -6,6 +6,7 @@ import { redactForDashboard } from "../db/writer.ts";
 import { getBuilderProjects, type BuilderProject } from "./discovery.ts";
 import { isProjectRootAllowlisted } from "./provision.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { whereTenant } from "../db/tenantScope.ts";
 
 export type BuilderWorkflowMode = "once" | "auto-continue" | "scheduled" | "permanent" | "doctor" | "plan";
 export type BuilderWorkflowStatus = "draft" | "ready" | "running" | "paused" | "blocked" | "done" | "failed" | "canceled";
@@ -65,6 +66,7 @@ export type BuilderWorkflowConfig = {
     liveDeploys: "disabled" | "manual-approval";
     maxPasses: number;
     passTimeoutSeconds?: number;
+    stallTimeoutSeconds?: number;
   };
   geminiApprovalMode?: "default" | "auto_edit" | "plan" | "yolo";
   effortLevel?: "low" | "medium" | "high";
@@ -291,13 +293,15 @@ function upsertBuilderProject(project: BuilderProject): string {
   const db = requireDb();
   const now = Date.now();
   const id = projectIdForRoot(project.root);
+  const tenantId = getCurrentTenantContext().tenantId;
   db.query(`
-    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(root) DO UPDATE SET
       name = excluded.name,
       config_json = excluded.config_json,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      tenant_id = excluded.tenant_id
   `).run(
     id,
     project.label,
@@ -305,6 +309,7 @@ function upsertBuilderProject(project: BuilderProject): string {
     stringifyJson(project),
     now,
     now,
+    tenantId,
   );
   return id;
 }
@@ -447,12 +452,13 @@ export function readBuilderWorkflows(): BuilderWorkflow[] {
 export function readBuilderWorkflow(id: string): BuilderWorkflow | null {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return null;
   try {
+    const tenantWhere = whereTenant();
     const row = getDashboardDb()!.query(`
-      SELECT id, project_id, name, mode, status, plan_file, config_json, created_at,
+      SELECT id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at,
         updated_at, last_run_id, next_run_at, paused_reason
       FROM builder_workflows
-      WHERE id = ?
-    `).get(id) as DbWorkflowRow | null;
+      WHERE id = ?${tenantWhere.clause}
+    `).get(id, ...tenantWhere.params) as DbWorkflowRow | null;
     return row ? mapWorkflow(row) : null;
   } catch (error) {
     console.error("[control-surface] readBuilderWorkflow failed", error);
@@ -524,12 +530,13 @@ export function readBuilderRuns(workflowId?: string): BuilderRun[] {
 export function readBuilderRun(id: string): BuilderRun | null {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return null;
   try {
+    const tenantWhere = whereTenant();
     const row = getDashboardDb()!.query(`
-      SELECT id, workflow_id, trigger, status, started_at, finished_at, current_pass_id,
+      SELECT id, workflow_id, tenant_id, trigger, status, started_at, finished_at, current_pass_id,
         stop_requested_at, stop_requested_by, result_json, error, trace_id, orchestrator_instance_id
       FROM builder_runs
-      WHERE id = ?
-    `).get(id) as DbRunRow | null;
+      WHERE id = ?${tenantWhere.clause}
+    `).get(id, ...tenantWhere.params) as DbRunRow | null;
     return row ? mapRun(row) : null;
   } catch (error) {
     console.error("[control-surface] readBuilderRun failed", error);
@@ -601,14 +608,15 @@ function mapPass(row: DbPassRow): BuilderPass {
 export function readBuilderPasses(runId: string): BuilderPass[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
+    const tenantWhere = whereTenant();
     return (getDashboardDb()!.query(`
       SELECT id, run_id, workflow_id, sequence, phase, status, agent, provider, model,
         model_reason, started_at, finished_at, job_ids_json, validation_ids_json, artifact_ids_json,
         summary, next_instruction, failure_class, error, analytics_json, plan_items_done, plan_items_remaining, completion_percent, trace_id
       FROM builder_passes
-      WHERE run_id = ?
+      WHERE run_id = ?${tenantWhere.clause}
       ORDER BY sequence ASC
-    `).all(runId) as DbPassRow[]).map(mapPass);
+    `).all(runId, ...tenantWhere.params) as DbPassRow[]).map(mapPass);
   } catch (error) {
     console.error("[control-surface] readBuilderPasses failed", error);
     return [];
@@ -618,12 +626,13 @@ export function readBuilderPasses(runId: string): BuilderPass[] {
 export function readBuilderArtifacts(runId: string): BuilderArtifact[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
+    const tenantWhere = whereTenant();
     const rows = getDashboardDb()!.query(`
       SELECT id, workflow_id, run_id, pass_id, kind, path, sha256, created_at, metadata_json
       FROM builder_artifacts
-      WHERE run_id = ?
+      WHERE run_id = ?${tenantWhere.clause}
       ORDER BY created_at DESC
-    `).all(runId) as Array<{
+    `).all(runId, ...tenantWhere.params) as Array<{
       id: string;
       workflow_id: string;
       run_id: string;
@@ -654,13 +663,14 @@ export function readBuilderArtifacts(runId: string): BuilderArtifact[] {
 export function readBuilderValidations(runId: string): BuilderValidation[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
+    const tenantWhere = whereTenant();
     const rows = getDashboardDb()!.query(`
       SELECT id, workflow_id, run_id, pass_id, kind, status, command, url, started_at,
         finished_at, output_tail, artifact_id, error
       FROM builder_validations
-      WHERE run_id = ?
+      WHERE run_id = ?${tenantWhere.clause}
       ORDER BY COALESCE(started_at, 0) DESC
-    `).all(runId) as Array<{
+    `).all(runId, ...tenantWhere.params) as Array<{
       id: string;
       workflow_id: string;
       run_id: string;
@@ -718,11 +728,12 @@ export function readBuilderDoctorReports(workflowId?: string, runId?: string, li
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
     const db = getDashboardDb()!;
+    const tenantWhere = whereTenant();
     let sql = `SELECT id, workflow_id, run_id, pass_id, created_at, project_root, plan_file,
       code_review_json, accessibility_json, performance_json, security_json, runtime_json,
       overall_score, verdict, evidence_json
       FROM builder_doctor_reports`;
-    const params: string[] = [];
+    const params: (string | number)[] = [];
     const conditions: string[] = [];
     if (workflowId) {
       conditions.push("workflow_id = ?");
@@ -732,8 +743,11 @@ export function readBuilderDoctorReports(workflowId?: string, runId?: string, li
       conditions.push("run_id = ?");
       params.push(runId);
     }
+    const clauseStr = tenantWhere.clause.trim().replace(/^ AND /, "");
+    if (clauseStr) conditions.push(clauseStr);
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");
+      params.push(...tenantWhere.params);
     }
     sql += " ORDER BY created_at DESC LIMIT ?";
     params.push(String(limit));
@@ -833,13 +847,15 @@ export function provisionProject(input: {
     defaultPlan: effectivePlanFile,
   };
 
+  const tenantId = getCurrentTenantContext().tenantId;
   db.query(`
-    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(root) DO UPDATE SET
       name = excluded.name,
       config_json = excluded.config_json,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      tenant_id = excluded.tenant_id
   `).run(
     projectId,
     input.name,
@@ -847,6 +863,7 @@ export function provisionProject(input: {
     JSON.stringify(projectConfig),
     now,
     now,
+    tenantId,
   );
 
   // Create a draft workflow linked to the new project
@@ -866,17 +883,18 @@ export function provisionProject(input: {
     },
     gitPolicy: input.gitPolicy,
     backupPolicy: { enabled: true, beforeRun: true },
-    riskPolicy: { liveDeploys: "disabled" as const, maxPasses: 1 },
+    riskPolicy: { liveDeploys: "disabled" as const, maxPasses: 1, passTimeoutSeconds: 900, stallTimeoutSeconds: 900 },
     geminiApprovalMode: "auto_edit",
   };
 
   db.query(`
     INSERT INTO builder_workflows
-      (id, project_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     workflowId,
     projectId,
+    tenantId,
     `${input.name} initial build`,
     "auto-continue",
     "draft",

@@ -31,6 +31,7 @@ import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import type { StepResult } from "../orchestrator/types.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
+const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
 
 function ensureRunsDir(): void {
   if (!existsSync(BUILDER_RUNS_DIR)) {
@@ -38,13 +39,55 @@ function ensureRunsDir(): void {
   }
 }
 
-function runDir(runId: string): string {
-  return join(BUILDER_RUNS_DIR, runId);
+// Compatibility resolver: checks both new tenant-aware path and legacy path
+function resolveRunDir(tenantId: string | null, projectId: string | null, runId: string): string {
+  // First try the tenant-aware path
+  const tenantAwarePath = runDir(tenantId, projectId, runId);
+  if (existsSync(tenantAwarePath)) {
+    return tenantAwarePath;
+  }
+
+  // Fall back to legacy path for backward compatibility
+  const legacyPath = join(BUILDER_RUNS_DIR, runId);
+  if (existsSync(legacyPath)) {
+    return legacyPath;
+  }
+
+  // If neither exists, return the tenant-aware path for creation
+  return tenantAwarePath;
 }
 
-function tmuxSessionName(runId: string, passNumber = 1): string {
-  if (passNumber === 1) return `builder-${runId.slice(0, 20)}`;
-  return `builder-${runId.slice(0, 16)}-p${passNumber}`;
+function runDir(tenantIdOrRunId: string | null, projectId?: string | null, runId?: string): string {
+  if (runId === undefined) {
+    return join(BUILDER_RUNS_DIR, tenantIdOrRunId ?? "");
+  }
+
+  const tenantId = tenantIdOrRunId;
+  // For backward compatibility, if tenantId is null or "mimule" and projectId is null, use legacy path
+  if ((!tenantId || tenantId === "mimule") && !projectId) {
+    return join(BUILDER_RUNS_DIR, runId);
+  }
+
+  // For tenant-aware paths
+  const safeTenantId = sanitizeTenantId(tenantId || "mimule");
+  const safeProjectId = projectId ? sanitizeProjectId(projectId) : "default";
+  return join(TENANT_RUNS_BASE_DIR, safeTenantId, "projects", safeProjectId, "builder-runs", runId);
+}
+
+function sanitizeTenantId(tenantId: string): string {
+  // Replace any characters that are not safe for directory names
+  return tenantId.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function sanitizeProjectId(projectId: string): string {
+  // Replace any characters that are not safe for directory names
+  return projectId.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function tmuxSessionName(tenantId: string | null, runId: string, passNumber = 1): string {
+  const safeTenantId = tenantId ? sanitizeTenantId(tenantId) : "default";
+  if (passNumber === 1) return `builder-${safeTenantId}-${runId.slice(0, 16)}`;
+  return `builder-${safeTenantId}-${runId.slice(0, 12)}-p${passNumber}`;
 }
 
 function requireDb() {
@@ -152,7 +195,7 @@ function tmuxSocket(tenantId: string): string {
   return `tib-${tenantId}`;
 }
 
-export { tmuxSocket };
+export { tmuxSocket, acquireProjectLock, releaseProjectLock };
 
 function tmuxEnsureServer(socket: string): void {
   spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", "init"], { encoding: "utf8" });
@@ -231,8 +274,13 @@ function killDetachedRunProcesses(runId: string): void {
 
 // ── Run helpers ────────────────────────────────────────────────────────────
 
-function readExitCode(runId: string, passNumber = 1): number | null {
-  const path = join(runDir(runId), `pass-${passNumber}-exit.code`);
+function readExitCode(tenantIdOrRunId: string | null, projectIdOrPassNumber?: string | null | number, runId?: string, passNumber = 1): number | null {
+  const actualRunId = runId ?? tenantIdOrRunId;
+  const actualPassNumber = typeof projectIdOrPassNumber === "number" ? projectIdOrPassNumber : passNumber;
+  const path = join(
+    runId === undefined ? resolveRunDir(null, null, actualRunId) : resolveRunDir(tenantIdOrRunId, projectIdOrPassNumber as string | null, runId),
+    `pass-${actualPassNumber}-exit.code`,
+  );
   if (!existsSync(path)) return null;
   try {
     const text = readFileSync(path, "utf8").trim();
@@ -243,8 +291,10 @@ function readExitCode(runId: string, passNumber = 1): number | null {
   }
 }
 
-function readLogFile(runId: string, name: string): string {
-  const path = join(runDir(runId), name);
+function readLogFile(tenantIdOrRunId: string | null, projectIdOrName: string | null, runId?: string, name?: string): string {
+  const path = runId === undefined
+    ? join(resolveRunDir(null, null, tenantIdOrRunId), projectIdOrName ?? "")
+    : join(resolveRunDir(tenantIdOrRunId, projectIdOrName, runId), name ?? "");
   if (!existsSync(path)) return "";
   try {
     return readFileSync(path, "utf8");
@@ -260,7 +310,7 @@ function captureSnapshotPatch(workflow: BuilderWorkflow, run: BuilderRun, passId
   if (!existsSync(projectRoot)) return;
 
   ensureRunsDir();
-  const runDirPath = runDir(run.id);
+  const runDirPath = resolveRunDir(run.tenantId, workflow.projectId, run.id);
   if (!existsSync(runDirPath)) mkdirSync(runDirPath, { recursive: true });
 
   // Capture git diff for all changed files
@@ -281,11 +331,11 @@ function captureSnapshotPatch(workflow: BuilderWorkflow, run: BuilderRun, passId
   const statusText = statusResult.stdout ?? "";
 
   // Write patch file
-  const patchPath = join(runDir(run.id), "pre-pass.patch");
+  const patchPath = join(resolveRunDir(run.tenantId, workflow.projectId, run.id), "pre-pass.patch");
   writeFileSync(patchPath, diffText, { encoding: "utf8" });
 
   // Write dirty state file
-  const dirtyPath = join(runDir(run.id), "pre-pass-dirty.txt");
+  const dirtyPath = join(resolveRunDir(run.tenantId, workflow.projectId, run.id), "pre-pass-dirty.txt");
   writeFileSync(dirtyPath, statusText, { encoding: "utf8" });
 
   // Create patch artifact
@@ -406,7 +456,7 @@ function commitChanges(workflow: BuilderWorkflow, run: BuilderRun): { commitHash
     const commitHash = hashResult.stdout?.trim() ?? null;
 
     // Write commit artifact
-    const commitInfoPath = join(runDir(run.id), "commit-info.txt");
+    const commitInfoPath = join(resolveRunDir(run.tenantId, workflow.projectId, run.id), "commit-info.txt");
     writeFileSync(commitInfoPath, `commit: ${commitHash}\nworkflow: ${workflow.name}\nrun: ${run.id}\nmessage: ${message}`, { encoding: "utf8" });
 
     createBuilderArtifact({
@@ -525,7 +575,7 @@ function logToVault(workflow: BuilderWorkflow, run: BuilderRun, passId: string |
     `| Model     | ${workflow.config.modelPolicy.builder ?? "-"} |`,
     `| Plan      | ${workflow.planFile} |`,
     `| Project   | ${workflow.projectRoot} |`,
-    `| Artifacts | /var/lib/control-surface/builder-runs/${run.id}/ |`,
+    `| Artifacts | ${resolveRunDir(run.tenantId, workflow.projectId, run.id)}/ |`,
     ...analyticsLines,
     "",
     `_Logged at ${ts}_`,
@@ -616,18 +666,41 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
     const wasTimeout = pass.failureClass === "pass-timeout";
     const statusLabel = wasTimeout ? "interrupted/timeout — partial work preserved" : pass.status;
     lines.push(`--- Pass ${pass.sequence} (${pass.agent ?? "?"}, ${statusLabel}) ---`);
-    if (pass.summary) {
-      lines.push(`Summary: ${pass.summary.slice(0, wasTimeout ? 1000 : 500)}`);
-    }
-    const stdoutArtifact = artifacts.find((a) => a.kind === "stdout");
-    if (stdoutArtifact && existsSync(stdoutArtifact.path)) {
-      try {
-        const raw = readFileSync(stdoutArtifact.path, "utf8");
-        const excerptLen = wasTimeout ? 4000 : 2000;
-        const content = pass.agent === "claude" ? parseClaudeStreamJson(raw) : raw.slice(-excerptLen);
-        const label = wasTimeout ? `Interrupted output (${excerptLen / 1000}KB)` : "Last stdout (2KB)";
-        if (content) lines.push(`${label}: ${content.slice(-excerptLen)}`);
-      } catch { /* ignore */ }
+
+    // Prefer PASS_RESULT.json over raw stdout
+    const passResult = readPassResult(run.tenantId, workflow.projectId, run.id, pass.sequence);
+    if (passResult) {
+      if (passResult.passNote) {
+        lines.push(`Note: ${passResult.passNote.slice(0, wasTimeout ? 1000 : 500)}`);
+      }
+      if (passResult.itemsDone.length > 0) {
+        lines.push(`Completed: ${passResult.itemsDone.join(" | ")}`);
+      }
+      if (passResult.filesEdited.length > 0) {
+        lines.push(`Files changed: ${passResult.filesEdited.join(", ")}`);
+      }
+      if (passResult.nextInstruction) {
+        lines.push(`Handoff instruction: ${passResult.nextInstruction.slice(0, 800)}`);
+      }
+      const unresolved = (passResult.errors ?? []).filter((e) => !e.resolved);
+      if (unresolved.length > 0) {
+        lines.push(`UNRESOLVED ERRORS: ${unresolved.map((e) => e.message).join("; ")}`);
+      }
+    } else {
+      // Fallback: raw stdout tail (existing behavior)
+      if (pass.summary) {
+        lines.push(`Summary: ${pass.summary.slice(0, wasTimeout ? 1000 : 500)}`);
+      }
+      const stdoutArtifact = artifacts.find((a) => a.kind === "stdout");
+      if (stdoutArtifact && existsSync(stdoutArtifact.path)) {
+        try {
+          const raw = readFileSync(stdoutArtifact.path, "utf8");
+          const excerptLen = wasTimeout ? 4000 : 2000;
+          const content = pass.agent === "claude" ? parseClaudeStreamJson(raw) : raw.slice(-excerptLen);
+          const label = wasTimeout ? `Interrupted output (${excerptLen / 1000}KB)` : "Last stdout (2KB)";
+          if (content) lines.push(`${label}: ${content.slice(-excerptLen)}`);
+        } catch { /* ignore */ }
+      }
     }
     const validationResults = validations.map((v) => `${v.kind}:${v.status}`).join(", ");
     if (validationResults) lines.push(`Validations: ${validationResults}`);
@@ -646,10 +719,15 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
       const unchecked = planContent
         .split(/\r?\n/)
         .filter((l) => /^\s*-\s+\[ \]/.test(l))
-        .slice(0, 5)
         .map((l) => l.trim());
       if (unchecked.length > 0) {
-        lines.push(`Next unchecked items: ${unchecked.join(" | ")}`);
+        lines.push(`Remaining plan items (${unchecked.length} total):`);
+        for (const item of unchecked.slice(0, 15)) {
+          lines.push(`  ${item}`);
+        }
+        if (unchecked.length > 15) {
+          lines.push(`  ... and ${unchecked.length - 15} more`);
+        }
       }
       lines.push(`Full plan at: ${workflow.planFile}`);
       lines.push(`Use: grep -n '^\\s*- \\[ \\]' '${workflow.planFile}' | head -20`);
@@ -736,11 +814,11 @@ async function startNextPass(
   updateBuilderPass(passId, { jobIds: [jobId] });
 
   const scriptArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "command-script", path: scriptPath });
-  const stdoutArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stdout", path: join(runDir(run.id), `pass-${nextSequence}-stdout.log`) });
-  const stderrArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stderr", path: join(runDir(run.id), `pass-${nextSequence}-stderr.log`) });
+  const stdoutArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stdout", path: join(resolveRunDir(run.tenantId, workflow.projectId, run.id), `pass-${nextSequence}-stdout.log`) });
+  const stderrArtifact = createBuilderArtifact({ workflowId: workflow.id, runId: run.id, passId, kind: "stderr", path: join(resolveRunDir(run.tenantId, workflow.projectId, run.id), `pass-${nextSequence}-stderr.log`) });
   updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
 
-  const session = tmuxSessionName(run.id, nextSequence);
+  const session = tmuxSessionName(workflow.tenantId, run.id, nextSequence);
   const socket = tmuxSocket(workflow.tenantId);
   tmuxEnsureServer(socket);
   const spawnResult = spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], { encoding: "utf8" });
@@ -999,8 +1077,11 @@ export type PassResult = {
   passNote?: string | null;
 };
 
-export function readPassResult(runId: string, passSeq: number): PassResult | null {
-  const path = join(runDir(runId), "PASS_RESULT.json");
+export function readPassResult(tenantIdOrRunId: string | null, projectIdOrPassSeq: string | null | number, runId?: string, _passSeq?: number): PassResult | null {
+  const path = join(
+    runId === undefined ? runDir(tenantIdOrRunId) : runDir(tenantIdOrRunId, projectIdOrPassSeq as string | null, runId),
+    "PASS_RESULT.json",
+  );
   try {
     if (!existsSync(path)) return null;
     const raw = readFileSync(path, "utf8");
@@ -1011,20 +1092,22 @@ export function readPassResult(runId: string, passSeq: number): PassResult | nul
 }
 
 function extractPassAnalytics(
+  tenantId: string | null,
+  projectId: string | null,
   runId: string,
   passId: string,
   passSeq: number,
   startedAt: number | null,
   finishedAt: number,
 ): void {
-  const result = readPassResult(runId, passSeq);
+  const result = readPassResult(tenantId, projectId, runId, passSeq);
   if (!result) return;
 
   const durationMs = startedAt ? finishedAt - startedAt : null;
 
   const stdoutTail = (() => {
     try {
-      const p = join(runDir(runId), `pass-${passSeq}-stdout.log`);
+      const p = join(runDir(tenantId, projectId, runId), `pass-${passSeq}-stdout.log`);
       if (!existsSync(p)) return "";
       const content = readFileSync(p, "utf8");
       return content.slice(-3000);
@@ -1052,6 +1135,14 @@ function extractPassAnalytics(
     nextInstruction: result.nextInstruction ?? null,
     summary: result.passNote ?? undefined,
   });
+
+  // Write pass-analytics.json artifact
+  try {
+    const analyticsPath = join(runDir(tenantId, projectId, runId), `pass-${passSeq}-analytics.json`);
+    writeFileSync(analyticsPath, JSON.stringify(analytics, null, 2), { encoding: "utf8" });
+  } catch (err) {
+    console.error("[builder] writing pass-analytics.json failed:", err);
+  }
 }
 
 export function createBuilderArtifact(input: {
@@ -1097,16 +1188,16 @@ export function updateBuilderWorkflowStatus(workflowId: string, status: string):
 
 // ── Lock helpers ───────────────────────────────────────────────────────────
 
-function acquireProjectLock(projectRoot: string, workflowId: string, runId: string, holder: string): boolean {
+function acquireProjectLock(projectRoot: string, workflowId: string, runId: string, holder: string, tenantId: string): boolean {
   const db = requireDb();
   const ts = now();
   const expires = ts + 24 * 60 * 60 * 1000; // 24h
 
   try {
     db.query(`
-      INSERT INTO builder_locks (project_root, workflow_id, run_id, acquired_at, expires_at, holder)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(projectRoot, workflowId, runId, ts, expires, holder);
+      INSERT INTO builder_locks (project_root, workflow_id, run_id, acquired_at, expires_at, holder, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(projectRoot, workflowId, runId, ts, expires, holder, tenantId);
     return true;
   } catch {
     // Conflict means already locked
@@ -1114,9 +1205,9 @@ function acquireProjectLock(projectRoot: string, workflowId: string, runId: stri
   }
 }
 
-function releaseProjectLock(projectRoot: string): void {
+function releaseProjectLock(projectRoot: string, tenantId: string): void {
   const db = requireDb();
-  db.query(`DELETE FROM builder_locks WHERE project_root = ?`).run(projectRoot);
+  db.query(`DELETE FROM builder_locks WHERE project_root = ? AND tenant_id = ?`).run(projectRoot, tenantId);
 }
 
 // ── Command builder ──────────────────────────────────────────────────────────
@@ -1189,6 +1280,42 @@ RULES:
 - If plan instructions are ambiguous for your item: write blocked + quote the ambiguous part
 - Do NOT guess at blocked states — always declare and exit
 
+── PASS RESULT (MANDATORY — write this before exiting) ───────────────────────
+Write $BUILDER_DIR/PASS_RESULT.json with this exact shape:
+
+{
+  "status": "incomplete",
+  "completionPercent": 35,
+  "itemsDone": [],
+  "itemsRemaining": [],
+  "filesEdited": [],
+  "filesCreated": [],
+  "filesRead": [],
+  "toolsUsed": {},
+  "modelsUsed": [],
+  "errors": [],
+  "validationResults": {
+    "typecheck": "pass",
+    "tests": "skipped",
+    "playwright": "skipped",
+    "build": "skipped"
+  },
+  "nextInstruction": "",
+  "blockers": [],
+  "passNote": ""
+}
+
+STATUS GUIDE:
+- "incomplete": you ran out of time or context — next pass will continue
+- "complete": all unchecked plan items are now checked [x]
+- "failed": something broke and you couldn't fix it
+- "blocked": the task can't proceed without operator input
+
+PLAN IS INCOMPLETE RULE:
+If you reach context limit or timeout is imminent, set status="incomplete",
+fill itemsRemaining with what's left, and write a precise nextInstruction.
+Do NOT set status="complete" unless all checklist items are marked [x].
+
 ── SCOPE DISCIPLINE (Minimal Diff) ─────────────────────────────────────────
 - Only edit files required by your plan items
 - Do not "clean up" or refactor passing code you didn't need to touch
@@ -1220,7 +1347,7 @@ function writePassScript(
   secrets?: Record<string, string>,
 ): string {
   ensureRunsDir();
-  const dir = runDir(runId);
+  const dir = resolveRunDir(workflow.tenantId, workflow.projectId, runId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   const scriptPath = join(dir, `pass-${passNumber}.sh`);
@@ -1285,7 +1412,7 @@ function writePassScript(
       '    return 1',
       '  fi',
       '  local active_children=0',
-      '  active_children=$(tmux list-sessions -F \'#{session_name}\' 2>/dev/null | grep -c "^builder-child-${RUN_ID}_" || true)',
+      '  active_children=$(tmux -L "tib-${TENANT_ID}" list-sessions -F \'#{session_name}\' 2>/dev/null | grep -c "^builder-child-${RUN_ID}_" || true)',
       '  if [ "$active_children" -ge 3 ]; then',
       '    echo "ERROR: max 3 concurrent children allowed" >&2; return 1',
       '  fi',
@@ -1324,14 +1451,14 @@ function writePassScript(
       'echo "[builder-child] $BUILDER_CHILD_ID status=$status exit=$code finished_at=$(date -Iseconds)" >> "$BUILDER_CHILD_PASS_LOG"',
       'CHILD_EOF',
       '  chmod +x "$child_script"',
-      `  tmux new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env PATH=\\"$PATH\\" BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
+      `  tmux -L "tib-\${TENANT_ID}" new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env PATH=\\"$PATH\\" BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
       '  local child_pid=""',
       '  for _ in 1 2 3 4 5 6 7 8 9 10; do',
       '    if [ -s "$child_dir/pid" ]; then child_pid="$(cat "$child_dir/pid" 2>/dev/null)"; break; fi',
       '    sleep 0.1',
       '  done',
       '  if [ -z "$child_pid" ]; then',
-      '    child_pid=$(tmux list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
+      '    child_pid=$(tmux -L "tib-${TENANT_ID}" list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
       '    echo "$child_pid" > "$child_dir/pid"',
       '  fi',
       '  echo "{\\"id\\":\\"$child_id\\",\\"agent\\":\\"$child_agent\\",\\"model\\":\\"$child_model\\",\\"pid\\":\\"$child_pid\\",\\"spawnedAt\\":\\"$(date -Iseconds)\\"}" >> "$BUILDER_DIR/children-manifest.jsonl"',
@@ -1343,7 +1470,7 @@ function writePassScript(
       '  local child_id',
       '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
       '  [ -z "$child_id" ] && echo "NOT_FOUND" && return',
-      '  if tmux has-session -t "builder-child-$child_id" 2>/dev/null; then',
+      '  if tmux -L "tib-${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null; then',
       '    echo "RUNNING"',
       '  elif [ -f "$BUILDER_DIR/children/$child_id/status" ]; then',
       '    cat "$BUILDER_DIR/children/$child_id/status"',
@@ -1361,7 +1488,7 @@ function writePassScript(
       '  [ -z "$child_id" ] && echo "NOT_FOUND" && return 1',
       '  local waited=0',
       '  while [ $waited -lt $wait_timeout ]; do',
-      '    if ! tmux has-session -t "builder-child-$child_id" 2>/dev/null && [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then',
+      '    if ! tmux -L "tib-${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null && [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then',
       '      local status code',
       '      status=$(builder_child_status "$child_pid")',
       '      code=$(cat "$BUILDER_DIR/children/$child_id/exit.code")',
@@ -1373,7 +1500,7 @@ function writePassScript(
       '  done',
       '  echo "TIMEOUT" > "$BUILDER_DIR/children/$child_id/status"',
       '  echo "124" > "$BUILDER_DIR/children/$child_id/exit.code"',
-      '  tmux kill-session -t "builder-child-$child_id" 2>/dev/null || true',
+      '  tmux -L "tib-${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || true',
       '  echo "[builder-child] $child_id status=TIMEOUT exit=124 finished_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
       '  echo "TIMEOUT"',
       '  return 124',
@@ -1391,7 +1518,7 @@ function writePassScript(
       '  local child_pid="$1"',
       '  local child_id',
       '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
-      '  [ -n "$child_id" ] && tmux kill-session -t "builder-child-$child_id" 2>/dev/null || kill "$child_pid" 2>/dev/null',
+      '  [ -n "$child_id" ] && tmux -L "tib-${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || kill "$child_pid" 2>/dev/null',
       '  if [ -n "$child_id" ]; then',
       '    echo "FAILED" > "$BUILDER_DIR/children/$child_id/status"',
       '    echo "143" > "$BUILDER_DIR/children/$child_id/exit.code"',
@@ -1431,7 +1558,8 @@ BUILDER_DIR="${dir}"
 RUN_ID="${runId}"
 BUILDER_PROJECT_ROOT="${workflow.projectRoot}"
 BUILDER_PROMPT_FILE="$BUILDER_DIR/${promptFile}"
-export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE
+TENANT_ID="${workflow.tenantId ?? "mimule"}"
+export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE TENANT_ID
 EXIT_CODE=143
 trap 'echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"' EXIT
 mkdir -p "$BUILDER_DIR/children" "$BUILDER_DIR/bin"
@@ -1512,14 +1640,14 @@ export async function startWorkflowRun(
     const expiresAt = workflow.config.approvalExpiresAtMs
       ? Date.now() + workflow.config.approvalExpiresAtMs
       : undefined;
-    createApprovalRequest(workflowId, run.id, tenantId, actor, requiredCount, expiresAt);
+    createApprovalRequest(workflowId, run.id, actor, requiredCount, expiresAt);
     updateBuilderRun(run.id, { status: "pending-approval" });
     updateBuilderWorkflowStatus(workflowId, "pending-approval");
     return run;
   }
 
   // Acquire lock
-  if (!acquireProjectLock(workflow.projectRoot, workflowId, run.id, actor)) {
+  if (!acquireProjectLock(workflow.projectRoot, workflowId, run.id, actor, run.tenantId)) {
     // Rollback run
     updateBuilderRun(run.id, { status: "failed", finishedAt: now(), error: "project locked by another run" });
     updateBuilderWorkflowStatus(workflowId, "blocked");
@@ -1583,19 +1711,19 @@ export async function startWorkflowRun(
     runId: run.id,
     passId,
     kind: "stdout",
-    path: join(runDir(run.id), "pass-1-stdout.log"),
+    path: join(resolveRunDir(run.tenantId, workflow.projectId, run.id), "pass-1-stdout.log"),
   });
   const stderrArtifact = createBuilderArtifact({
     workflowId,
     runId: run.id,
     passId,
     kind: "stderr",
-    path: join(runDir(run.id), "pass-1-stderr.log"),
+    path: join(resolveRunDir(run.tenantId, workflow.projectId, run.id), "pass-1-stderr.log"),
   });
   updateBuilderPass(passId, { artifactIds: [scriptArtifact, stdoutArtifact, stderrArtifact] });
 
   // Spawn tmux
-  const session = tmuxSessionName(run.id, 1);
+  const session = tmuxSessionName(workflow.tenantId, run.id, 1);
   const socket = tmuxSocket(workflow.tenantId);
   tmuxEnsureServer(socket);
   const spawnResult = spawnSync("tmux", ["-L", socket, "new-session", "-d", "-s", session, "-c", workflow.projectRoot, scriptPath], {
@@ -1607,7 +1735,7 @@ export async function startWorkflowRun(
     updateBuilderPass(passId, { status: "failed", finishedAt: now(), error });
     updateBuilderRun(run.id, { status: "failed", finishedAt: now(), error, currentPassId: null });
     finishJob(jobId, "failed", { error });
-    releaseProjectLock(workflow.projectRoot);
+    releaseProjectLock(workflow.projectRoot, workflow.tenantId);
     updateBuilderWorkflowStatus(workflowId, "failed");
     throw new Error(error);
   }
@@ -1626,7 +1754,7 @@ export async function stopWorkflowRun(
   const socket = tmuxSocket(run.tenantId);
   const passes = readBuilderPasses(runId);
   for (const pass of passes) {
-    const session = tmuxSessionName(runId, pass.sequence);
+    const session = tmuxSessionName(run.tenantId, runId, pass.sequence);
     if (tmuxExists(socket, session)) {
       tmuxKill(socket, session);
     }
@@ -1657,7 +1785,7 @@ export async function stopWorkflowRun(
 
   const workflow = readBuilderWorkflow(run.workflowId);
   if (workflow) {
-    releaseProjectLock(workflow.projectRoot);
+    releaseProjectLock(workflow.projectRoot, workflow.tenantId);
     updateBuilderWorkflowStatus(run.workflowId, "ready");
   }
 }
@@ -1732,7 +1860,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const workflow = readBuilderWorkflow(run.workflowId);
   const socket = tmuxSocket(run.tenantId);
 
-  const session = tmuxSessionName(runId, passSeq);
+  const session = tmuxSessionName(run.tenantId, runId, passSeq);
   const sessionExists = tmuxExists(socket, session);
   if (sessionExists) {
     const paneOutput = tmuxCapturePane(socket, session);
@@ -1741,8 +1869,8 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     }
 
     // ── Stall detection ──────────────────────────────────────────────────
-    const stdoutPath = join(runDir(runId), `pass-${passSeq}-stdout.log`);
-    const stderrPath = join(runDir(runId), `pass-${passSeq}-stderr.log`);
+    const stdoutPath = join(resolveRunDir(run.tenantId, workflow?.projectId ?? null, runId), `pass-${passSeq}-stdout.log`);
+    const stderrPath = join(resolveRunDir(run.tenantId, workflow?.projectId ?? null, runId), `pass-${passSeq}-stderr.log`);
     const checkedAt = now();
     const resultObj = typeof run.result === "object" && run.result
       ? run.result as Record<string, unknown>
@@ -1761,7 +1889,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       if (existsSync(stdoutPath)) currentSize += statSync(stdoutPath).size;
       if (existsSync(stderrPath)) currentSize += statSync(stderrPath).size;
     } catch { /* ignore */ }
-    const recordedExitCode = readExitCode(runId, passSeq);
+    const recordedExitCode = readExitCode(run.tenantId, workflow?.projectId ?? null, runId, passSeq);
     const paneHasChild = tmuxPaneHasChildProcess(socket, session);
     const noChildSince = typeof monitor.noChildSince === "number"
       ? monitor.noChildSince
@@ -1817,7 +1945,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       // Fall through to the normal completion path below with the recorded exit.
     } else {
     const STALL_WARN_MS = 5 * 60 * 1000; // 300s — warn but don't kill yet
-    const STALL_THRESHOLD_MS = (workflow?.config.riskPolicy?.passTimeoutSeconds ?? 900) * 1000;
+    const STALL_THRESHOLD_MS = (workflow?.config.riskPolicy?.stallTimeoutSeconds ?? workflow?.config.riskPolicy?.passTimeoutSeconds ?? 900) * 1000;
     const outputChanged = lastOutputSize === null || currentSize !== lastOutputSize;
     const outputAgeMs = checkedAt - (outputChanged ? checkedAt : lastOutputAt);
     const warnedStall = monitor.warnedStall === true;
@@ -1839,7 +1967,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       updateBuilderRun(runId, { status: "failed", finishedAt: now(), error: `Stalled: no output change for ${Math.round(STALL_THRESHOLD_MS / 1000)}s`, currentPassId: null });
       finishJobByRun(runId, "failed", { error: "stalled" });
       if (workflow) {
-        releaseProjectLock(workflow.projectRoot);
+        releaseProjectLock(workflow.projectRoot, workflow.tenantId);
         updateBuilderWorkflowStatus(run.workflowId, "failed");
       }
       return readBuilderRun(runId);
@@ -1895,20 +2023,21 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const freshCheck = readBuilderRun(runId);
   if (!freshCheck || freshCheck.status !== "running") return freshCheck;
 
-  const exitCode = readExitCode(runId, passSeq);
+  const projectId = workflow?.projectId ?? null;
+  const exitCode = readExitCode(run.tenantId, projectId, runId, passSeq);
   const ts = now();
 
   // Capture final output using pass-specific filenames
-  const stdout = readLogFile(runId, `pass-${passSeq}-stdout.log`);
-  const stderr = readLogFile(runId, `pass-${passSeq}-stderr.log`);
-  const codexOutput = readLogFile(runId, "codex-output.txt");
+  const stdout = readLogFile(run.tenantId, projectId, runId, `pass-${passSeq}-stdout.log`);
+  const stderr = readLogFile(run.tenantId, projectId, runId, `pass-${passSeq}-stderr.log`);
+  const codexOutput = readLogFile(run.tenantId, projectId, runId, "codex-output.txt");
 
   // Apply secret redaction to stdout before any processing
   if (workflow?.config.secretNames?.length) {
     try {
       const secrets = loadSecretsForPass(workflow);
       const redacted = redactSecrets(stdout, secrets);
-      const redactedPath = join(runDir(runId), `pass-${passSeq}-stdout.log`);
+      const redactedPath = join(resolveRunDir(run.tenantId, projectId, runId), `pass-${passSeq}-stdout.log`);
       if (redacted !== stdout) {
         writeFileSync(redactedPath, redacted, { encoding: "utf8" });
       }
@@ -1922,6 +2051,10 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     stdout.includes("hit your usage limit") || stdout.includes("usage limit") ||
     stderr.includes("hit your usage limit");
 
+  // Detect OOM from stdout/stderr (Linux OOM killer messages)
+  const oomIndicators = /out of memory|killed process|oom-kill|cannot allocate memory/i;
+  const agentOom = exitCode === 137 && (oomIndicators.test(stdout) || oomIndicators.test(stderr));
+
   if (passId) {
     const passStatus = exitCode === 0 ? "success" : "failed";
     const passAgent = currentPass?.agent ?? "";
@@ -1929,14 +2062,22 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     const summary = passAgent === "claude"
       ? parseClaudeStreamJson(rawSummary)
       : rawSummary.slice(-2000);
+    const passResult = readPassResult(run.tenantId, projectId, runId, passSeq);
+    const passResultStatus = passResult?.status ?? null;
     const failureClass = codexExhausted
       ? "codex-exhausted"
       : exitCode === 124
       ? "pass-timeout"
-      : exitCode === 143 || exitCode === 137
+      : agentOom
+      ? "agent-oom"
+      : exitCode === 137
+      ? "agent-killed"
+      : exitCode === 143
       ? "agent-stalled"
       : exitCode === null
-      ? "unknown"
+      ? "no-result-file"
+      : exitCode === 0 && passResultStatus === "incomplete"
+      ? "plan-incomplete"
       : exitCode === 0
       ? null
       : "unknown";
@@ -1949,7 +2090,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
 
     if (passId) {
       try {
-        extractPassAnalytics(runId, passId, passSeq, run.startedAt ?? null, ts);
+        extractPassAnalytics(run.tenantId, projectId, runId, passId, passSeq, run.startedAt ?? null, ts);
       } catch (err) {
         console.error("[builder] extractPassAnalytics failed:", err);
       }
@@ -2013,6 +2154,10 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     } catch { return false; }
   };
 
+  // Read PASS_RESULT.json to drive continuation decisions
+  const passResult = readPassResult(runId, passSeq);
+  const passResultStatus = passResult?.status ?? null;
+
   let runStatus: "success" | "failed" = "failed";
   if (exitCode === 0) {
     runStatus = !hasValidationConfig || allValidationsPassed ? "success" : "failed";
@@ -2026,6 +2171,11 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       runStatus = "success";
       planComplete = true;
     }
+  }
+
+  // Update failure classification for plan-complete passes
+  if (passId && exitCode === 0 && planComplete && passResultStatus === "complete") {
+    updateBuilderPass(passId, { failureClass: "plan-complete" });
   }
 
   // Build a human-readable error message (never raw stderr, which is agent terminal output)
@@ -2043,6 +2193,11 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     runError = failedVal
       ? `Validation failed: ${failedVal.command ?? "unknown command"}`
       : "Validation failed";
+  }
+
+  // Write clean error to pass record (never raw stdout/git diff)
+  if (passId) {
+    updateBuilderPass(passId, { error: runError ?? null });
   }
 
   // Determine continuation before writing final run state
@@ -2082,18 +2237,60 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
   ));
 
-  // "once" mode runs all agentOrder passes exactly once; auto-continue/scheduled/permanent
-  // keep going until maxPasses is reached or a pass fails.
-  // Never continue when the plan file has 0 unchecked items — work is complete.
-  const shouldContinue = Boolean(
+  // Honor PASS_RESULT.json status for continuation decisions
+  const canContinueFromResult = passResultStatus === "incomplete" && Boolean(
     workflow &&
-    !planComplete &&
-    (runStatus === "success" || canContinueAfterTimeout) &&
     (
       (AUTO_CONTINUE_MODES.has(workflow.mode) && passSeq < workflow.config.riskPolicy.maxPasses) ||
       (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
     ),
   );
+  if (passResultStatus === "complete") {
+    planComplete = true;
+  }
+
+  // "once" mode runs all agentOrder passes exactly once; auto-continue/scheduled/permanent
+  // keep going until maxPasses is reached or a pass fails.
+  // Never continue when the plan file has 0 unchecked items — work is complete.
+  const stopAfterPass = Boolean(
+    run &&
+    typeof run.result === "object" &&
+    run.result &&
+    (run.result as Record<string, unknown>).stopAfterPass === true,
+  );
+  const shouldContinue = Boolean(
+    workflow &&
+    !planComplete &&
+    !stopAfterPass &&
+    (runStatus === "success" || canContinueAfterTimeout || canContinueFromResult) &&
+    (
+      (AUTO_CONTINUE_MODES.has(workflow.mode) && passSeq < workflow.config.riskPolicy.maxPasses) ||
+      (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
+    ),
+  );
+
+  // Handle blocked status from PASS_RESULT.json
+  if (passResultStatus === "blocked" && workflow) {
+    const blockers = passResult?.blockers ?? [];
+    const blockerReason = blockers.map((b) => b.reason).join("; ") || "Agent declared blocked (no reason given)";
+    updateBuilderPass(passId!, {
+      status: "blocked",
+      finishedAt: ts,
+      failureClass: "blocked",
+      error: blockerReason,
+    });
+    updateBuilderRun(runId, {
+      status: "blocked",
+      finishedAt: ts,
+      currentPassId: null,
+      error: blockerReason,
+    });
+    updateBuilderWorkflowStatus(workflow.id, "blocked");
+    releaseProjectLock(workflow.projectRoot, workflow.tenantId);
+    finishJobByRun(runId, "failed", { error: blockerReason });
+    logToVault(workflow, run, passId ?? null, passSeq, "blocked");
+    return readBuilderRun(runId);
+  }
 
   // Phase 5: advance orchestrator instance after pass completion
   const instanceId = run.orchestratorInstanceId || findInstanceByRunId(runId)?.id;
@@ -2156,7 +2353,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   // Release lock only if we're not continuing to another pass
   if (workflow) {
     if (!shouldContinue) {
-      releaseProjectLock(workflow.projectRoot);
+      releaseProjectLock(workflow.projectRoot, workflow.tenantId);
       updateBuilderWorkflowStatus(run.workflowId, runStatus === "success" ? "done" : "failed");
 
       if (workflow.mode === "permanent" && workflow.status === "ready" && run.finishedAt) {
@@ -2225,7 +2422,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     } catch (e) {
       console.error(`[builder] startNextPass failed:`, e);
       // Release lock and mark failed if we can't start the next pass
-      releaseProjectLock(workflow.projectRoot);
+      releaseProjectLock(workflow.projectRoot, workflow.tenantId);
       updateBuilderWorkflowStatus(run.workflowId, "failed");
     }
   }
@@ -2820,6 +3017,66 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Missing context, ambiguous instruction, or a dependency not in scope",
       suggestedActions: ["edit-plan", "retry-narrow"],
+    };
+  }
+  if (fc === "agent-oom") {
+    return {
+      failureClass: fc,
+      title: "Agent OOM Killed",
+      whatHappened: "The agent process was killed by the Linux OOM killer (out of memory).",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Model context too large, memory leak in agent, or VPS memory exhausted",
+      suggestedActions: ["retry-narrow", "retry-higher-timeout", "edit-plan"],
+    };
+  }
+  if (fc === "agent-killed") {
+    return {
+      failureClass: fc,
+      title: "Agent Killed",
+      whatHappened: "The agent process received SIGKILL (exit 137) from outside the runner.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Manual kill, Docker healthcheck, or host-level process management",
+      suggestedActions: ["retry-continue", "view-stdout"],
+    };
+  }
+  if (fc === "no-result-file") {
+    return {
+      failureClass: fc,
+      title: "No Result File",
+      whatHappened: "The pass ended without writing PASS_RESULT.json — the agent may have crashed or been killed before finishing.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Agent crash, OOM, or manual termination before result serialization",
+      suggestedActions: ["retry-continue", "view-stdout", "retry-higher-timeout"],
+    };
+  }
+  if (fc === "plan-incomplete") {
+    return {
+      failureClass: fc,
+      title: "Plan Incomplete",
+      whatHappened: "The agent exited cleanly but declared the pass incomplete — not all plan items were finished.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Agent ran out of context window, hit token limits, or the plan item was too large for one pass",
+      suggestedActions: ["retry-continue", "edit-plan"],
+    };
+  }
+  if (fc === "plan-complete") {
+    return {
+      failureClass: fc,
+      title: "Plan Complete",
+      whatHappened: "The pass succeeded and all plan items are checked off. Work is done.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Normal completion — no action needed.",
+      suggestedActions: ["view-stdout"],
+    };
+  }
+  if (fc === "codex-exhausted") {
+    return {
+      failureClass: fc,
+      title: "Codex Usage Limit",
+      whatHappened: "The Codex agent hit its usage limit and could not continue.",
+      lastActivity: lastLines.slice(-300),
+      likelyCause: "Codex rate limit or quota exhausted — retry after limit resets",
+      suggestedActions: ["retry-continue", "pause-workflow"],
     };
   }
   return {

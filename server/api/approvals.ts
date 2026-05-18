@@ -12,29 +12,30 @@ export async function approvalCreateHandler(req: Request): Promise<Response> {
   if (!body?.workflowId || !body?.runId || !body?.requiredCount) {
     return Response.json({ error: "workflowId, runId, and requiredCount are required" }, { status: 400 });
   }
-  const { tenantId } = getCurrentTenantContext();
+  const ctx = getCurrentTenantContext();
   const requestedBy: string = body.requestedBy ?? "operator";
   const requiredCount: number = Number(body.requiredCount) || 1;
   const expiresAt: number | undefined = body.expiresAt ? Number(body.expiresAt) : undefined;
 
-  const request = createApprovalRequest(body.workflowId, body.runId, tenantId, requestedBy, requiredCount, expiresAt);
+  const request = createApprovalRequest(body.workflowId, body.runId, requestedBy, requiredCount, expiresAt, ctx);
   return Response.json({ request }, { status: 201 });
 }
 
 export async function approvalsListHandler(req: Request): Promise<Response> {
-  const { tenantId } = getCurrentTenantContext();
+  const ctx = getCurrentTenantContext();
   const url = new URL(req.url);
   const statusParam = url.searchParams.get("status");
   const status = statusParam as "pending" | "approved" | "rejected" | "expired" | undefined;
 
-  expireStaleRequests();
+  expireStaleRequests(ctx);
 
-  const requests = listApprovalRequests(tenantId, status);
+  const requests = listApprovalRequests(status, ctx);
   return Response.json({ requests });
 }
 
 export async function approvalGetHandler(req: Request, id: string): Promise<Response> {
-  const request = getApprovalRequest(id);
+  const ctx = getCurrentTenantContext();
+  const request = getApprovalRequest(id, ctx);
   if (!request) {
     return Response.json({ error: "not found" }, { status: 404 });
   }
@@ -47,7 +48,8 @@ export async function approvalVoteHandler(req: Request, id: string): Promise<Res
     return Response.json({ error: "decision must be 'approve' or 'reject'" }, { status: 400 });
   }
 
-  const request = getApprovalRequest(id);
+  const ctx = getCurrentTenantContext();
+  const request = getApprovalRequest(id, ctx);
   if (!request) {
     return Response.json({ error: "not found" }, { status: 404 });
   }
@@ -59,7 +61,7 @@ export async function approvalVoteHandler(req: Request, id: string): Promise<Res
   const voter = req.headers.get("x-operator-token") ?? "unknown";
   const comment: string | undefined = body.comment;
 
-  const updated = submitVote(id, voter, body.decision, comment);
+  const updated = submitVote(id, voter, body.decision, comment, ctx);
   return Response.json({ request: updated });
 }
 
@@ -67,13 +69,14 @@ export async function approvalExpireHandler(req: Request, id: string): Promise<R
   const roleErr = requireAdminRole(req);
   if (roleErr) return roleErr;
 
-  const request = getApprovalRequest(id);
+  const ctx = getCurrentTenantContext();
+  const request = getApprovalRequest(id, ctx);
   if (!request) {
     return Response.json({ error: "not found" }, { status: 404 });
   }
 
-  expireStaleRequests();
-  const updated = getApprovalRequest(id);
+  expireStaleRequests(ctx);
+  const updated = getApprovalRequest(id, ctx);
   return Response.json({ request: updated });
 }
 

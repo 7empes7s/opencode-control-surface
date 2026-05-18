@@ -29,7 +29,7 @@ import {
   type BuilderWorkflowInput,
   type ProvisionResult,
 } from "../builder/store.ts";
-import { isDashboardDbEnabled } from "../db/dashboard.ts";
+import { isDashboardDbEnabled, getDashboardDb } from "../db/dashboard.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { ok, type ApiEnvelope } from "./types.ts";
 import {
@@ -41,6 +41,7 @@ import {
   cancelRun,
   reconcileRunStatus,
   classifyFailureDiagnosis,
+  updateBuilderRun,
   type FailureDiagnosis,
 } from "../builder/runner.ts";
 import { getNextRunTime } from "../builder/scheduler.ts";
@@ -111,26 +112,48 @@ export function builderDiscoverHandler(url: URL): Response {
 }
 
 export function builderArtifactContentHandler(url: URL): Response {
-  const reason = dbUnavailable();
-  if (reason) return apiError(reason, 503);
   const runId = url.searchParams.get("runId");
   const kind = url.searchParams.get("kind");
   const passSeq = url.searchParams.get("pass");
   if (!runId || !kind) return apiError("runId and kind are required");
-  const runDir = `/var/lib/control-surface/builder-runs/${runId}`;
   const filename = passSeq ? `pass-${passSeq}-${kind}.log` : `pass-1-${kind}.log`;
-  const path = `${runDir}/${filename}`;
+  const { readFileSync, existsSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+  const serve = (p: string) => new Response(readFileSync(p, "utf8"), { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+
+  // 1. Legacy flat path
+  const flatPath = `/var/lib/control-surface/builder-runs/${runId}/${filename}`;
+  if (existsSync(flatPath)) return serve(flatPath);
+
+  // 2. DB-assisted: JOIN runs→workflows to get project_id (isolated, never throws up)
   try {
-    const { readFileSync, existsSync } = require("node:fs") as typeof import("node:fs");
-    if (!existsSync(path)) return apiError("log not found", 404);
-    const content = readFileSync(path, "utf8");
-    return new Response(content, {
-      status: 200,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (err) {
-    return apiError(errorMessage(err), 500);
+    const db = getDashboardDb();
+    if (db) {
+      const row = db.query(
+        `SELECT r.tenant_id, w.project_id FROM builder_runs r LEFT JOIN builder_workflows w ON r.workflow_id = w.id WHERE r.id = ?`
+      ).get(runId) as { tenant_id: string | null; project_id: string | null } | null;
+      if (row) {
+        const tid = (row.tenant_id || "mimule").replace(/[^a-zA-Z0-9._-]/g, "_");
+        const pid = (row.project_id || "default").replace(/[^a-zA-Z0-9._-]/g, "_");
+        const dbPath = `/var/lib/control-surface/tenants/${tid}/projects/${pid}/builder-runs/${runId}/${filename}`;
+        if (existsSync(dbPath)) return serve(dbPath);
+      }
+    }
+  } catch { /* fall through to scan */ }
+
+  // 3. Directory scan fallback — works even if DB is unavailable or schema drifts
+  const tenantsBase = "/var/lib/control-surface/tenants";
+  if (existsSync(tenantsBase)) {
+    for (const tid of readdirSync(tenantsBase)) {
+      const projectsBase = `${tenantsBase}/${tid}/projects`;
+      if (!existsSync(projectsBase)) continue;
+      for (const pid of readdirSync(projectsBase)) {
+        const candidate = `${projectsBase}/${pid}/builder-runs/${runId}/${filename}`;
+        if (existsSync(candidate)) return serve(candidate);
+      }
+    }
   }
+
+  return apiError("log not found", 404);
 }
 
 export function builderModelsHandler(): Response {
@@ -596,6 +619,25 @@ export async function builderCancelRunHandler(runId: string): Promise<Response> 
   }
 }
 
+export async function builderStopAfterPassHandler(runId: string): Promise<Response> {
+  try {
+    const run = readBuilderRun(runId);
+    if (!run) return apiError("not found", 404);
+    const resultObj = typeof run.result === "object" && run.result ? run.result as Record<string, unknown> : {};
+    updateBuilderRun(runId, { result: { ...resultObj, stopAfterPass: true, stopAfterPassAt: Date.now() } });
+    const updated = readBuilderRun(runId);
+    return json(ok<BuilderRunResponse>({
+      run: updated,
+      passes: readBuilderPasses(runId),
+      artifacts: readBuilderArtifacts(runId),
+      validations: readBuilderValidations(runId),
+      degraded: false,
+    }, { builder: "ok" }));
+  } catch (error) {
+    return apiError(errorMessage(error), 400);
+  }
+}
+
 export async function builderRunReconcileHandler(runId: string): Promise<Response> {
   const run = await reconcileRunStatus(runId);
   if (!run) return apiError("not found", 404);
@@ -919,6 +961,11 @@ export type PlanProgressSection = {
   total: number;
 };
 
+export type PlanNextStep = {
+  text: string;
+  section: string;
+};
+
 export type PlanProgressResponse = {
   planFile: string;
   sections: PlanProgressSection[];
@@ -926,6 +973,8 @@ export type PlanProgressResponse = {
   totalItems: number;
   percentDone: number;
   lastParsedAt: number;
+  nextSteps: PlanNextStep[];
+  content?: string;
   error?: string;
 };
 
@@ -958,6 +1007,7 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
       totalItems: 0,
       percentDone: 0,
       lastParsedAt: Date.now(),
+      nextSteps: [],
       error: "Plan file not found",
     };
     return json(ok(result, { builder: "ok" }));
@@ -968,17 +1018,24 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
     const lines = text.split("\n");
     const sections: PlanProgressSection[] = [];
     let currentSection: PlanProgressSection | null = null;
+    let currentSectionTitle = "";
+    const nextSteps: PlanNextStep[] = [];
 
     for (const line of lines) {
       if (line.startsWith("## ")) {
         if (currentSection) sections.push(currentSection);
-        currentSection = { title: line.slice(3).trim(), done: 0, total: 0 };
+        currentSectionTitle = line.slice(3).trim();
+        currentSection = { title: currentSectionTitle, done: 0, total: 0 };
       } else if (currentSection) {
         if (line.includes("- [x]") || line.includes("- [X]")) {
           currentSection.done++;
           currentSection.total++;
         } else if (line.includes("- [ ]")) {
           currentSection.total++;
+          const textMatch = line.match(/^\s*- \[ \]\s*(.+)$/);
+          if (textMatch && nextSteps.length < 4) {
+            nextSteps.push({ text: textMatch[1].trim(), section: currentSectionTitle });
+          }
         }
       }
     }
@@ -989,6 +1046,7 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
     const totalItems = activeSections.reduce((sum, s) => sum + s.total, 0);
     const percentDone = totalItems > 0 ? Math.round((totalDone / totalItems) * 100) : 0;
 
+    const MAX_CONTENT_LEN = 12_000;
     const result: PlanProgressResponse = {
       planFile,
       sections: activeSections,
@@ -996,6 +1054,8 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
       totalItems,
       percentDone,
       lastParsedAt: Date.now(),
+      nextSteps,
+      content: text.length > MAX_CONTENT_LEN ? text.slice(0, MAX_CONTENT_LEN) + "\n\n[…truncated]" : text,
     };
 
     planProgressCache.set(workflowId, { data: result, cachedAt: Date.now() });
@@ -1008,6 +1068,7 @@ export function builderWorkflowPlanProgressHandler(workflowId: string): Response
       totalItems: 0,
       percentDone: 0,
       lastParsedAt: Date.now(),
+      nextSteps: [],
       error: String(err),
     };
     return json(ok(result, { builder: "ok" }));

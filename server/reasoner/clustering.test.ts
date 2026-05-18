@@ -91,6 +91,7 @@ describe("incident resolve endpoint", () => {
   const testDbPath = `/tmp/test-incident-resolve-${Date.now()}.sqlite`;
 
   beforeAll(() => {
+    process.env.DASHBOARD_DB = "1";
     initDashboardDb({ enabled: true, path: testDbPath });
   });
 

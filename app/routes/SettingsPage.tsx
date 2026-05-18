@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { authFetch } from "../lib/authFetch";
 
 interface AuthStatus {
   tokenSet: boolean;
@@ -37,6 +38,71 @@ interface TelemetryPayload {
   shippedAt: string;
 }
 
+interface SystemConfig {
+  config: {
+    financeAgent?: {
+      enabled: boolean;
+      modelOverride?: string;
+      processingTimeout?: number;
+    };
+    pipelineStages?: {
+      research?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      write?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      publishPrep?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      verify?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      scout?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+      rank?: {
+        model: string;
+        enabled: boolean;
+        timeout: number;
+      };
+    };
+    alertThresholds?: {
+      pipelineFailureRate: number;
+      modelResponseTimeMs: number;
+      gpuUtilization: number;
+    };
+    autoPublish?: {
+      enabled: boolean;
+      verticals: string[];
+      approvalRequired: string[];
+    };
+    approvalWorkflows?: {
+      enabled: boolean;
+      requiredVerticals: string[];
+      maxArticlesPerDay: number;
+    };
+  };
+}
+
+interface SystemConfigHistory {
+  id: string;
+  timestamp: string;
+  changedBy: string;
+  changes: string[];
+  configSnapshot: Record<string, any>;
+}
+
 function WCard({ children, className = "", style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return <div className={`w-card ${className}`} style={style}>{children}</div>;
 }
@@ -54,12 +120,17 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
-type TabId = "auth" | "license" | "telemetry";
+type TabId = "auth" | "license" | "telemetry" | "finance" | "pipeline" | "alerts" | "approval" | "history";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "auth", label: "Auth & Stack" },
   { id: "license", label: "License" },
   { id: "telemetry", label: "Telemetry" },
+  { id: "finance", label: "Finance Agent" },
+  { id: "pipeline", label: "Pipeline Stages" },
+  { id: "alerts", label: "Alert Thresholds" },
+  { id: "approval", label: "Auto-publish/Approval" },
+  { id: "history", label: "Config History" },
 ];
 
 export function SettingsPage() {
@@ -67,37 +138,41 @@ export function SettingsPage() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [telemetryPayload, setTelemetryPayload] = useState<TelemetryPayload | null>(null);
   const [telemetryConsent, setTelemetryConsent] = useState<TelemetryConsent | null>(null);
+  const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
+  const [configHistory, setConfigHistory] = useState<SystemConfigHistory[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>("auth");
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceRoot[]>(FALLBACK_WORKSPACES);
 
   useEffect(() => {
-    fetch("/api/settings/auth-status")
-      .then(res => res.json())
-      .then(data => {
-        setAuthStatus(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message);
-        setLoading(false);
-      });
-    fetch("/api/licensing/status")
-      .then(res => res.json())
-      .then(setLicenseStatus)
-      .catch(() => {});
-    fetch("/api/telemetry/preview")
-      .then(res => res.json())
-      .then(setTelemetryPayload)
-      .catch(() => {});
-    fetch("/api/telemetry/consent")
-      .then(res => res.json())
-      .then(setTelemetryConsent)
-      .catch(() => {});
-  }, []);
+    Promise.all([
+      authFetch("/api/settings/auth-status")
+        .then(res => res.json())
+        .then(setAuthStatus),
+      authFetch("/api/licensing/status")
+        .then(res => res.json())
+        .then(setLicenseStatus),
+      authFetch("/api/telemetry/preview")
+        .then(res => res.json())
+        .then(setTelemetryPayload),
+      authFetch("/api/telemetry/consent")
+        .then(res => res.json())
+        .then(setTelemetryConsent),
+      authFetch("/api/system-config")
+        .then(res => res.json())
+        .then(setSystemConfig),
+      authFetch("/api/system-config/history")
+        .then(res => res.json())
+        .then(data => setConfigHistory(data.history || []))
+    ])
+    .then(() => setLoading(false))
+    .catch(err => {
+      setError(err.message);
+      setLoading(false);
+    });
 
-  useEffect(() => {
     fetch("/var/lib/mimule/workspace-registry.json")
       .then(res => {
         if (res.ok) return res.json();
@@ -112,6 +187,83 @@ export function SettingsPage() {
         // Use fallback
       });
   }, []);
+
+  const handleSaveConfig = async () => {
+    if (!systemConfig) return;
+    
+    try {
+      setSaving(true);
+      const response = await authFetch('/api/system-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(systemConfig)
+      });
+      
+      if (response.ok) {
+        alert('Configuration saved successfully');
+      }
+    } catch (error) {
+      console.error('Error saving config:', error);
+      alert('Error saving configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleFinanceAgentChange = (field: keyof NonNullable<SystemConfig['config']['financeAgent']>, value: any) => {
+    setSystemConfig(prev => ({
+      ...prev!,
+      config: {
+        ...prev!.config,
+        financeAgent: {
+          ...prev!.config.financeAgent,
+          [field]: value
+        }
+      }
+    }));
+  };
+
+  const handlePipelineStageChange = (stage: string, field: string, value: any) => {
+    setSystemConfig(prev => ({
+      ...prev!,
+      config: {
+        ...prev!.config,
+        pipelineStages: {
+          ...prev!.config.pipelineStages,
+          [stage]: {
+            ...prev!.config.pipelineStages![stage as keyof typeof prev.config.pipelineStages],
+            [field]: value
+          }
+        }
+      }
+    }));
+  };
+
+  const handleAlertThresholdChange = (field: string, value: number) => {
+    setSystemConfig(prev => ({
+      ...prev!,
+      config: {
+        ...prev!.config,
+        alertThresholds: {
+          ...prev!.config.alertThresholds,
+          [field]: value
+        }
+      }
+    }));
+  };
+
+  const handleAutoPublishChange = (field: string, value: any) => {
+    setSystemConfig(prev => ({
+      ...prev!,
+      config: {
+        ...prev!.config,
+        autoPublish: {
+          ...prev!.config.autoPublish,
+          [field]: value
+        }
+      }
+    }));
+  };
 
   if (loading) return <div className="loading-dim">loading…</div>;
   if (error) return <div className="loading-dim error">error: {error}</div>;
@@ -285,6 +437,275 @@ export function SettingsPage() {
               {JSON.stringify(telemetryPayload ?? {}, null, 2)}
             </pre>
           </WCard>
+        </div>
+      )}
+
+      {activeTab === "finance" && systemConfig && (
+        <div className="dash-section">
+          <div className="dash-section-title">Finance Agent Settings</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Enabled</span>
+              <input
+                type="checkbox"
+                checked={systemConfig.config.financeAgent?.enabled}
+                onChange={(e) => handleFinanceAgentChange('enabled', e.target.checked)}
+                className="ml-2"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Model Override</span>
+              <input
+                type="text"
+                value={systemConfig.config.financeAgent?.modelOverride || ''}
+                onChange={(e) => handleFinanceAgentChange('modelOverride', e.target.value)}
+                placeholder="Leave empty to use default"
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Processing Timeout (ms)</span>
+              <input
+                type="number"
+                value={systemConfig.config.financeAgent?.processingTimeout || 300000}
+                onChange={(e) => handleFinanceAgentChange('processingTimeout', Number(e.target.value))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+          </WCard>
+          <div className="flex justify-end mt-4">
+            <button 
+              className="btn-primary" 
+              onClick={handleSaveConfig}
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save Finance Settings'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "pipeline" && systemConfig && (
+        <div className="dash-section">
+          <div className="dash-section-title">Pipeline Stage Configuration</div>
+          
+          {Object.entries(systemConfig.config.pipelineStages || {}).map(([stage, config]) => (
+            <WCard key={stage} style={{ marginBottom: '16px' }}>
+              <div className="w-row">
+                <span className="w-label" style={{ fontWeight: 'bold', textTransform: 'capitalize' }}>{stage}</span>
+              </div>
+              <div className="w-row">
+                <span className="w-label">Model</span>
+                <input
+                  type="text"
+                  value={config?.model || ''}
+                  onChange={(e) => handlePipelineStageChange(stage, 'model', e.target.value)}
+                  className="flex-1 ml-2 px-2 py-1 border rounded"
+                />
+              </div>
+              <div className="w-row">
+                <span className="w-label">Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={config?.enabled}
+                  onChange={(e) => handlePipelineStageChange(stage, 'enabled', e.target.checked)}
+                  className="ml-2"
+                />
+              </div>
+              <div className="w-row">
+                <span className="w-label">Timeout (ms)</span>
+                <input
+                  type="number"
+                  value={config?.timeout}
+                  onChange={(e) => handlePipelineStageChange(stage, 'timeout', Number(e.target.value))}
+                  className="flex-1 ml-2 px-2 py-1 border rounded"
+                />
+              </div>
+            </WCard>
+          ))}
+          
+          <div className="flex justify-end mt-4">
+            <button 
+              className="btn-primary" 
+              onClick={handleSaveConfig}
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save Pipeline Settings'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "alerts" && systemConfig && (
+        <div className="dash-section">
+          <div className="dash-section-title">Alert Thresholds</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Pipeline Failure Rate</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={systemConfig.config.alertThresholds?.pipelineFailureRate}
+                onChange={(e) => handleAlertThresholdChange('pipelineFailureRate', Number(e.target.value))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Model Response Time (ms)</span>
+              <input
+                type="number"
+                value={systemConfig.config.alertThresholds?.modelResponseTimeMs}
+                onChange={(e) => handleAlertThresholdChange('modelResponseTimeMs', Number(e.target.value))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">GPU Utilization</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={systemConfig.config.alertThresholds?.gpuUtilization}
+                onChange={(e) => handleAlertThresholdChange('gpuUtilization', Number(e.target.value))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+          </WCard>
+          <div className="flex justify-end mt-4">
+            <button 
+              className="btn-primary" 
+              onClick={handleSaveConfig}
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save Alert Settings'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "approval" && systemConfig && (
+        <div className="dash-section">
+          <div className="dash-section-title">Auto-publish & Approval Settings</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Auto-publish Enabled</span>
+              <input
+                type="checkbox"
+                checked={systemConfig.config.autoPublish?.enabled}
+                onChange={(e) => handleAutoPublishChange('enabled', e.target.checked)}
+                className="ml-2"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Auto-publish Verticals</span>
+              <textarea
+                value={(systemConfig.config.autoPublish?.verticals || []).join(', ')}
+                onChange={(e) => handleAutoPublishChange('verticals', e.target.value.split(',').map(item => item.trim()))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+                rows={3}
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Approval Required Verticals</span>
+              <textarea
+                value={(systemConfig.config.autoPublish?.approvalRequired || []).join(', ')}
+                onChange={(e) => handleAutoPublishChange('approvalRequired', e.target.value.split(',').map(item => item.trim()))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+                rows={2}
+              />
+            </div>
+          </WCard>
+          
+          <div className="dash-section-title" style={{ marginTop: 24 }}>Approval Workflows</div>
+          <WCard>
+            <div className="w-row">
+              <span className="w-label">Approval Workflows Enabled</span>
+              <input
+                type="checkbox"
+                checked={systemConfig.config.approvalWorkflows?.enabled}
+                onChange={(e) => setSystemConfig(prev => ({
+                  ...prev!,
+                  config: {
+                    ...prev!.config,
+                    approvalWorkflows: {
+                      ...prev!.config.approvalWorkflows,
+                      enabled: e.target.checked
+                    }
+                  }
+                }))}
+                className="ml-2"
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Required Verticals</span>
+              <textarea
+                value={(systemConfig.config.approvalWorkflows?.requiredVerticals || []).join(', ')}
+                onChange={(e) => setSystemConfig(prev => ({
+                  ...prev!,
+                  config: {
+                    ...prev!.config,
+                    approvalWorkflows: {
+                      ...prev!.config.approvalWorkflows,
+                      requiredVerticals: e.target.value.split(',').map(item => item.trim())
+                    }
+                  }
+                }))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+                rows={2}
+              />
+            </div>
+            <div className="w-row">
+              <span className="w-label">Max Articles Per Day</span>
+              <input
+                type="number"
+                value={systemConfig.config.approvalWorkflows?.maxArticlesPerDay}
+                onChange={(e) => setSystemConfig(prev => ({
+                  ...prev!,
+                  config: {
+                    ...prev!.config,
+                    approvalWorkflows: {
+                      ...prev!.config.approvalWorkflows,
+                      maxArticlesPerDay: Number(e.target.value)
+                    }
+                  }
+                }))}
+                className="flex-1 ml-2 px-2 py-1 border rounded"
+              />
+            </div>
+          </WCard>
+          <div className="flex justify-end mt-4">
+            <button 
+              className="btn-primary" 
+              onClick={handleSaveConfig}
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save Approval Settings'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "history" && (
+        <div className="dash-section">
+          <div className="dash-section-title">Configuration History</div>
+          {configHistory.length > 0 ? (
+            configHistory.map((item, index) => (
+              <WCard key={item.id} style={{ marginBottom: '8px' }}>
+                <div className="w-row">
+                  <span className="w-label">{new Date(item.timestamp).toLocaleString()}</span>
+                  <Pill color="blue">{item.changedBy}</Pill>
+                </div>
+                <div className="w-caption">{item.changes.join(', ')}</div>
+              </WCard>
+            ))
+          ) : (
+            <WCard>
+              <div className="w-caption">No configuration history available.</div>
+            </WCard>
+          )}
         </div>
       )}
     </div>

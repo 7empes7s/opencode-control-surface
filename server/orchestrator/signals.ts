@@ -17,15 +17,17 @@ export function emitSignal(
   instanceId: string,
   signalName: string,
   payload: SignalPayload,
+  tenantId?: string,
 ): string {
   const db = getDashboardDb();
   if (!db) throw new Error("Dashboard DB not available");
 
   const id = randomUUID();
+  const effectiveTenantId = tenantId ?? "mimule"; // Default to mimule if not provided
   db.query(
-    `INSERT INTO orchestrator_signals (id, instance_id, signal_name, payload_json, delivered, created_at)
-     VALUES (?, ?, ?, ?, 0, ?)`,
-  ).run(id, instanceId, signalName, JSON.stringify(payload), Date.now());
+    `INSERT INTO orchestrator_signals (id, instance_id, signal_name, payload_json, delivered, created_at, tenant_id)
+     VALUES (?, ?, ?, ?, 0, ?, ?)`,
+  ).run(id, instanceId, signalName, JSON.stringify(payload), Date.now(), effectiveTenantId);
 
   return id;
 }
@@ -33,18 +35,21 @@ export function emitSignal(
 export function consumeSignal(
   instanceId: string,
   signalName: string,
+  tenantId?: string,
 ): SignalPayload | null {
   const db = getDashboardDb();
   if (!db) return null;
 
+  const effectiveTenantId = tenantId ?? "mimule"; // Default to mimule if not provided
+
   const row = db
     .query(
       `SELECT * FROM orchestrator_signals
-       WHERE instance_id = ? AND signal_name = ? AND delivered = 0
+       WHERE instance_id = ? AND signal_name = ? AND delivered = 0 AND (tenant_id = ? OR tenant_id IS NULL)
        ORDER BY created_at ASC
        LIMIT 1`,
     )
-    .get(instanceId, signalName) as DbSignalRow | null;
+    .get(instanceId, signalName, effectiveTenantId) as DbSignalRow | null;
 
   if (!row) return null;
 
@@ -59,6 +64,7 @@ const POLL_INTERVAL_MS = 5000;
 export async function waitSignalStepHandler(
   payload: unknown,
   instanceId: string,
+  tenantId?: string,
 ): Promise<StepResult> {
   const { name, timeoutMs = DEFAULT_SIGNAL_TIMEOUT_MS } = payload as {
     name: string;
@@ -68,7 +74,7 @@ export async function waitSignalStepHandler(
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const signalPayload = consumeSignal(instanceId, name);
+    const signalPayload = consumeSignal(instanceId, name, tenantId);
     if (signalPayload !== null) {
       return { status: "complete", output: signalPayload };
     }

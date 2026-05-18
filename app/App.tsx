@@ -19,6 +19,8 @@ import { BuilderPage } from "./routes/BuilderPage";
 import { GeminiPage } from "./routes/GeminiPage";
 import { TracePage } from "./routes/TracePage";
 import { GatewayPage } from "./routes/GatewayPage";
+import { LiteLLMPage } from "./routes/LiteLLMPage";
+import { PaperclipPage } from "./routes/PaperclipPage";
 import { GovernancePage } from "./routes/GovernancePage";
 import { WorkflowsPage } from "./routes/WorkflowsPage";
 import { ProjectsPage } from "./routes/ProjectsPage";
@@ -26,6 +28,12 @@ import { AboutPage } from "./routes/AboutPage";
 import { MarketplacePage } from "./routes/MarketplacePage";
 import { InstallWizardPage } from "./routes/InstallWizardPage";
 import { CompliancePage } from "./routes/CompliancePage";
+import { FinanceIntelPage } from "./routes/FinanceIntelPage";
+import { DossierInspectorPage } from "./routes/DossierInspectorPage";
+import { ChannelsPage } from "./routes/ChannelsPage";
+import ScoutPage from "./routes/ScoutPage";
+import { CostPage } from "./routes/CostPage";
+import { AuthPrompt } from "./components/AuthPrompt";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -55,6 +63,7 @@ function DashLayoutBare({ children }: { children: React.ReactNode }) {
 export function App() {
   return (
     <Router>
+      <AuthPrompt />
       <Switch>
         <Route path="/opencode">
           <DashLayoutBare><OpenCodeRoute /></DashLayoutBare>
@@ -75,11 +84,23 @@ export function App() {
         <Route path="/autopipeline">
           <DashLayout><AutopipelinePage /></DashLayout>
         </Route>
+        <Route path="/autopipeline/dossier/:date/:slug">
+          <DashLayout><DossierInspectorPage /></DashLayout>
+        </Route>
+        <Route path="/scout">
+          <DashLayout><ScoutPage /></DashLayout>
+        </Route>
         <Route path="/doctor">
           <DashLayout><DoctorPage /></DashLayout>
         </Route>
         <Route path="/models">
           <DashLayout><ModelsPage /></DashLayout>
+        </Route>
+        <Route path="/litellm">
+          <DashLayout><LiteLLMPage /></DashLayout>
+        </Route>
+        <Route path="/paperclip">
+          <DashLayout><PaperclipPage /></DashLayout>
         </Route>
         <Route path="/newsbites">
           <DashLayout><NewsBitesPage /></DashLayout>
@@ -128,6 +149,15 @@ export function App() {
         </Route>
         <Route path="/install">
           <DashLayout><InstallWizardPage /></DashLayout>
+        </Route>
+        <Route path="/cost">
+          <DashLayout><CostPage /></DashLayout>
+        </Route>
+        <Route path="/finance-intel">
+          <DashLayout><FinanceIntelPage /></DashLayout>
+        </Route>
+        <Route path="/channels">
+          <DashLayout><ChannelsPage /></DashLayout>
         </Route>
         <Route path="/compliance">
           <DashLayout><CompliancePage /></DashLayout>

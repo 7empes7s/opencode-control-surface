@@ -514,6 +514,7 @@ test -s "$BUILDER_DIR/children-manifest.jsonl"
       BUILDER_DIR: builderDir,
       RUN_ID: run.id,
       BUILDER_PROJECT_ROOT: "/opt/opencode-control-surface",
+      TENANT_ID: run.tenantId ?? "mimule",
     },
   });
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=Control Surface Platform
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/control-surface
+EnvironmentFile=-/etc/control-surface/config.env
+WorkingDirectory=/var/lib/control-surface
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { authFetch } from "../lib/authFetch";
 
 interface ApiResult<T> {
   data: T | null;
@@ -32,7 +33,7 @@ export function useApi<T>(path: string, intervalMs = 30_000): ApiResult<T> {
 
     async function fetchData() {
       try {
-        const r = await fetch(path);
+        const r = await authFetch(path);
         const json = await r.json() as { data: T };
         if (!cancelled) setDataIfChanged(json.data);
       } catch (e: unknown) {

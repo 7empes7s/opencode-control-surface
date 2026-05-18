@@ -34,7 +34,7 @@ export function NewsBitesPage() {
     if (!jobId) return;
     if (jobStatus?.status === "success" || jobStatus?.status === "failed") return;
     const poll = setInterval(async () => {
-      const res = await fetch(`/api/newsbites/deploy/${jobId}`);
+      const res = await authFetch(`/api/newsbites/deploy/${jobId}`);
       const json = await res.json() as { status: string; output: string };
       setJobStatus(json);
       if (json.status === "success" || json.status === "failed") clearInterval(poll);
