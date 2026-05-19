@@ -42,26 +42,15 @@ export function NewsBitesPage() {
     return () => clearInterval(poll);
   }, [jobId, jobStatus?.status]);
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
-  if (!data) return null;
-
-  const d = data;
-  const s = d.stats;
-
-  const statuses = [...new Set(d.articles.map((a) => a.status).filter(Boolean))].sort();
-  const verticals = [...new Set(d.articles.map((a) => a.vertical).filter(Boolean))].sort();
-
-  // Pre-filter by dropdown selections, then let useTableControls handle text search + sort + pagination
-  const dropdownFiltered = d.articles.filter((a) => {
+  const articles = data?.articles ?? [];
+  const dropdownFiltered = articles.filter((a) => {
     if (filterStatus && a.status !== filterStatus) return false;
     if (filterVertical && a.vertical !== filterVertical) return false;
     return true;
   });
 
   type ArticleSortKey = "title" | "vertical" | "date" | "status" | "wordCount";
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const articlesCtrl = useTableControls<typeof d.articles[0], ArticleSortKey>({
+  const articlesCtrl = useTableControls<typeof articles[0], ArticleSortKey>({
     rows: dropdownFiltered,
     defaultSort: { key: "date", dir: "desc" },
     filterText: (a) => [a.title, a.slug, a.vertical, a.status],
@@ -74,6 +63,16 @@ export function NewsBitesPage() {
       return null;
     },
   });
+
+  if (loading && !data) return <div className="loading-dim">loading…</div>;
+  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (!data) return null;
+
+  const d = data;
+  const s = d.stats;
+
+  const statuses = [...new Set(d.articles.map((a) => a.status).filter(Boolean))].sort();
+  const verticals = [...new Set(d.articles.map((a) => a.vertical).filter(Boolean))].sort();
 
   const last30dTotal = s.publishedLast30d.reduce((acc, x) => acc + x.count, 0);
 
