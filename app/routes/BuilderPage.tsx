@@ -2525,7 +2525,7 @@ export function BuilderPage() {
           </SectionCard>
 
           <div className="widget-grid wide">
-            <SectionCard title="project" defaultOpen={true}>
+            <SectionCard title="project" defaultOpen={false}>
               <div className="section-card-body builder-kv-grid">
                 <div><span>root</span><strong>{data.project.root}</strong></div>
                 <div><span>service</span><strong>{data.project.service ?? "-"}</strong></div>
@@ -2536,7 +2536,7 @@ export function BuilderPage() {
               </div>
             </SectionCard>
 
-            <SectionCard title="git state" defaultOpen={true}>
+            <SectionCard title="git state" defaultOpen={false}>
               <div className="section-card-body">
                 <div className="builder-pill-row">
                   <Pill color={statusColor(data.git.status)}>{data.git.status}</Pill>

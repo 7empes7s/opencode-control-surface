@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { FolderOpen, Plus, RefreshCw, Search, Edit2, X, CheckCircle2 } from "lucide-react";
+import { TableControls } from "../components/TableControls";
 import { useAuthApi } from "../hooks/useAuthApi";
+import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 import { getActiveTenantId } from "../hooks/useTenantContext";
 
@@ -28,6 +30,8 @@ interface ProjectFormData {
   framework: string;
   validatorCommands: string;
 }
+
+type ProjectSortKey = "name" | "repoPath" | "language" | "framework";
 
 const EMPTY_FORM: ProjectFormData = {
   name: "",
@@ -159,6 +163,27 @@ export function ProjectsPage() {
   }
 
   const projects = data?.projects ?? [];
+  const projectsCtrl = useTableControls<Project, ProjectSortKey>({
+    rows: projects,
+    pageSize: 25,
+    filterText: (project) => [
+      project.name,
+      project.repoPath,
+      project.language,
+      project.framework,
+      project.status,
+      project.validatorCommands.join(" "),
+    ],
+    sortValue: (project, key) => {
+      switch (key) {
+        case "repoPath": return project.repoPath;
+        case "language": return project.language;
+        case "framework": return project.framework;
+        default: return project.name;
+      }
+    },
+    defaultSort: { key: "name", dir: "asc" },
+  });
 
   return (
     <div className="dash-page">
@@ -205,8 +230,41 @@ export function ProjectsPage() {
       )}
 
       {projects.length > 0 && (
-        <div className="project-list">
-          {projects.map((p) => (
+        <>
+          <TableControls {...projectsCtrl.controlsProps} searchPlaceholder="Filter projects..." />
+          <div className="project-sort-strip" aria-label="Project sort controls">
+            <button
+              className={`project-sort-btn ${projectsCtrl.sort.key === "name" ? "active" : ""}`}
+              type="button"
+              onClick={() => projectsCtrl.onSort("name")}
+              aria-sort={projectsCtrl.sort.key === "name" ? (projectsCtrl.sort.dir === "asc" ? "ascending" : "descending") : "none"}
+            >
+              Name <span className="sortable-th-arrow">{projectsCtrl.sort.key === "name" ? (projectsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </button>
+            <button
+              className={`project-sort-btn ${projectsCtrl.sort.key === "repoPath" ? "active" : ""}`}
+              type="button"
+              onClick={() => projectsCtrl.onSort("repoPath")}
+              aria-sort={projectsCtrl.sort.key === "repoPath" ? (projectsCtrl.sort.dir === "asc" ? "ascending" : "descending") : "none"}
+            >
+              Repo <span className="sortable-th-arrow">{projectsCtrl.sort.key === "repoPath" ? (projectsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </button>
+            <button
+              className={`project-sort-btn ${projectsCtrl.sort.key === "language" ? "active" : ""}`}
+              type="button"
+              onClick={() => projectsCtrl.onSort("language")}
+              aria-sort={projectsCtrl.sort.key === "language" ? (projectsCtrl.sort.dir === "asc" ? "ascending" : "descending") : "none"}
+            >
+              Language <span className="sortable-th-arrow">{projectsCtrl.sort.key === "language" ? (projectsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </button>
+          </div>
+          {projectsCtrl.filteredCount === 0 ? (
+            <div className="empty-state compact">
+              <p>No projects match the current filter.</p>
+            </div>
+          ) : (
+            <div className="project-list">
+              {projectsCtrl.rows.map((p) => (
             <div key={p.id} className="project-card">
               <div className="project-card-header">
                 <span className="project-name">{p.name}</span>
@@ -229,8 +287,10 @@ export function ProjectsPage() {
                 )}
               </div>
             </div>
-          ))}
-        </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {/* Create / Edit modal */}

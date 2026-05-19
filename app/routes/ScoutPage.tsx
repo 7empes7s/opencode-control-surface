@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Radar, Settings } from 'lucide-react';
+import { TableControls } from '../components/TableControls';
+import { useTableControls } from '../hooks/useTableControls';
 import { authFetch } from '../lib/authFetch';
 
 interface ScoutTopic {
@@ -40,12 +42,31 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
+export type TopicsSortKey = "finalScore" | "vertical" | "source" | "recencyScore" | "noveltyScore";
+
 const ScoutPage: React.FC = () => {
   const [scoutRuns, setScoutRuns] = useState<ScoutRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<ScoutRun | null>(null);
   const [scoutConfig, setScoutConfig] = useState<ScoutConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+
+  const topicsCtrl = useTableControls<ScoutTopic, TopicsSortKey>({
+    rows: selectedRun?.topics ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.headline, row.vertical, row.source, row.reason].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "finalScore": return row.finalScore ?? 0;
+        case "vertical": return row.vertical ?? "";
+        case "source": return row.source ?? "";
+        case "recencyScore": return row.recencyScore ?? 0;
+        case "noveltyScore": return row.noveltyScore ?? 0;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "finalScore", dir: "desc" },
+  });
 
   // Load scout runs and config
   useEffect(() => {
@@ -111,10 +132,10 @@ const ScoutPage: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 0.8) return 'text-green-600';
-    if (score >= 0.6) return 'text-yellow-600';
-    return 'text-red-600';
+  const getScoreStyle = (score: number): React.CSSProperties => {
+    if (score >= 0.8) return { color: "var(--color-green, #4ade80)" };
+    if (score >= 0.6) return { color: "var(--color-amber, #fbbf24)" };
+    return { color: "var(--color-red, #f87171)" };
   };
 
   return (
@@ -172,27 +193,31 @@ const ScoutPage: React.FC = () => {
         </div>
         <div className="w-card">
           {isLoading ? (
-            <div className="text-center py-4">Loading...</div>
+            <div className="loading-dim">loading…</div>
           ) : scoutRuns.length === 0 ? (
-            <div className="text-center py-4 text-gray-500">No scout runs found</div>
+            <div className="loading-dim">no scout runs found</div>
           ) : (
-            <div className="space-y-3">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {scoutRuns.map((run) => (
                 <div
                   key={run.id}
-                  className={`p-3 border rounded-lg cursor-pointer hover:bg-gray-50 ${
-                    selectedRun?.id === run.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                  }`}
+                  style={{
+                    padding: "8px 12px",
+                    border: `1px solid ${selectedRun?.id === run.id ? "var(--accent)" : "var(--border)"}`,
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    background: selectedRun?.id === run.id ? "color-mix(in oklch, var(--accent) 8%, transparent)" : "transparent",
+                  }}
                   onClick={() => setSelectedRun(run)}
                 >
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium">Run {run.id}</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>Run {run.id}</span>
                     <Pill color={run.trigger === 'manual' ? 'blue' : 'gray'}>
                       {run.trigger}
                     </Pill>
                   </div>
-                  <div className="text-sm text-gray-500">
-                    {formatDate(run.runAt)} • {run.topics.filter(t => t.selected).length} selected
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
+                    {formatDate(run.runAt)} · {run.topics.filter(t => t.selected).length} selected
                   </div>
                 </div>
               ))}
@@ -232,14 +257,14 @@ const ScoutPage: React.FC = () => {
                     <Pill key={idx} color="blue">{slug}</Pill>
                   ))
                 ) : (
-                  <span className="text-gray-500 italic">No stories queued</span>
+                  <span style={{ color: "var(--text-dim)", fontStyle: "italic" }}>No stories queued</span>
                 )}
               </div>
             </div>
             
             <div>
               <div className="w-label">Configuration Snapshot</div>
-              <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto mt-2">
+              <pre style={{ background: "var(--bg)", border: "1px solid var(--border)", padding: "8px 12px", borderRadius: 4, fontSize: 11, overflowX: "auto", marginTop: 6, fontFamily: "var(--mono)", color: "var(--text-dim)" }}>
                 {JSON.stringify(selectedRun.config, null, 2)}
               </pre>
             </div>
@@ -251,33 +276,34 @@ const ScoutPage: React.FC = () => {
         <div className="dash-section">
           <div className="dash-section-title">Ranked Topics</div>
           <WCard>
+            <TableControls {...topicsCtrl.controlsProps} searchPlaceholder="Search topics..." />
             <table className="w-full">
               <thead>
                 <tr className="border-b">
                   <th className="w-label text-left">Topic</th>
-                  <th className="w-label text-left">Vertical</th>
-                  <th className="w-label text-left">Source</th>
-                  <th className="w-label text-right">Recency</th>
-                  <th className="w-label text-right">Novelty</th>
-                  <th className="w-label text-right">Final Score</th>
+                  <th {...topicsCtrl.sortHeaderProps("vertical")} className="w-label text-left">Vertical <span className="sortable-th-arrow">{topicsCtrl.sort.key === "vertical" ? (topicsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...topicsCtrl.sortHeaderProps("source")} className="w-label text-left">Source <span className="sortable-th-arrow">{topicsCtrl.sort.key === "source" ? (topicsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...topicsCtrl.sortHeaderProps("recencyScore")} className="w-label text-right">Recency <span className="sortable-th-arrow">{topicsCtrl.sort.key === "recencyScore" ? (topicsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...topicsCtrl.sortHeaderProps("noveltyScore")} className="w-label text-right">Novelty <span className="sortable-th-arrow">{topicsCtrl.sort.key === "noveltyScore" ? (topicsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...topicsCtrl.sortHeaderProps("finalScore")} className="w-label text-right">Final Score <span className="sortable-th-arrow">{topicsCtrl.sort.key === "finalScore" ? (topicsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                   <th className="w-label text-left">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {selectedRun.topics.map((topic, index) => (
+                {topicsCtrl.rows.map((topic, index) => (
                   <tr key={index} className="border-b">
                     <td className="py-2">{topic.headline}</td>
                     <td>
                       <Pill color="blue">{topic.vertical}</Pill>
                     </td>
                     <td>{topic.source}</td>
-                    <td className={`text-right ${getScoreColor(topic.recencyScore)}`}>
+                    <td style={{ textAlign: "right", fontFamily: "var(--mono)", ...getScoreStyle(topic.recencyScore) }}>
                       {(topic.recencyScore * 100).toFixed(0)}%
                     </td>
-                    <td className={`text-right ${getScoreColor(topic.noveltyScore)}`}>
+                    <td style={{ textAlign: "right", fontFamily: "var(--mono)", ...getScoreStyle(topic.noveltyScore) }}>
                       {(topic.noveltyScore * 100).toFixed(0)}%
                     </td>
-                    <td className={`text-right ${getScoreColor(topic.finalScore)}`}>
+                    <td style={{ textAlign: "right", fontFamily: "var(--mono)", ...getScoreStyle(topic.finalScore) }}>
                       {(topic.finalScore * 100).toFixed(0)}%
                     </td>
                     <td>

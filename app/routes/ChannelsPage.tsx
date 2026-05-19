@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { RefreshCw, Save } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 import type { ChannelLogRow, NotificationRuleRow } from "../../server/db/writer";
 
@@ -33,6 +35,9 @@ interface BriefActionResult {
   output?: string;
   error?: string;
 }
+
+type ChannelLogSortKey = "ts" | "channel" | "direction";
+type NotificationRuleSortKey = "kind" | "enabled" | "updatedAt";
 
 function fmtTs(ts: number): string {
   return new Date(ts).toISOString().slice(0, 19).replace("T", " ") + " UTC";
@@ -80,24 +85,46 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
 }
 
 function LogTable({ entries }: { entries: ChannelLogRow[] }) {
+  const logCtrl = useTableControls<ChannelLogRow, ChannelLogSortKey>({
+    rows: entries,
+    pageSize: 25,
+    filterText: (entry) => [entry.channel, entry.direction, entry.summary, safeJson(entry.payload)],
+    sortValue: (entry, key) => {
+      switch (key) {
+        case "ts": return entry.ts;
+        case "channel": return entry.channel;
+        case "direction": return entry.direction;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "ts", dir: "desc" },
+  });
+
   if (entries.length === 0) {
     return <div className="loading-dim">no entries</div>;
   }
 
   return (
     <div className="table-wrap">
+      <TableControls {...logCtrl.controlsProps} searchPlaceholder="Filter channel events..." />
       <table className="data-table">
         <thead>
           <tr>
-            <th style={{ width: 180 }}>time</th>
-            <th style={{ width: 100 }}>channel</th>
-            <th style={{ width: 90 }}>direction</th>
+            <th {...logCtrl.sortHeaderProps("ts")} style={{ width: 180 }}>
+              time <span className="sortable-th-arrow">{logCtrl.sort.key === "ts" ? (logCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </th>
+            <th {...logCtrl.sortHeaderProps("channel")} style={{ width: 100 }}>
+              channel <span className="sortable-th-arrow">{logCtrl.sort.key === "channel" ? (logCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </th>
+            <th {...logCtrl.sortHeaderProps("direction")} style={{ width: 90 }}>
+              direction <span className="sortable-th-arrow">{logCtrl.sort.key === "direction" ? (logCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+            </th>
             <th>summary</th>
             <th style={{ width: 260 }}>payload</th>
           </tr>
         </thead>
         <tbody>
-          {entries.map((entry) => (
+          {logCtrl.rows.map((entry) => (
             <tr key={entry.id}>
               <td className="mono dim">{fmtTs(entry.ts)}</td>
               <td className="mono">{entry.channel}</td>
@@ -106,6 +133,11 @@ function LogTable({ entries }: { entries: ChannelLogRow[] }) {
               <td className="mono trunc" title={safeJson(entry.payload)}>{summarizePayload(entry.payload)}</td>
             </tr>
           ))}
+          {logCtrl.filteredCount === 0 && (
+            <tr>
+              <td colSpan={5} className="loading-dim">no channel events match the current filter</td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -174,6 +206,25 @@ export function ChannelsPage() {
   }, [allEntries]);
 
   const totalRules = rulesData?.rules.length ?? 0;
+  const rulesCtrl = useTableControls<NotificationRuleRow, NotificationRuleSortKey>({
+    rows: rulesData?.rules ?? [],
+    pageSize: 25,
+    filterText: (rule) => [
+      rule.kind,
+      rule.enabled ? "enabled on" : "disabled off",
+      safeJson(rule.threshold),
+      Array.isArray(rule.channels) ? rule.channels.join(", ") : safeJson(rule.channels),
+    ],
+    sortValue: (rule, key) => {
+      switch (key) {
+        case "kind": return rule.kind;
+        case "enabled": return rule.enabled;
+        case "updatedAt": return rule.updatedAt;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "kind", dir: "asc" },
+  });
 
   async function upsertRule(draft: RuleDraft, key: string) {
     setSavingError(null);
@@ -334,18 +385,23 @@ export function ChannelsPage() {
           {savingSuccess && <div className="loading-dim" style={{ marginBottom: 8 }}>{savingSuccess}</div>}
 
           <div className="table-wrap" style={{ marginBottom: 12 }}>
+            <TableControls {...rulesCtrl.controlsProps} searchPlaceholder="Filter rules..." />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th style={{ width: 220 }}>kind</th>
-                  <th style={{ width: 90 }}>enabled</th>
+                  <th {...rulesCtrl.sortHeaderProps("kind")} style={{ width: 220 }}>
+                    kind <span className="sortable-th-arrow">{rulesCtrl.sort.key === "kind" ? (rulesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...rulesCtrl.sortHeaderProps("enabled")} style={{ width: 90 }}>
+                    enabled <span className="sortable-th-arrow">{rulesCtrl.sort.key === "enabled" ? (rulesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
                   <th style={{ width: 260 }}>threshold JSON</th>
                   <th>channels (csv)</th>
                   <th style={{ width: 110 }}></th>
                 </tr>
               </thead>
               <tbody>
-                {rulesData?.rules.map((rule) => {
+                {rulesCtrl.rows.map((rule) => {
                   const key = ruleKey(rule);
                   const draft = rulesDrafts[key] ?? toDraft(rule);
                   return (
@@ -421,9 +477,11 @@ export function ChannelsPage() {
                     </tr>
                   );
                 })}
-                {(rulesData?.rules.length ?? 0) === 0 && (
+                {rulesCtrl.filteredCount === 0 && (
                   <tr>
-                    <td colSpan={5} className="loading-dim">no rules configured</td>
+                    <td colSpan={5} className="loading-dim">
+                      {totalRules === 0 ? "no rules configured" : "no rules match the current filter"}
+                    </td>
                   </tr>
                 )}
               </tbody>

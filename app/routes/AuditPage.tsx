@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { useTableControls } from "../hooks/useTableControls";
+import { TableControls } from "../components/TableControls";
 import type { ActionAuditRow } from "../../server/db/writer";
 
 interface AuditData {
@@ -81,6 +83,21 @@ export function AuditPage() {
     failed: rows.filter((row) => row.resultStatus === "failed" || row.resultStatus === "error" || row.resultStatus === "denied").length,
     highRisk: rows.filter((row) => row.risk === "high" || row.risk === "destructive").length,
   }), [rows]);
+
+  type AuditSortKey = "ts" | "resultStatus" | "risk" | "actionKind" | "actor";
+  const auditCtrl = useTableControls<ActionAuditRow, AuditSortKey>({
+    rows,
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [row.actionKind, row.targetType, row.targetId, row.actor, row.resultStatus, row.risk],
+    sortValue: (row, key) => {
+      if (key === "ts") return row.ts;
+      if (key === "resultStatus") return row.resultStatus;
+      if (key === "risk") return row.risk;
+      if (key === "actionKind") return row.actionKind;
+      if (key === "actor") return row.actor;
+      return null;
+    },
+  });
 
   if (loading && !data) return <div className="loading-dim">loading...</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -193,13 +210,24 @@ export function AuditPage() {
         right={<span className="mono dim">{rows.length} rows</span>}
       >
         <div className="section-card-body table-wrap">
+          <TableControls {...auditCtrl.controlsProps} searchPlaceholder="Filter by action, target, actor…" />
           {rows.length === 0 ? (
             <div className="loading-dim">no audit records</div>
           ) : (
             <table className="data-table audit-entries-table">
-              <thead><tr><th className="audit-when-col">when</th><th>result</th><th>risk</th><th>action</th><th>target</th><th className="audit-actor-col">actor</th><th></th></tr></thead>
+              <thead>
+                <tr>
+                  <th {...auditCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{auditCtrl.sort.key === "ts" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...auditCtrl.sortHeaderProps("resultStatus")}>result <span className="sortable-th-arrow">{auditCtrl.sort.key === "resultStatus" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...auditCtrl.sortHeaderProps("risk")}>risk <span className="sortable-th-arrow">{auditCtrl.sort.key === "risk" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...auditCtrl.sortHeaderProps("actionKind")}>action <span className="sortable-th-arrow">{auditCtrl.sort.key === "actionKind" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th>target</th>
+                  <th {...auditCtrl.sortHeaderProps("actor")} className="audit-actor-col">actor <span className="sortable-th-arrow">{auditCtrl.sort.key === "actor" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th></th>
+                </tr>
+              </thead>
               <tbody>
-                {rows.map((row) => (
+                {auditCtrl.rows.map((row) => (
                   <tr key={row.id}>
                     <td className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
                     <td><Pill color={statusColor(row.resultStatus)}>{row.resultStatus ?? "-"}</Pill></td>

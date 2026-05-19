@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Link } from "wouter";
+import { TableControls } from "../components/TableControls";
 import { useApi } from "../hooks/useApi";
+import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 
 interface ReasonerIncident {
@@ -45,12 +47,21 @@ interface Playbook {
   description: string;
 }
 
+type IncidentsSortKey = "lastSeen" | "severity" | "status";
+
 function failureClassColor(fc: string): string {
   if (fc === "lm_quality") return "amber";
   if (fc === "transport_timeout" || fc === "capacity_rate_limit") return "amber";
   if (fc === "infra_crash" || fc === "config_error") return "red";
   if (fc === "test_regression") return "amber";
   return "gray";
+}
+
+function severityRank(fc: string): number {
+  if (fc === "infra_crash" || fc === "config_error") return 3;
+  if (fc === "transport_timeout" || fc === "capacity_rate_limit" || fc === "test_regression") return 2;
+  if (fc === "lm_quality") return 1;
+  return 0;
 }
 
 function confidenceColor(c: string): string {
@@ -224,12 +235,35 @@ export function IncidentsPage() {
   const [statusFilter, setStatusFilter] = useState<"open" | "resolved" | "all">("open");
   const [classFilter, setClassFilter] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [expandedIncidentId, setExpandedIncidentId] = useState<string | null>(null);
 
   const endpoint = `/api/reasoner/incidents?status=${statusFilter}&_k=${refreshKey}`;
   const { data: incidents, loading, error } = useApi<ReasonerIncident[]>(endpoint, 30_000);
 
   const failureClasses = Array.from(new Set((incidents ?? []).map((i) => i.failureClass))).sort();
   const filtered = classFilter ? (incidents ?? []).filter((i) => i.failureClass === classFilter) : (incidents ?? []);
+  const incidentsCtrl = useTableControls<ReasonerIncident, IncidentsSortKey>({
+    rows: filtered,
+    pageSize: 25,
+    filterText: (row) => [
+      row.title,
+      row.failureClass,
+      row.status,
+      row.clusterKey,
+      row.representativePassId,
+      row.representativeDiagnosisId,
+    ],
+    sortValue: (row, key) => {
+      switch (key) {
+        case "lastSeen": return row.lastSeen;
+        case "severity": return severityRank(row.failureClass);
+        case "status": return row.status;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "lastSeen", dir: "desc" },
+    tieBreak: ["lastSeen"],
+  });
   const openCount = (incidents ?? []).filter((i) => i.status === "open").length;
 
   if (loading && !incidents) return <div className="loading-dim">loading…</div>;
@@ -244,8 +278,8 @@ export function IncidentsPage() {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+      <div className="action-bar">
+        <div className="btn-group">
           {(["open", "resolved", "all"] as const).map((s, i, arr) => (
             <button
               key={s}
@@ -260,9 +294,9 @@ export function IncidentsPage() {
 
         {failureClasses.length > 1 && (
           <select
+            className="audit-select"
             value={classFilter}
             onChange={(e) => setClassFilter(e.target.value)}
-            style={{ fontSize: 11, padding: "4px 8px", background: "var(--bg-sub)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)" }}
           >
             <option value="">all classes</option>
             {failureClasses.map((fc) => (
@@ -277,14 +311,71 @@ export function IncidentsPage() {
           No incidents yet — diagnoses queue as passes fail
         </div>
       ) : (
-        <div>
-          {filtered.map((incident) => (
-            <IncidentCard
-              key={incident.id}
-              incident={incident}
-              onResolved={() => setRefreshKey((k) => k + 1)}
-            />
-          ))}
+        <div className="table-wrap">
+          <TableControls {...incidentsCtrl.controlsProps} searchPlaceholder="Filter incidents..." />
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th {...incidentsCtrl.sortHeaderProps("lastSeen")} style={{ width: 160 }}>
+                  last seen <span className="sortable-th-arrow">{incidentsCtrl.sort.key === "lastSeen" ? (incidentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                </th>
+                <th {...incidentsCtrl.sortHeaderProps("severity")} style={{ width: 150 }}>
+                  severity <span className="sortable-th-arrow">{incidentsCtrl.sort.key === "severity" ? (incidentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                </th>
+                <th {...incidentsCtrl.sortHeaderProps("status")} style={{ width: 110 }}>
+                  status <span className="sortable-th-arrow">{incidentsCtrl.sort.key === "status" ? (incidentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                </th>
+                <th>incident</th>
+                <th style={{ width: 90 }}>count</th>
+                <th style={{ width: 96 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {incidentsCtrl.rows.map((incident) => {
+                const expanded = expandedIncidentId === incident.id;
+                return (
+                  <Fragment key={incident.id}>
+                    <tr>
+                      <td className="mono dim">{relTime(incident.lastSeen)}</td>
+                      <td><Pill color={failureClassColor(incident.failureClass)}>{incident.failureClass}</Pill></td>
+                      <td><Pill color={incident.status === "open" ? "red" : "green"}>{incident.status}</Pill></td>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{incident.title}</div>
+                        <div className="mono dim" style={{ fontSize: 11 }}>first seen {fmtDate(incident.firstSeen)}</div>
+                      </td>
+                      <td className="mono dim">{incident.occurrenceCount}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setExpandedIncidentId(expanded ? null : incident.id)}
+                        >
+                          {expanded ? "hide" : "details"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr key={`${incident.id}:detail`}>
+                        <td colSpan={6} style={{ padding: 0 }}>
+                          <ExpandedIncidentCard
+                            incidentId={incident.id}
+                            onResolve={() => {
+                              setRefreshKey((k) => k + 1);
+                              setExpandedIncidentId(null);
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+              {incidentsCtrl.filteredCount === 0 && (
+                <tr>
+                  <td colSpan={6} className="loading-dim">no incidents match the current filter</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

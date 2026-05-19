@@ -3,6 +3,8 @@ import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
 import type { ModelsDetail } from "../../server/api/types";
 
@@ -30,10 +32,30 @@ type Modal =
   | { type: "probation-clear"; model: string }
   | { type: "run-check" };
 
+export type ModelsSortKey = "logicalName" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
+
 export function ModelsPage() {
   const { data, loading, error, refresh } = useApi<ModelsDetail>("/api/models", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
   const action = useAction("/api/models/action");
+
+  const modelsCtrl = useTableControls<NonNullable<ModelsDetail["models"]>[number], ModelsSortKey>({
+    rows: data?.models ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.logicalName, row.provider, row.providerType, row.qualityStatus].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "logicalName": return row.logicalName;
+        case "qualityStatus": return row.qualityStatus ?? "";
+        case "provider": return row.provider ?? "";
+        case "contextWindow": return row.contextWindow ?? 0;
+        case "latency": return row.latency ?? Infinity;
+        case "recentFailures": return row.recentFailures ?? 0;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "logicalName", dir: "asc" },
+  });
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -133,9 +155,10 @@ export function ModelsPage() {
         title="all models"
         id="current"
         defaultOpen={true}
-        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.models.length} total</span>}
+        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{modelsCtrl.filteredCount} of {data.models.length} shown</span>}
       >
         <div className="section-card-body table-wrap">
+          <TableControls {...modelsCtrl.controlsProps} searchPlaceholder="Filter models..." />
           <table className="data-table models-table">
             <colgroup>
               <col className="name-col" />
@@ -155,11 +178,13 @@ export function ModelsPage() {
             <thead><tr>
               <th>logical name</th><th>cap</th><th>quality</th><th></th>
               <th className="price-col">pricing</th><th className="type-col">type</th><th className="cli-col">CLI</th>
-              <th className="models-col-provider provider-col">provider</th>
-              <th className="ctx-col">ctx</th><th className="rating-col">rating</th><th className="latency-col models-col-latency">latency</th><th className="models-col-json">json</th><th className="models-col-failures">fails</th>
+              <th {...modelsCtrl.sortHeaderProps("provider")} className="models-col-provider provider-col">provider <span className="sortable-th-arrow">{modelsCtrl.sort.key === "provider" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("contextWindow")} className="ctx-col">ctx <span className="sortable-th-arrow">{modelsCtrl.sort.key === "contextWindow" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="rating-col">rating</th><th {...modelsCtrl.sortHeaderProps("latency")} className="latency-col models-col-latency">latency <span className="sortable-th-arrow">{modelsCtrl.sort.key === "latency" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="models-col-json">json</th><th {...modelsCtrl.sortHeaderProps("recentFailures")} className="models-col-failures">fails <span className="sortable-th-arrow">{modelsCtrl.sort.key === "recentFailures" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
             </tr></thead>
             <tbody>
-              {d.models.map((m) => (
+              {modelsCtrl.rows.map((m) => (
                 <tr key={m.logicalName}>
                   <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
                   <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>

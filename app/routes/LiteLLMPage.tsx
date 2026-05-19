@@ -4,6 +4,8 @@ import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
 import { useAction } from "../hooks/useAction";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
+import { useTableControls } from "../hooks/useTableControls";
+import { TableControls } from "../components/TableControls";
 
 type LiteLLMStatus = {
   service: {
@@ -88,6 +90,21 @@ export function LiteLLMPage() {
 
   const fallbackMap = new Map((routing?.fallbacks ?? []).map((chain) => [chain.model, chain.fallbacks]));
   const errors = [statusError, routingError, configError].filter(Boolean);
+
+  type ModelSortKey = "name" | "provider" | "backendModel" | "timeoutSeconds" | "fallbackCount";
+  const modelsCtrl = useTableControls<NonNullable<LiteLLMRouting["models"][0]>, ModelSortKey>({
+    rows: routing?.models ?? [],
+    defaultSort: { key: "name", dir: "asc" },
+    filterText: (m) => [m.name, m.provider, m.backendModel],
+    sortValue: (m, key) => {
+      if (key === "name") return m.name;
+      if (key === "provider") return m.provider;
+      if (key === "backendModel") return m.backendModel;
+      if (key === "timeoutSeconds") return m.timeoutSeconds;
+      if (key === "fallbackCount") return m.fallbackCount;
+      return null;
+    },
+  });
 
   return (
     <div className="dash-page">
@@ -218,31 +235,34 @@ export function LiteLLMPage() {
       </div>
 
       <SectionCard title="Configured Models">
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-            <thead>
-              <tr style={{ color: "var(--text-dim)", borderBottom: "1px solid var(--border)" }}>
-                <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "4px 8px" }}>Provider</th>
-                <th style={{ textAlign: "left", padding: "4px 8px" }}>Backend</th>
-                <th style={{ textAlign: "right", padding: "4px 8px" }}>Timeout</th>
-                <th style={{ textAlign: "right", padding: "4px 0 4px 8px" }}>Fallbacks</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(routing?.models ?? []).slice(0, 80).map((model) => (
-                <tr key={model.name} style={{ borderBottom: "1px solid color-mix(in oklch, var(--border) 45%, transparent)" }}>
-                  <td style={{ fontFamily: "var(--mono)", padding: "4px 8px 4px 0" }}>{model.name}</td>
-                  <td style={{ padding: "4px 8px" }}><span className="pill">{model.provider}</span></td>
-                  <td style={{ fontFamily: "var(--mono)", color: "var(--text-dim)", padding: "4px 8px" }}>{model.backendModel ?? "-"}</td>
-                  <td style={{ textAlign: "right", padding: "4px 8px" }}>{model.timeoutSeconds ?? "-"}</td>
-                  <td style={{ textAlign: "right", padding: "4px 0 4px 8px" }} title={(fallbackMap.get(model.name) ?? []).join(" -> ")}>
-                    {model.fallbackCount}
-                  </td>
+        <div className="table-wrap">
+          <TableControls {...modelsCtrl.controlsProps} searchPlaceholder="Filter models…" />
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th {...modelsCtrl.sortHeaderProps("name")}>Name <span className="sortable-th-arrow">{modelsCtrl.sort.key === "name" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...modelsCtrl.sortHeaderProps("provider")}>Provider <span className="sortable-th-arrow">{modelsCtrl.sort.key === "provider" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...modelsCtrl.sortHeaderProps("backendModel")}>Backend <span className="sortable-th-arrow">{modelsCtrl.sort.key === "backendModel" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...modelsCtrl.sortHeaderProps("timeoutSeconds")} style={{ textAlign: "right" }}>Timeout <span className="sortable-th-arrow">{modelsCtrl.sort.key === "timeoutSeconds" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...modelsCtrl.sortHeaderProps("fallbackCount")} style={{ textAlign: "right" }}>Fallbacks <span className="sortable-th-arrow">{modelsCtrl.sort.key === "fallbackCount" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {modelsCtrl.rows.map((model) => (
+                  <tr key={model.name}>
+                    <td style={{ fontFamily: "var(--mono)" }}>{model.name}</td>
+                    <td><span className="pill">{model.provider}</span></td>
+                    <td style={{ fontFamily: "var(--mono)", color: "var(--text-dim)" }}>{model.backendModel ?? "-"}</td>
+                    <td style={{ textAlign: "right" }}>{model.timeoutSeconds ?? "-"}</td>
+                    <td style={{ textAlign: "right" }} title={(fallbackMap.get(model.name) ?? []).join(" -> ")}>
+                      {model.fallbackCount}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </SectionCard>
 

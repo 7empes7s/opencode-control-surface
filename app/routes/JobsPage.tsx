@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 import type { JobRow } from "../../server/db/writer";
 
 interface JobsData {
@@ -41,6 +43,8 @@ function stringify(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+export type JobsSortKey = "startedAt" | "status" | "kind" | "targetId" | "finishedAt";
+
 export function JobsPage() {
   const [status, setStatus] = useState("");
   const [kind, setKind] = useState("");
@@ -57,6 +61,23 @@ export function JobsPage() {
     success: jobs.filter((job) => String(job.status) === "success" || String(job.status) === "succeeded" || String(job.status) === "completed").length,
     failed: jobs.filter((job) => String(job.status) === "failed" || String(job.status) === "error").length,
   }), [jobs]);
+
+  const jobsCtrl = useTableControls<JobRow, JobsSortKey>({
+    rows: jobs,
+    pageSize: 25,
+    filterText: (row) => [row.kind, row.status, row.targetId ?? "", row.actor ?? "", row.targetType ?? ""].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "startedAt": return row.startedAt ?? 0;
+        case "status": return row.status ?? "";
+        case "kind": return row.kind ?? "";
+        case "targetId": return row.targetId ?? "";
+        case "finishedAt": return row.finishedAt ?? 0;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "startedAt", dir: "desc" },
+  });
 
   if (loading && !data) return <div className="loading-dim">loading...</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -146,13 +167,13 @@ export function JobsPage() {
       {data?.degraded && <div className="loading-dim error">degraded: {data.reason}</div>}
 
       <div className="action-bar audit-filter-bar">
-        <select className="audit-select" value={status} onChange={(event) => setStatus(event.target.value)}>
+        <select className="audit-select" defaultValue="" onChange={(event) => setStatus(event.target.value)}>
           <option value="">all statuses</option>
           <option value="running">running</option>
           <option value="success">success</option>
           <option value="failed">failed</option>
         </select>
-        <select className="audit-select" value={kind} onChange={(event) => setKind(event.target.value)}>
+        <select className="audit-select" defaultValue="" onChange={(event) => setKind(event.target.value)}>
           <option value="">all kinds</option>
           {kinds.map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
@@ -161,16 +182,18 @@ export function JobsPage() {
       <SectionCard
         title="recent jobs"
         defaultOpen={true}
-        right={<span className="mono dim">{jobs.length} rows</span>}
+        right={<span className="mono dim">{jobsCtrl.filteredCount} of {jobs.length} shown</span>}
       >
         <div className="section-card-body table-wrap">
           {jobs.length === 0 ? (
             <div className="loading-dim">no jobs</div>
           ) : (
+            <>
+            <TableControls {...jobsCtrl.controlsProps} searchPlaceholder="Filter jobs..." />
             <table className="data-table jobs-table">
-              <thead><tr><th className="job-date-col">started</th><th>status</th><th>kind</th><th>target</th><th className="job-dur-col">duration</th><th className="job-actor-col">actor</th><th></th></tr></thead>
+              <thead><tr><th {...jobsCtrl.sortHeaderProps("startedAt")} className="job-date-col">started <span className="sortable-th-arrow">{jobsCtrl.sort.key === "startedAt" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{jobsCtrl.sort.key === "status" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{jobsCtrl.sort.key === "kind" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th>target</th><th className="job-dur-col">duration</th><th className="job-actor-col">actor</th><th></th></tr></thead>
               <tbody>
-                {jobs.map((job) => (
+                {jobsCtrl.rows.map((job) => (
                   <tr key={job.id}>
                     <td className="mono dim job-date-col">{fmtTs(job.startedAt)}</td>
                     <td><Pill color={statusColor(job.status)}>{job.status}</Pill></td>
@@ -185,6 +208,7 @@ export function JobsPage() {
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </div>
       </SectionCard>

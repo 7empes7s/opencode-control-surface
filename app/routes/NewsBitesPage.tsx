@@ -3,6 +3,8 @@ import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
+import { useTableControls } from "../hooks/useTableControls";
+import { TableControls } from "../components/TableControls";
 import type { NewsBitesDetail } from "../../server/api/types";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -22,8 +24,6 @@ export function NewsBitesPage() {
   const { data, loading, error } = useApi<NewsBitesDetail>("/api/newsbites", 30_000);
   const [filterStatus, setFilterStatus] = useState("");
   const [filterVertical, setFilterVertical] = useState("");
-  const [search, setSearch] = useState("");
-  const [showAllArticles, setShowAllArticles] = useState(false);
   const [deployModal, setDeployModal] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
@@ -48,20 +48,32 @@ export function NewsBitesPage() {
 
   const d = data;
   const s = d.stats;
-  const ARTICLE_PREVIEW_ROWS = 7;
 
   const statuses = [...new Set(d.articles.map((a) => a.status).filter(Boolean))].sort();
   const verticals = [...new Set(d.articles.map((a) => a.vertical).filter(Boolean))].sort();
-  const normalizedSearch = search.trim().toLowerCase();
 
-  const filtered = d.articles.filter((a) => {
+  // Pre-filter by dropdown selections, then let useTableControls handle text search + sort + pagination
+  const dropdownFiltered = d.articles.filter((a) => {
     if (filterStatus && a.status !== filterStatus) return false;
     if (filterVertical && a.vertical !== filterVertical) return false;
-    if (normalizedSearch && !a.title.toLowerCase().includes(normalizedSearch) && !a.slug.toLowerCase().includes(normalizedSearch)) return false;
     return true;
   });
-  const visibleArticles = showAllArticles ? filtered : filtered.slice(0, ARTICLE_PREVIEW_ROWS);
-  const hiddenArticleCount = Math.max(filtered.length - visibleArticles.length, 0);
+
+  type ArticleSortKey = "title" | "vertical" | "date" | "status" | "wordCount";
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const articlesCtrl = useTableControls<typeof d.articles[0], ArticleSortKey>({
+    rows: dropdownFiltered,
+    defaultSort: { key: "date", dir: "desc" },
+    filterText: (a) => [a.title, a.slug, a.vertical, a.status],
+    sortValue: (a, key) => {
+      if (key === "title") return a.title;
+      if (key === "vertical") return a.vertical;
+      if (key === "date") return a.date;
+      if (key === "status") return a.status;
+      if (key === "wordCount") return a.wordCount;
+      return null;
+    },
+  });
 
   const last30dTotal = s.publishedLast30d.reduce((acc, x) => acc + x.count, 0);
 
@@ -203,21 +215,16 @@ export function NewsBitesPage() {
         defaultOpen={true}
         right={
           <span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>
-            {filtered.length} of {d.articles.length}
+            {articlesCtrl.controlsProps.filteredRows} of {d.articles.length}
           </span>
         }
       >
         <div className="section-card-body table-wrap">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
-            <input
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setShowAllArticles(false); }}
-              placeholder="search…"
-              style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3, width: 190 }}
-            />
+            <TableControls {...articlesCtrl.controlsProps} searchPlaceholder="Search articles…" />
             <select
               value={filterStatus}
-              onChange={(e) => { setFilterStatus(e.target.value); setShowAllArticles(false); }}
+              onChange={(e) => setFilterStatus(e.target.value)}
               style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3 }}
             >
               <option value="">all status</option>
@@ -225,48 +232,37 @@ export function NewsBitesPage() {
             </select>
             <select
               value={filterVertical}
-              onChange={(e) => { setFilterVertical(e.target.value); setShowAllArticles(false); }}
+              onChange={(e) => setFilterVertical(e.target.value)}
               style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3 }}
             >
               <option value="">all verticals</option>
               {verticals.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
-            {(search || filterStatus || filterVertical) && (
+            {(filterStatus || filterVertical) && (
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setSearch("");
-                  setFilterStatus("");
-                  setFilterVertical("");
-                  setShowAllArticles(false);
-                }}
+                onClick={() => { setFilterStatus(""); setFilterVertical(""); }}
               >
-                Clear filters
+                Clear
               </button>
             )}
-            <span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10, marginLeft: "auto" }}>
-              showing {visibleArticles.length} / {filtered.length}
-            </span>
           </div>
 
-          {(search || filterStatus || filterVertical) && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 14px", borderBottom: "1px solid var(--border)" }}>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>filters:</span>
-              {search && <span className="pill gray" style={{ cursor: "pointer" }} onClick={() => { setSearch(""); setShowAllArticles(false); }}>search: {search} x</span>}
-              {filterStatus && <span className="pill blue" style={{ cursor: "pointer" }} onClick={() => { setFilterStatus(""); setShowAllArticles(false); }}>{filterStatus} x</span>}
-              {filterVertical && <span className="pill gray" style={{ cursor: "pointer" }} onClick={() => { setFilterVertical(""); setShowAllArticles(false); }}>{filterVertical} x</span>}
-            </div>
-          )}
-
-          {filtered.length === 0 ? (
+          {articlesCtrl.rows.length === 0 ? (
             <div className="loading-dim">no articles match filters</div>
           ) : (
             <table className="data-table">
-              <thead><tr>
-                <th>title</th><th>vertical</th><th>date</th><th>status</th><th>~words</th>
-              </tr></thead>
+              <thead>
+                <tr>
+                  <th {...articlesCtrl.sortHeaderProps("title")}>title <span className="sortable-th-arrow">{articlesCtrl.sort.key === "title" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...articlesCtrl.sortHeaderProps("vertical")}>vertical <span className="sortable-th-arrow">{articlesCtrl.sort.key === "vertical" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...articlesCtrl.sortHeaderProps("date")}>date <span className="sortable-th-arrow">{articlesCtrl.sort.key === "date" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...articlesCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{articlesCtrl.sort.key === "status" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...articlesCtrl.sortHeaderProps("wordCount")}>~words <span className="sortable-th-arrow">{articlesCtrl.sort.key === "wordCount" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                </tr>
+              </thead>
               <tbody>
-                {visibleArticles.map((a) => (
+                {articlesCtrl.rows.map((a) => (
                   <tr key={a.slug}>
                     <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       <a href={`https://news.techinsiderbytes.com/articles/${a.slug}`}
@@ -285,17 +281,6 @@ export function NewsBitesPage() {
                 ))}
               </tbody>
             </table>
-          )}
-
-          {filtered.length > ARTICLE_PREVIEW_ROWS && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderTop: "1px solid var(--border)" }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowAllArticles((v) => !v)}>
-                {showAllArticles ? "Show less" : `Show more (${hiddenArticleCount} hidden)`}
-              </button>
-              <span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>
-                {showAllArticles ? `${filtered.length} articles visible` : `collapsed to ${ARTICLE_PREVIEW_ROWS} rows`}
-              </span>
-            </div>
           )}
         </div>
       </SectionCard>

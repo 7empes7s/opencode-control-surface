@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Shield, Download, FileText, Users, AlertTriangle } from "lucide-react";
+import { TableControls } from "../components/TableControls";
 import { useAuthApi } from "../hooks/useAuthApi";
 import { useAuthStatus } from "../hooks/useAuthStatus";
+import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 
 interface TenantSettings {
@@ -108,53 +110,55 @@ function ReportsPanel() {
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Report Templates</h2>
           {!isAuthenticated && (
-            <div className="text-sm text-[var(--text-dim)] mb-3">
+            <div className="text-sm text-[var(--text-dim)]">
               Authentication required to run reports
             </div>
           )}
-          <div className="space-y-3">
-            {templates.map((t) => (
-              <div key={t.id} className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="font-medium text-sm">{t.name}</div>
-                  <div className="text-xs text-[var(--text-dim)]">{t.description}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {results[t.id] && (
-                    <button
-                      className="btn btn-xs btn-ghost"
-                      onClick={() => {
-                        const rows = results[t.id];
-                        if (!rows?.length) return;
-                        const headers = Object.keys(rows[0]);
-                        const csv = [
-                          headers.join(","),
-                          ...rows.map((r) =>
-                            headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")
-                          ),
-                        ].join("\n");
-                        const blob = new Blob([csv], { type: "text/csv" });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `report-${t.id}.csv`;
-                        a.click();
-                      }}
-                    >
-                      Download CSV
-                    </button>
-                  )}
-                  <button
-                    className="btn btn-sm btn-primary"
-                    onClick={() => runReport(t.id)}
-                    disabled={running === t.id || !isAuthenticated}
-                  >
-                    {running === t.id ? "…" : "Run"}
-                  </button>
-                </div>
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="compliance-template-list">
+          {templates.map((t) => (
+            <div key={t.id} className="compliance-template-row">
+              <div className="compliance-template-copy">
+                <div className="font-medium text-sm">{t.name}</div>
+                <div className="text-xs text-[var(--text-dim)]">{t.description}</div>
               </div>
-            ))}
-          </div>
+              <div className="compliance-actions">
+                {results[t.id] && (
+                  <button
+                    className="btn btn-xs btn-ghost"
+                    onClick={() => {
+                      const rows = results[t.id];
+                      if (!rows?.length) return;
+                      const headers = Object.keys(rows[0]);
+                      const csv = [
+                        headers.join(","),
+                        ...rows.map((r) =>
+                          headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")
+                        ),
+                      ].join("\n");
+                      const blob = new Blob([csv], { type: "text/csv" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `report-${t.id}.csv`;
+                      a.click();
+                    }}
+                  >
+                    Download CSV
+                  </button>
+                )}
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => runReport(t.id)}
+                  disabled={running === t.id || !isAuthenticated}
+                >
+                  {running === t.id ? "…" : "Run"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
         </div>
       </div>
     </div>
@@ -216,11 +220,13 @@ function AuditExportPanel() {
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Audit Export</h2>
           {!isAuthenticated && (
-            <div className="text-sm text-[var(--text-dim)] mb-3">
+            <div className="text-sm text-[var(--text-dim)]">
               Authentication required for audit operations
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4">
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="compliance-form-grid">
             <div>
               <label className="text-xs text-[var(--text-muted)] block mb-1">From Date</label>
               <input
@@ -240,7 +246,7 @@ function AuditExportPanel() {
               />
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="compliance-actions">
               <button
                 className="btn btn-sm btn-primary"
                 onClick={runExport}
@@ -266,7 +272,7 @@ function AuditExportPanel() {
               {verifying ? "…" : <><Shield size={14} /> Verify Chain</>}
             </button>
             {chainResult !== null && (
-              <span style={{ fontSize: 12, color: chainResult ? "var(--green)" : "var(--red)", alignSelf: "center" }}>
+              <span className={`compliance-result ${chainResult ? "ok" : "error"}`}>
                 {chainResult ? "Chain integrity verified" : "Chain integrity FAILED"}
               </span>
             )}
@@ -310,11 +316,13 @@ function TenantSettingsPanel() {
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)]">Tenant Settings</h2>
           {!isAuthenticated && (
-            <div className="text-sm text-[var(--text-dim)] mb-3">
+            <div className="text-sm text-[var(--text-dim)]">
               Authentication required to modify settings
             </div>
           )}
-          <div className="space-y-3">
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="compliance-form-stack">
             <div>
               <label className="text-xs text-[var(--text-muted)] block mb-1">Data Residency Region</label>
               <select
@@ -393,6 +401,8 @@ interface Soc2MappingResult {
   mapping: Array<{ criteria: string; feature: string; notes: string }>;
 }
 
+type ComplianceSortKey = "criteria" | "feature";
+
 function DpaPanel() {
   const { data: summary } = useAuthApi<ComplianceSummary>("/api/compliance/summary", 0);
   const { data: subproc } = useAuthApi<SubprocessorResult>("/api/compliance/subprocessors", 0);
@@ -402,6 +412,20 @@ function DpaPanel() {
   const [generating, setGenerating] = useState(false);
 
   const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
+
+  const mappingCtrl = useTableControls<{ criteria: string; feature: string; notes: string }, ComplianceSortKey>({
+    rows: mapping?.mapping ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.criteria, row.feature, row.notes],
+    sortValue: (row, key) => {
+      switch (key) {
+        case "criteria": return row.criteria;
+        case "feature": return row.feature;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "criteria", dir: "asc" },
+  });
 
   const downloadDpa = async () => {
     if (!isAuthenticated || !customerName.trim()) return;
@@ -430,11 +454,13 @@ function DpaPanel() {
             <FileText size={14} /> DPA Document
           </h2>
           {!isAuthenticated && (
-            <div className="text-sm text-[var(--text-dim)] mb-3">
+            <div className="text-sm text-[var(--text-dim)]">
               Authentication required to generate DPA documents
             </div>
           )}
-          <div className="flex gap-2">
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="compliance-actions compliance-input-row">
             <input
               type="text"
               className="filter-input flex-1"
@@ -459,6 +485,8 @@ function DpaPanel() {
           <h2 className="text-sm font-medium text-[var(--text)] flex items-center gap-2">
             <Users size={14} /> Sub-processors ({subproc?.subprocessors?.length ?? 0})
           </h2>
+        </div>
+        <div className="section-card-body compliance-section-body">
           <ul className="text-xs space-y-1">
             {(subproc?.subprocessors ?? []).map((s: string) => (
               <li key={s} className="text-[var(--text-dim)]">{s}</li>
@@ -472,23 +500,35 @@ function DpaPanel() {
           <h2 className="text-sm font-medium text-[var(--text)] flex items-center gap-2">
             <Shield size={14} /> SOC2 Control Mapping
           </h2>
-          <div className="overflow-x-auto">
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="table-container">
+            <TableControls {...mappingCtrl.controlsProps} searchPlaceholder="Filter controls..." />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Criteria</th>
-                  <th>Feature</th>
-                  <th>Notes</th>
+                  <th {...mappingCtrl.sortHeaderProps("criteria")}>
+                    criteria <span className="sortable-th-arrow">{mappingCtrl.sort.key === "criteria" ? (mappingCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...mappingCtrl.sortHeaderProps("feature")}>
+                    feature <span className="sortable-th-arrow">{mappingCtrl.sort.key === "feature" ? (mappingCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th>notes</th>
                 </tr>
               </thead>
               <tbody>
-                {(mapping?.mapping ?? []).map((m, i) => (
+                {mappingCtrl.rows.map((m, i) => (
                   <tr key={i}>
                     <td className="font-mono text-xs">{m.criteria}</td>
                     <td className="text-xs">{m.feature}</td>
                     <td className="text-xs text-[var(--text-dim)]">{m.notes}</td>
                   </tr>
                 ))}
+                {mappingCtrl.filteredCount === 0 && (
+                  <tr>
+                    <td colSpan={3} className="loading-dim">no controls match the current filter</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -496,7 +536,7 @@ function DpaPanel() {
       </div>
 
       {summary && (
-        <div style={{ background: "color-mix(in oklch, var(--blue) 8%, transparent)", border: "1px solid color-mix(in oklch, var(--blue) 30%, transparent)", borderRadius: 6, padding: "12px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="compliance-summary-strip">
           <AlertTriangle size={14} style={{ color: "var(--blue)" }} />
           <div className="text-xs text-[var(--text)]">
             Tenant: {summary.tenantId} | Region: {summary.dataResidencyRegion} |

@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { SectionCard } from "../components/SectionCard.tsx";
+import { TableControls } from "../components/TableControls.tsx";
+import { useTableControls } from "../hooks/useTableControls.ts";
 import { AnimatedNumber } from "../components/AnimatedCharts.tsx";
-import { TrendingUp, BarChart, PieChart, Activity, Clock, Database } from "lucide-react";
+import { TrendingUp, BarChart, PieChart, Activity, Clock, Database, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { authFetch } from "../lib/authFetch.ts";
 
 interface FinanceRun {
@@ -57,6 +59,10 @@ interface Stats {
   runStatusDistribution: Array<{ status: string; count: number }>;
 }
 
+export type RunsSortKey = "run_at" | "duration_ms" | "model_used" | "status" | "insights_count";
+export type EnrichmentsSortKey = "run_at" | "model_used" | "tickers_extracted" | "confidence" | "status";
+export type ConfigsSortKey = "name" | "risk_tolerance" | "confidence_threshold" | "watchlist" | "created_at";
+
 export function FinanceIntelPage() {
   const [activeTab, setActiveTab] = useState<"runs" | "enrichments" | "configs">("runs");
   const [stats, setStats] = useState<Stats | null>(null);
@@ -65,6 +71,57 @@ export function FinanceIntelPage() {
   const [configs, setConfigs] = useState<PortfolioConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const runsCtrl = useTableControls<FinanceRun, RunsSortKey>({
+    rows: runs,
+    pageSize: 25,
+    filterText: (row) => [row.id, row.model_used, row.status].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "run_at": return row.run_at;
+        case "duration_ms": return row.duration_ms ?? 0;
+        case "model_used": return row.model_used ?? "";
+        case "status": return row.status ?? "";
+        case "insights_count": return row.insights_count ?? 0;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "run_at", dir: "desc" },
+  });
+
+  const enrichmentsCtrl = useTableControls<FinanceEnrichment, EnrichmentsSortKey>({
+    rows: enrichments,
+    pageSize: 25,
+    filterText: (row) => [row.article_slug, row.model_used, row.status].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "run_at": return row.run_at;
+        case "model_used": return row.model_used ?? "";
+        case "tickers_extracted": return row.tickers_extracted ? JSON.parse(row.tickers_extracted).length : 0;
+        case "confidence": return row.confidence ?? 0;
+        case "status": return row.status ?? "";
+        default: return "";
+      }
+    },
+    defaultSort: { key: "run_at", dir: "desc" },
+  });
+
+  const configsCtrl = useTableControls<PortfolioConfig, ConfigsSortKey>({
+    rows: configs,
+    pageSize: 25,
+    filterText: (row) => [row.name, row.timeframe_pref, row.analyst_persona].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "name": return row.name ?? "";
+        case "risk_tolerance": return row.risk_tolerance ?? 0;
+        case "confidence_threshold": return row.confidence_threshold ?? 0;
+        case "watchlist": return row.watchlist ?? "";
+        case "created_at": return row.created_at;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "created_at", dir: "desc" },
+  });
 
   useEffect(() => {
     // Load stats
@@ -102,10 +159,9 @@ export function FinanceIntelPage() {
     return (
       <div className="page">
         <div className="page-header">
-          <h1><TrendingUp size={20} /> Finance Intelligence Observatory</h1>
-          <p>Real-time visibility into financial analysis pipelines</p>
+          <div className="page-title">Finance Intel</div>
         </div>
-        <div className="loading">Loading...</div>
+        <div className="loading-dim">loading…</div>
       </div>
     );
   }
@@ -114,10 +170,9 @@ export function FinanceIntelPage() {
     return (
       <div className="page">
         <div className="page-header">
-          <h1><TrendingUp size={20} /> Finance Intelligence Observatory</h1>
-          <p>Real-time visibility into financial analysis pipelines</p>
+          <div className="page-title">Finance Intel</div>
         </div>
-        <div className="error">{error}</div>
+        <div className="loading-dim error">{error}</div>
       </div>
     );
   }
@@ -125,67 +180,35 @@ export function FinanceIntelPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <h1><TrendingUp size={20} /> Finance Intelligence Observatory</h1>
-        <p>Real-time visibility into financial analysis pipelines</p>
+        <div className="page-title">Finance Intel</div>
       </div>
 
       {/* Stats Overview */}
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="stat-card">
-            <div className="stat-icon bg-blue-100 text-blue-600">
-              <Activity size={18} />
-            </div>
-            <div className="stat-content">
-              <div className="stat-value">
-                <AnimatedNumber value={stats.runCount} />
-              </div>
-              <div className="stat-label">Analysis Runs</div>
-            </div>
+        <div className="stat-row">
+          <div className="stat-item">
+            <div className="stat-val"><AnimatedNumber value={stats.runCount} /></div>
+            <div className="stat-lbl">runs</div>
           </div>
-          
-          <div className="stat-card">
-            <div className="stat-icon bg-green-100 text-green-600">
-              <Database size={18} />
-            </div>
-            <div className="stat-content">
-              <div className="stat-value">
-                <AnimatedNumber value={stats.enrichmentCount} />
-              </div>
-              <div className="stat-label">Enrichments</div>
-            </div>
+          <div className="stat-item">
+            <div className="stat-val"><AnimatedNumber value={stats.enrichmentCount} /></div>
+            <div className="stat-lbl">enrichments</div>
           </div>
-          
-          <div className="stat-card">
-            <div className="stat-icon bg-purple-100 text-purple-600">
-              <PieChart size={18} />
-            </div>
-            <div className="stat-content">
-              <div className="stat-value">
-                <AnimatedNumber value={stats.configCount} />
-              </div>
-              <div className="stat-label">Portfolios</div>
-            </div>
+          <div className="stat-item">
+            <div className="stat-val"><AnimatedNumber value={stats.configCount} /></div>
+            <div className="stat-lbl">portfolios</div>
           </div>
-          
-          <div className="stat-card">
-            <div className="stat-icon bg-orange-100 text-orange-600">
-              <Clock size={18} />
-            </div>
-            <div className="stat-content">
-              <div className="stat-value">
-                <AnimatedNumber value={runs.length > 0 ? Math.round(runs.reduce((sum, run) => sum + (run.duration_ms || 0), 0) / runs.length) : 0} />
-              </div>
-              <div className="stat-label">Avg Duration (ms)</div>
-            </div>
+          <div className="stat-item">
+            <div className="stat-val"><AnimatedNumber value={runs.length > 0 ? Math.round(runs.reduce((sum, run) => sum + (run.duration_ms || 0), 0) / runs.length) : 0} /></div>
+            <div className="stat-lbl">avg ms</div>
           </div>
         </div>
       )}
 
       {/* Main Content Sections */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
         {/* Left Column - Run History */}
-        <div className="lg:col-span-2">
+        <div>
           <SectionCard 
             title={
               <div className="flex items-center gap-2">
@@ -218,97 +241,106 @@ export function FinanceIntelPage() {
               </div>
 
               {activeTab === "runs" && (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>Date</th>
-                        <th>Duration</th>
-                        <th>Model</th>
-                        <th>Status</th>
-                        <th>Insights</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {runs.slice(0, 10).map(run => (
-                        <tr key={run.id}>
-                          <td className="mono text-xs">{run.id.substring(0, 8)}</td>
-                          <td>{new Date(run.run_at).toLocaleTimeString()}</td>
-                          <td>{run.duration_ms ? `${run.duration_ms}ms` : "-"}</td>
-                          <td className="mono text-xs">{run.model_used}</td>
-                          <td>
-                            <span className={`status-badge ${run.status === "success" ? "success" : "error"}`}>
-                              {run.status}
-                            </span>
-                          </td>
-                          <td>{run.insights_count || 0}</td>
+                <div>
+                  <TableControls {...runsCtrl.controlsProps} searchPlaceholder="Search runs..." />
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th {...runsCtrl.sortHeaderProps("run_at")}>Date <span className="sortable-th-arrow">{runsCtrl.sort.key === "run_at" ? (runsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th>ID</th>
+                          <th {...runsCtrl.sortHeaderProps("duration_ms")}>Duration <span className="sortable-th-arrow">{runsCtrl.sort.key === "duration_ms" ? (runsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...runsCtrl.sortHeaderProps("model_used")}>Model <span className="sortable-th-arrow">{runsCtrl.sort.key === "model_used" ? (runsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...runsCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{runsCtrl.sort.key === "status" ? (runsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...runsCtrl.sortHeaderProps("insights_count")}>Insights <span className="sortable-th-arrow">{runsCtrl.sort.key === "insights_count" ? (runsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {runsCtrl.rows.map(run => (
+                          <tr key={run.id}>
+                            <td>{new Date(run.run_at).toLocaleString()}</td>
+                            <td className="mono text-xs">{run.id.substring(0, 8)}</td>
+                            <td>{run.duration_ms ? `${run.duration_ms}ms` : "-"}</td>
+                            <td className="mono text-xs">{run.model_used}</td>
+                            <td>
+                              <span className={`status-badge ${run.status === "success" ? "success" : "error"}`}>
+                                {run.status}
+                              </span>
+                            </td>
+                            <td>{run.insights_count || 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
               {activeTab === "enrichments" && (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Article</th>
-                        <th>Date</th>
-                        <th>Model</th>
-                        <th>Tickers</th>
-                        <th>Confidence</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {enrichments.slice(0, 10).map(enrichment => (
-                        <tr key={enrichment.id}>
-                          <td className="truncate max-w-xs" title={enrichment.article_slug}>
-                            {enrichment.article_slug.substring(0, 20)}...
-                          </td>
-                          <td>{new Date(enrichment.run_at).toLocaleTimeString()}</td>
-                          <td className="mono text-xs">{enrichment.model_used}</td>
-                          <td>{enrichment.tickers_extracted ? JSON.parse(enrichment.tickers_extracted).length : 0}</td>
-                          <td>{enrichment.confidence ? enrichment.confidence.toFixed(2) : "-"}</td>
-                          <td>
-                            <span className={`status-badge ${enrichment.status === "ok" ? "success" : "error"}`}>
-                              {enrichment.status}
-                            </span>
-                          </td>
+                <div>
+                  <TableControls {...enrichmentsCtrl.controlsProps} searchPlaceholder="Search enrichments..." />
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Article</th>
+                          <th {...enrichmentsCtrl.sortHeaderProps("run_at")}>Date <span className="sortable-th-arrow">{enrichmentsCtrl.sort.key === "run_at" ? (enrichmentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...enrichmentsCtrl.sortHeaderProps("model_used")}>Model <span className="sortable-th-arrow">{enrichmentsCtrl.sort.key === "model_used" ? (enrichmentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...enrichmentsCtrl.sortHeaderProps("tickers_extracted")}>Tickers <span className="sortable-th-arrow">{enrichmentsCtrl.sort.key === "tickers_extracted" ? (enrichmentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...enrichmentsCtrl.sortHeaderProps("confidence")}>Confidence <span className="sortable-th-arrow">{enrichmentsCtrl.sort.key === "confidence" ? (enrichmentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...enrichmentsCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{enrichmentsCtrl.sort.key === "status" ? (enrichmentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {enrichmentsCtrl.rows.map(enrichment => (
+                          <tr key={enrichment.id}>
+                            <td className="truncate max-w-xs" title={enrichment.article_slug}>
+                              {enrichment.article_slug.substring(0, 20)}...
+                            </td>
+                            <td>{new Date(enrichment.run_at).toLocaleString()}</td>
+                            <td className="mono text-xs">{enrichment.model_used}</td>
+                            <td>{enrichment.tickers_extracted ? JSON.parse(enrichment.tickers_extracted).length : 0}</td>
+                            <td>{enrichment.confidence ? enrichment.confidence.toFixed(2) : "-"}</td>
+                            <td>
+                              <span className={`status-badge ${enrichment.status === "ok" ? "success" : "error"}`}>
+                                {enrichment.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
               {activeTab === "configs" && (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Risk Tolerance</th>
-                        <th>Confidence Threshold</th>
-                        <th>Watchlist Size</th>
-                        <th>Created</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {configs.map(config => (
-                        <tr key={config.id}>
-                          <td>{config.name}</td>
-                          <td>{config.risk_tolerance}/10</td>
-                          <td>{config.confidence_threshold}</td>
-                          <td>{JSON.parse(config.watchlist).length}</td>
-                          <td>{new Date(config.created_at).toLocaleDateString()}</td>
+                <div>
+                  <TableControls {...configsCtrl.controlsProps} searchPlaceholder="Search portfolios..." />
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th {...configsCtrl.sortHeaderProps("name")}>Name <span className="sortable-th-arrow">{configsCtrl.sort.key === "name" ? (configsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...configsCtrl.sortHeaderProps("risk_tolerance")}>Risk <span className="sortable-th-arrow">{configsCtrl.sort.key === "risk_tolerance" ? (configsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...configsCtrl.sortHeaderProps("confidence_threshold")}>Conf <span className="sortable-th-arrow">{configsCtrl.sort.key === "confidence_threshold" ? (configsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th>Watchlist</th>
+                          <th {...configsCtrl.sortHeaderProps("created_at")}>Created <span className="sortable-th-arrow">{configsCtrl.sort.key === "created_at" ? (configsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {configsCtrl.rows.map(config => (
+                          <tr key={config.id}>
+                            <td>{config.name}</td>
+                            <td>{config.risk_tolerance}/10</td>
+                            <td>{config.confidence_threshold}</td>
+                            <td>{JSON.parse(config.watchlist).length}</td>
+                            <td>{new Date(config.created_at).toLocaleDateString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -316,7 +348,7 @@ export function FinanceIntelPage() {
         </div>
 
         {/* Right Column - Configuration Panel */}
-        <div className="lg:col-span-1">
+        <div>
           <SectionCard 
             title={
               <div className="flex items-center gap-2">
@@ -354,9 +386,9 @@ export function FinanceIntelPage() {
               
               <div className="form-group">
                 <label>Timeframe Preference</label>
-                <select className="form-select">
+                <select className="form-select" defaultValue="medium">
                   <option value="short">Short-term (1-7 days)</option>
-                  <option value="medium" selected>Medium-term (1-30 days)</option>
+                  <option value="medium">Medium-term (1-30 days)</option>
                   <option value="long">Long-term (30+ days)</option>
                   <option value="all">All timeframes</option>
                 </select>
@@ -379,18 +411,18 @@ export function FinanceIntelPage() {
             <div className="section-content">
               <div className="form-group">
                 <label>Analysis Window</label>
-                <select className="form-select">
+                <select className="form-select" defaultValue="14">
                   <option value="7">Last 7 days</option>
-                  <option value="14" selected>Last 14 days</option>
+                  <option value="14">Last 14 days</option>
                   <option value="30">Last 30 days</option>
                 </select>
               </div>
               
               <div className="form-group">
                 <label>Model Selection</label>
-                <select className="form-select">
+                <select className="form-select" defaultValue="editorial-fast">
                   <option value="editorial-heavy">Gemma4 26B (Heavy)</option>
-                  <option value="editorial-fast" selected>Gemma4 26B (Fast)</option>
+                  <option value="editorial-fast">Gemma4 26B (Fast)</option>
                   <option value="cloud-heavy">DeepSeek V3 (Cloud)</option>
                 </select>
               </div>

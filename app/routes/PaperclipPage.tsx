@@ -4,6 +4,8 @@ import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
 import { useAction } from "../hooks/useAction";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
+import { useTableControls } from "../hooks/useTableControls";
+import { TableControls } from "../components/TableControls";
 
 type PaperclipAgent = {
   id: string;
@@ -98,6 +100,35 @@ export function PaperclipPage() {
   const summary = tasksData?.summary;
   const adapterErrors = agentsData?.adapterHealth.reduce((sum, adapter) => sum + adapter.errorAgents, 0) ?? 0;
   const errors = [agentsError, tasksError, ...(agentsData?.errors ?? []), ...(tasksData?.errors ?? [])].filter(Boolean);
+
+  type AgentSortKey = "name" | "status" | "lastRunAt" | "consecutiveFailures";
+  const agentsCtrl = useTableControls<PaperclipAgent, AgentSortKey>({
+    rows: agents,
+    defaultSort: { key: "status", dir: "asc" },
+    filterText: (row) => [row.name, row.role, row.model, row.adapterType, row.status],
+    sortValue: (row, key) => {
+      if (key === "name") return row.name;
+      if (key === "status") return row.status;
+      if (key === "lastRunAt") return row.lastRunAt ? new Date(row.lastRunAt) : null;
+      if (key === "consecutiveFailures") return row.consecutiveFailures;
+      return null;
+    },
+  });
+
+  type TaskSortKey = "id" | "status" | "priority" | "startedAt" | "finishedAt";
+  const tasksCtrl = useTableControls<PaperclipTask, TaskSortKey>({
+    rows: tasks,
+    defaultSort: { key: "startedAt", dir: "desc" },
+    filterText: (row) => [row.id, row.agentName, row.status, row.priority, row.error],
+    sortValue: (row, key) => {
+      if (key === "id") return row.id;
+      if (key === "status") return row.status;
+      if (key === "priority") return row.priority;
+      if (key === "startedAt") return row.startedAt ? new Date(row.startedAt) : null;
+      if (key === "finishedAt") return row.finishedAt ? new Date(row.finishedAt) : null;
+      return null;
+    },
+  });
 
   return (
     <div className="dash-page">
@@ -218,80 +249,86 @@ export function PaperclipPage() {
       </div>
 
       <SectionCard title="Agent Roster">
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Agent</th>
-                <th>Adapter</th>
-                <th>Model</th>
-                <th>Status</th>
-                <th>Failures</th>
-                <th>Last Run</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr key={agent.id}>
-                  <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Bot size={14} style={{ color: "var(--text-dim)", flexShrink: 0 }} />
-                      <span style={{ fontWeight: 600 }}>{agent.name}</span>
-                    </div>
-                    <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 3 }}>{agent.role ?? agent.command ?? agent.id}</div>
-                    {agent.lastError && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{agent.lastError}</div>}
-                  </td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{agent.adapterType ?? "-"}</td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{agent.model ?? "-"}</td>
-                  <td><span className={statusClass(agent.status)}>{agent.status}</span></td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{agent.consecutiveFailures}</td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{when(agent.lastRunAt)}</td>
-                </tr>
-              ))}
-              {agents.length === 0 && (
+        <div className="table-wrap">
+          <TableControls {...agentsCtrl.controlsProps} searchPlaceholder="Filter agents…" />
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ color: "var(--text-dim)" }}>No Paperclip agents available.</td>
+                  <th {...agentsCtrl.sortHeaderProps("name")}>Agent <span className="sortable-th-arrow">{agentsCtrl.sort.key === "name" ? (agentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th>Adapter</th>
+                  <th>Model</th>
+                  <th {...agentsCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{agentsCtrl.sort.key === "status" ? (agentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...agentsCtrl.sortHeaderProps("consecutiveFailures")}>Failures <span className="sortable-th-arrow">{agentsCtrl.sort.key === "consecutiveFailures" ? (agentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...agentsCtrl.sortHeaderProps("lastRunAt")}>Last Run <span className="sortable-th-arrow">{agentsCtrl.sort.key === "lastRunAt" ? (agentsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {agentsCtrl.rows.map((agent) => (
+                  <tr key={agent.id}>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <Bot size={14} style={{ color: "var(--text-dim)", flexShrink: 0 }} />
+                        <span style={{ fontWeight: 600 }}>{agent.name}</span>
+                      </div>
+                      <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 3 }}>{agent.role ?? agent.command ?? agent.id}</div>
+                      {agent.lastError && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{agent.lastError}</div>}
+                    </td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{agent.adapterType ?? "-"}</td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{agent.model ?? "-"}</td>
+                    <td><span className={statusClass(agent.status)}>{agent.status}</span></td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{agent.consecutiveFailures}</td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{when(agent.lastRunAt)}</td>
+                  </tr>
+                ))}
+                {agentsCtrl.rows.length === 0 && (
+                  <tr>
+                    <td colSpan={6} style={{ color: "var(--text-dim)" }}>No Paperclip agents available.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </SectionCard>
 
-      <SectionCard title="Task Ledger" style={{ marginTop: 20 }}>
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Task</th>
-                <th>Agent</th>
-                <th>Priority</th>
-                <th>Status</th>
-                <th>Started</th>
-                <th>Finished</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tasks.slice(0, 100).map((task) => (
-                <tr key={task.id}>
-                  <td>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{task.id}</div>
-                    {task.error && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{task.error}</div>}
-                  </td>
-                  <td>{task.agentName ?? task.agentId ?? "-"}</td>
-                  <td>{task.priority ?? "-"}</td>
-                  <td><span className={statusClass(task.status)}>{task.status}</span></td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{when(task.startedAt ?? task.createdAt)}</td>
-                  <td style={{ fontFamily: "var(--mono)" }}>{when(task.finishedAt)}</td>
-                </tr>
-              ))}
-              {tasks.length === 0 && (
+      <SectionCard title="Task Ledger" defaultOpen={false} style={{ marginTop: 20 }}>
+        <div className="table-wrap">
+          <TableControls {...tasksCtrl.controlsProps} searchPlaceholder="Filter tasks…" />
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ color: "var(--text-dim)" }}>No Paperclip tasks available.</td>
+                  <th {...tasksCtrl.sortHeaderProps("id")}>Task <span className="sortable-th-arrow">{tasksCtrl.sort.key === "id" ? (tasksCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th>Agent</th>
+                  <th {...tasksCtrl.sortHeaderProps("priority")}>Priority <span className="sortable-th-arrow">{tasksCtrl.sort.key === "priority" ? (tasksCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tasksCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{tasksCtrl.sort.key === "status" ? (tasksCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tasksCtrl.sortHeaderProps("startedAt")}>Started <span className="sortable-th-arrow">{tasksCtrl.sort.key === "startedAt" ? (tasksCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tasksCtrl.sortHeaderProps("finishedAt")}>Finished <span className="sortable-th-arrow">{tasksCtrl.sort.key === "finishedAt" ? (tasksCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {tasksCtrl.rows.map((task) => (
+                  <tr key={task.id}>
+                    <td>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{task.id}</div>
+                      {task.error && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{task.error}</div>}
+                    </td>
+                    <td>{task.agentName ?? task.agentId ?? "-"}</td>
+                    <td>{task.priority ?? "-"}</td>
+                    <td><span className={statusClass(task.status)}>{task.status}</span></td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{when(task.startedAt ?? task.createdAt)}</td>
+                    <td style={{ fontFamily: "var(--mono)" }}>{when(task.finishedAt)}</td>
+                  </tr>
+                ))}
+                {tasksCtrl.rows.length === 0 && (
+                  <tr>
+                    <td colSpan={6} style={{ color: "var(--text-dim)" }}>No Paperclip tasks available.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </SectionCard>
     </div>

@@ -159,7 +159,7 @@ export function AutopipelinePage() {
       <SectionCard
         title="queue"
         id="queue"
-        defaultOpen={true}
+        defaultOpen={false}
         right={
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {Object.entries(d.stats.stageBreakdown).map(([stage, count]) => (
@@ -217,7 +217,7 @@ export function AutopipelinePage() {
 
       {/* Approvals */}
       {d.stats.approvalsWaiting > 0 && (
-        <SectionCard title="approvals waiting" id="approvals" defaultOpen={true}>
+        <SectionCard title="approvals waiting" id="approvals" defaultOpen={false}>
           <div className="section-card-body table-wrap">
             <table className="data-table">
               <thead><tr><th>slug / id</th><th>stage</th><th>age</th></tr></thead>

@@ -3,6 +3,8 @@ import { useApi } from "../hooks/useApi";
 import { useAuthApi } from "../hooks/useAuthApi";
 import { authFetch } from "../lib/authFetch";
 import { Shield, RefreshCw, Trash2, Plus } from "lucide-react";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 
 interface PolicyInfo {
   name: string;
@@ -69,6 +71,49 @@ export function GovernancePage() {
   const { data: secretsData, refresh: reloadSecrets } = useAuthApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
   const { data: approvalsData, refresh: reloadApprovals } = useAuthApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
   const { data: budgetsData, refresh: reloadBudgets } = useAuthApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
+
+  const policiesCtrl = useTableControls<PolicyInfo, "name" | "version" | "ruleCount">({
+    rows: policiesData?.policies ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.name, row.version, row.path].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "name": return row.name;
+        case "version": return row.version;
+        case "ruleCount": return row.ruleCount;
+        default: return "";
+      }
+    },
+    defaultSort: { key: "name", dir: "asc" },
+  });
+
+  const secretsCtrl = useTableControls<SecretInfo, "name" | "created_at" | "updated_at">({
+    rows: secretsData?.secrets ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.name, row.description].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "created_at": return row.created_at;
+        case "updated_at": return row.updated_at;
+        default: return row.name;
+      }
+    },
+    defaultSort: { key: "name", dir: "asc" },
+  });
+
+  const budgetsCtrl = useTableControls<BudgetInfo, "scope" | "daily_cap_usd" | "monthly_cap_usd">({
+    rows: budgetsData?.budgets ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.scope, row.projectId ?? ""].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "daily_cap_usd": return row.daily_cap_usd ?? 0;
+        case "monthly_cap_usd": return row.monthly_cap_usd ?? 0;
+        default: return row.scope;
+      }
+    },
+    defaultSort: { key: "scope", dir: "asc" },
+  });
 
   async function handleReloadPolicies() {
     await authFetch("/api/governance/policies/reload", { method: "POST" });
@@ -175,21 +220,36 @@ export function GovernancePage() {
           ) : policiesData.policies.length === 0 ? (
             <p className="text-muted">No policies loaded.</p>
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr><th>Name</th><th>Version</th><th>Rules</th><th>Path</th></tr>
-              </thead>
-              <tbody>
-                {policiesData.policies.map((p) => (
-                  <tr key={p.name}>
-                    <td>{p.name}</td>
-                    <td>{p.version}</td>
-                    <td>{p.ruleCount}</td>
-                    <td className="text-muted text-xs">{p.path}</td>
+            <>
+              <TableControls {...policiesCtrl.controlsProps} searchPlaceholder="Filter policies..." />
+              <div className="table-container">
+                <table className="data-table governance-table">
+                <thead>
+                  <tr>
+                    <th {...policiesCtrl.sortHeaderProps("name")}>Name <span className="sortable-th-arrow">{policiesCtrl.sort.key === "name" ? (policiesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...policiesCtrl.sortHeaderProps("version")}>Version <span className="sortable-th-arrow">{policiesCtrl.sort.key === "version" ? (policiesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...policiesCtrl.sortHeaderProps("ruleCount")}>Rules <span className="sortable-th-arrow">{policiesCtrl.sort.key === "ruleCount" ? (policiesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th>Path</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {policiesCtrl.rows.map((p) => (
+                    <tr key={p.name}>
+                      <td>{p.name}</td>
+                      <td>{p.version}</td>
+                      <td>{p.ruleCount}</td>
+                      <td className="text-muted text-xs">{p.path}</td>
+                    </tr>
+                  ))}
+                  {policiesCtrl.filteredCount === 0 && (
+                    <tr>
+                      <td colSpan={4} className="loading-dim">No policies match the current filter.</td>
+                    </tr>
+                  )}
+                </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       ) : null}
@@ -237,34 +297,50 @@ export function GovernancePage() {
           ) : secretsData.secrets.length === 0 ? (
             <p className="text-muted">No secrets stored.</p>
           ) : (
-            <table className="data-table">
-              <thead>
-                <tr><th>Name</th><th>Description</th><th>Created</th><th>Updated</th><th></th></tr>
-              </thead>
-              <tbody>
-                {secretsData.secrets.map((s) => (
-                  <tr key={s.id}>
-                    <td className="font-mono text-sm">{s.name}</td>
-                    <td className="text-muted text-sm">{s.description || "—"}</td>
-                    <td className="text-muted text-xs">{new Date(s.created_at).toLocaleDateString()}</td>
-                    <td className="text-muted text-xs">{new Date(s.updated_at).toLocaleDateString()}</td>
-                    <td>
-                      {deleteConfirmId === s.name ? (
-                        <span>
-                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Delete?</span>
-                          <button className="btn-ghost btn-sm" style={{ color: "var(--red)", marginLeft: 4 }} onClick={() => { setDeleteConfirmId(null); handleDeleteSecret(s.name); }}>Yes</button>
-                          <button className="btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
-                        </span>
-                      ) : (
-                        <button className="btn-ghost btn-danger" onClick={() => handleDeleteSecret(s.name)}>
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </td>
+            <>
+              <TableControls {...secretsCtrl.controlsProps} searchPlaceholder="Filter secrets..." />
+              <div className="table-container">
+                <table className="data-table governance-table">
+                <thead>
+                  <tr>
+                    <th {...secretsCtrl.sortHeaderProps("name")}>Name <span className="sortable-th-arrow">{secretsCtrl.sort.key === "name" ? (secretsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th>Description</th>
+                    <th {...secretsCtrl.sortHeaderProps("created_at")}>Created <span className="sortable-th-arrow">{secretsCtrl.sort.key === "created_at" ? (secretsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...secretsCtrl.sortHeaderProps("updated_at")}>Updated <span className="sortable-th-arrow">{secretsCtrl.sort.key === "updated_at" ? (secretsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {secretsCtrl.rows.map((s) => (
+                    <tr key={s.id}>
+                      <td className="font-mono text-sm">{s.name}</td>
+                      <td className="text-muted text-sm">{s.description || "—"}</td>
+                      <td className="text-muted text-xs">{new Date(s.created_at).toLocaleDateString()}</td>
+                      <td className="text-muted text-xs">{new Date(s.updated_at).toLocaleDateString()}</td>
+                      <td>
+                        {deleteConfirmId === s.name ? (
+                          <span>
+                            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Delete?</span>
+                            <button className="btn-ghost btn-sm" style={{ color: "var(--red)", marginLeft: 4 }} onClick={() => { setDeleteConfirmId(null); handleDeleteSecret(s.name); }}>Yes</button>
+                            <button className="btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                          </span>
+                        ) : (
+                          <button className="btn-ghost btn-danger" onClick={() => handleDeleteSecret(s.name)}>
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {secretsCtrl.filteredCount === 0 && (
+                    <tr>
+                      <td colSpan={5} className="loading-dim">No secrets match the current filter.</td>
+                    </tr>
+                  )}
+                </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       ) : null}
@@ -363,21 +439,36 @@ export function GovernancePage() {
               {budgetsData.budgets.length === 0 ? (
                 <p className="text-muted mt-4">No budget configured. Click "Set Budget" to add one.</p>
               ) : (
-                <table className="data-table mt-4">
-                  <thead>
-                    <tr><th>Scope</th><th>Daily Cap</th><th>Monthly Cap</th><th>Warn %</th></tr>
-                  </thead>
-                  <tbody>
-                    {budgetsData.budgets.map((b) => (
-                      <tr key={b.id}>
-                        <td>{b.scope}</td>
-                        <td>{b.daily_cap_usd != null ? `$${b.daily_cap_usd}` : "—"}</td>
-                        <td>{b.monthly_cap_usd != null ? `$${b.monthly_cap_usd}` : "—"}</td>
-                        <td>{(b.warn_pct * 100).toFixed(0)}%</td>
+                <>
+                  <TableControls {...budgetsCtrl.controlsProps} searchPlaceholder="Filter budgets..." />
+                  <div className="table-container mt-4">
+                    <table className="data-table governance-table">
+                    <thead>
+                      <tr>
+                        <th {...budgetsCtrl.sortHeaderProps("scope")}>Scope <span className="sortable-th-arrow">{budgetsCtrl.sort.key === "scope" ? (budgetsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...budgetsCtrl.sortHeaderProps("daily_cap_usd")}>Daily Cap <span className="sortable-th-arrow">{budgetsCtrl.sort.key === "daily_cap_usd" ? (budgetsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...budgetsCtrl.sortHeaderProps("monthly_cap_usd")}>Monthly Cap <span className="sortable-th-arrow">{budgetsCtrl.sort.key === "monthly_cap_usd" ? (budgetsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th>Warn %</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {budgetsCtrl.rows.map((b) => (
+                        <tr key={b.id}>
+                          <td>{b.scope}</td>
+                          <td>{b.daily_cap_usd != null ? `$${b.daily_cap_usd}` : "—"}</td>
+                          <td>{b.monthly_cap_usd != null ? `$${b.monthly_cap_usd}` : "—"}</td>
+                          <td>{(b.warn_pct * 100).toFixed(0)}%</td>
+                        </tr>
+                      ))}
+                      {budgetsCtrl.filteredCount === 0 && (
+                        <tr>
+                          <td colSpan={4} className="loading-dim">No budgets match the current filter.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </>
           )}
