@@ -59,6 +59,13 @@ export const WORKSPACE_ROOTS: WorkspaceRoot[] = [
     writable: true,
     note: "Plans, agent config, and local credentials; use deliberately.",
   },
+  {
+    path: "/opt/builder-sandbox",
+    label: "Builder Sandbox",
+    risk: "low",
+    writable: true,
+    note: "Disposable scratch workspace for testing builder workflows end-to-end.",
+  },
 ];
 
 function isWithin(candidate: string, root: string): boolean {

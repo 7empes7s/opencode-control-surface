@@ -761,7 +761,7 @@ async function startNextPass(
 ): Promise<void> {
   const entry = parseAgentEntry(workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex");
   const agent = entry.agent;
-  const isCliAgent = ["codex", "claude", "gemini"].includes(agent);
+  const isCliAgent = ["codex", "claude", "gemini", "opencode"].includes(agent);
   const embeddedModel = entry.model;
   const embeddedEffort = entry.effort;
 
@@ -1619,7 +1619,7 @@ export async function startWorkflowRun(
   // Determine agent/model from first agent order entry
   const entry = parseAgentEntry(workflow.config.agentOrder[0] ?? "codex");
   const agent = entry.agent;
-  const isCliAgent = ["codex", "claude", "gemini"].includes(agent);
+  const isCliAgent = ["codex", "claude", "gemini", "opencode"].includes(agent);
   const embeddedModel = entry.model;
   const embeddedEffort = entry.effort;
   const selection = isCliAgent && embeddedModel
@@ -1833,6 +1833,30 @@ export async function cancelRun(runId: string, actor = "operator"): Promise<void
 }
 
 // ── Status reconciliation ──────────────────────────────────────────────────
+
+// Provider/agent fatal errors that can accompany a clean (exit 0) shell exit — the CLI
+// prints the error then returns 0 (observed: opencode "Insufficient balance" → exit 0).
+// Without this, the run is falsely marked success despite the agent doing no work.
+// Scanned against STDERR ONLY (the agent's own error channel): stdout carries the plan
+// transcript and generated app code, which for some domains legitimately contains phrases
+// like "insufficient balance" (e.g. a wallet feature) and must not trigger a false failure.
+function detectAgentFatalError(stderr: string): string | null {
+  const patterns: Array<[RegExp, string]> = [
+    [/insufficient balance/i, "provider billing: insufficient balance"],
+    [/manage your billing/i, "provider billing error"],
+    [/credit balance is too low/i, "provider billing: credit balance too low"],
+    [/\bout of credits\b|no credits remaining/i, "provider billing: out of credits"],
+    [/invalid[_ ]api[_ ]key/i, "auth: invalid API key"],
+    [/no api key (was )?(provided|configured|set)|missing api key/i, "auth: missing API key"],
+    [/you exceeded your current quota|quota exceeded|quota exhausted/i, "provider quota exceeded"],
+    [/no endpoints found (for|matching)/i, "model unavailable: no endpoints"],
+    [/ProviderModelNotFoundError|\bmodel not found\b|unknown model\b|no such model/i, "model not found / misconfigured"],
+  ];
+  for (const [re, label] of patterns) {
+    if (re.test(stderr)) return label;
+  }
+  return null;
+}
 
 export async function reconcileRunStatus(runId: string): Promise<BuilderRun | null> {
   const run = readBuilderRun(runId);
@@ -2055,8 +2079,12 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const oomIndicators = /out of memory|killed process|oom-kill|cannot allocate memory/i;
   const agentOom = exitCode === 137 && (oomIndicators.test(stdout) || oomIndicators.test(stderr));
 
+  // A clean exit (0) is not proof of success: some CLIs print a fatal provider error
+  // (billing/auth/quota) and still return 0. Treat those as failures.
+  const agentFatalError = exitCode === 0 ? detectAgentFatalError(stderr) : null;
+
   if (passId) {
-    const passStatus = exitCode === 0 ? "success" : "failed";
+    const passStatus = exitCode === 0 && !agentFatalError ? "success" : "failed";
     const passAgent = currentPass?.agent ?? "";
     const rawSummary = codexOutput || stdout;
     const summary = passAgent === "claude"
@@ -2076,6 +2104,8 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       ? "agent-stalled"
       : exitCode === null
       ? "no-result-file"
+      : agentFatalError
+      ? "agent-error"
       : exitCode === 0 && passResultStatus === "incomplete"
       ? "plan-incomplete"
       : exitCode === 0
@@ -2159,7 +2189,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   const passResultStatus = passResult?.status ?? null;
 
   let runStatus: "success" | "failed" = "failed";
-  if (exitCode === 0) {
+  if (exitCode === 0 && !agentFatalError) {
     runStatus = !hasValidationConfig || allValidationsPassed ? "success" : "failed";
     if (runStatus === "success" && workflow?.planFile) {
       planComplete = checkPlanComplete(workflow.planFile);
@@ -2184,6 +2214,8 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     runError = "Run killed before completing (no exit code written)";
   } else if (codexExhausted) {
     runError = "Codex usage limit reached — retry after limit resets";
+  } else if (agentFatalError) {
+    runError = `Agent could not run: ${agentFatalError}`;
   } else if (exitCode !== 0) {
     runError = `Agent exited with code ${exitCode}`;
   } else if (runStatus === "failed" && !allValidationsPassed && validationIds.length > 0) {
