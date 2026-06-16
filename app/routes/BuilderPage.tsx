@@ -2054,11 +2054,27 @@ type WorkflowPlanPreview = {
 
 // Live review of a finished/in-progress build: the generated plan (with
 // checklist progress) plus an embedded live preview of the built app.
+type PreviewRecord = {
+  workflowId: string;
+  target: "web" | "mobile-web" | "mobile-device";
+  status: "starting" | "ready" | "error" | "stopped";
+  port: number | null;
+  publicUrl: string | null;
+  expUrl: string | null;
+  error: string | null;
+  workspaceDir: string | null;
+};
+
 function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow; onClose: () => void }) {
   const [data, setData] = useState<WorkflowPlanPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"app" | "plan">("app");
   const [iframeKey, setIframeKey] = useState(0);
+
+  const [target, setTarget] = useState<PreviewRecord["target"]>("web");
+  const [preview, setPreview] = useState<PreviewRecord | null>(null);
+  const [previewLog, setPreviewLog] = useState("");
+  const [launching, setLaunching] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -2070,8 +2086,6 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
         if (alive) {
           const payload = (body.data ?? body) as WorkflowPlanPreview;
           setData(payload);
-          // Default to the plan tab when there's no live app to show.
-          setTab(payload.previewUrl ? "app" : "plan");
         }
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
@@ -2080,9 +2094,60 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
     return () => { alive = false; };
   }, [workflow.id]);
 
+  // Pick up any preview already running for this workflow, and poll while starting.
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const res = await authFetch(`/api/builder/workflows/${workflow.id}/preview`);
+        const body = await res.json();
+        const payload = (body.data ?? body) as { preview: PreviewRecord | null; log: string };
+        if (!alive) return;
+        setPreview(payload.preview);
+        setPreviewLog(payload.log ?? "");
+        if (payload.preview && payload.preview.status === "starting") {
+          timer = setTimeout(poll, 3000);
+        }
+      } catch { /* ignore poll errors */ }
+    };
+    poll();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [workflow.id, launching]);
+
+  async function launchPreview() {
+    setLaunching(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/builder/workflows/${workflow.id}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `Couldn't start preview (${res.status}).`);
+      const body = await res.json();
+      setPreview(((body.data ?? body) as { preview: PreviewRecord }).preview);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunching((v) => !v); // toggle to re-trigger the poll effect
+    }
+  }
+
+  async function stopPreview() {
+    try {
+      await authFetch(`/api/builder/workflows/${workflow.id}/preview`, { method: "DELETE" });
+    } catch { /* ignore */ }
+    setPreview(null);
+    setPreviewLog("");
+  }
+
   const pct = data && data.checklist.total > 0
     ? Math.round((data.checklist.done / data.checklist.total) * 100)
     : null;
+
+  // The live URL to embed: a launched tunnel preview wins; else a statically-configured URL.
+  const liveUrl = (preview?.status === "ready" && preview.publicUrl) || data?.previewUrl || null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -2105,34 +2170,73 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
           >
             Plan{pct != null ? ` · ${pct}%` : ""}
           </button>
-          {data?.previewUrl && (
+          {tab === "app" && liveUrl && (
             <>
-              <a className="btn btn-xs btn-ghost" href={data.previewUrl} target="_blank" rel="noreferrer">open in new tab ↗</a>
+              <a className="btn btn-xs btn-ghost" href={liveUrl} target="_blank" rel="noreferrer">open in new tab ↗</a>
               <button className="btn btn-xs btn-ghost" onClick={() => setIframeKey((k) => k + 1)}>reload</button>
             </>
           )}
         </div>
+
+        {tab === "app" && (
+          <div className="builder-preview-launchbar">
+            <select className="audit-select" value={target} onChange={(e) => setTarget(e.target.value as PreviewRecord["target"])} disabled={preview?.status === "starting"}>
+              <option value="web">Web app</option>
+              <option value="mobile-web">Mobile (Expo web)</option>
+              <option value="mobile-device">Mobile device (QR)</option>
+            </select>
+            {preview && preview.status !== "stopped" ? (
+              <button className="btn btn-xs btn-danger" onClick={stopPreview}>stop preview</button>
+            ) : (
+              <button className="btn btn-xs btn-primary" onClick={launchPreview} disabled={launching || !workflow.projectRoot}>
+                {launching ? "launching…" : "launch live preview"}
+              </button>
+            )}
+            {preview?.status === "starting" && <span className="mono dim">starting… first launch compiles, ~1 min</span>}
+            {preview?.status === "ready" && <span className="mono" style={{ color: "var(--accent)" }}>● live</span>}
+          </div>
+        )}
 
         <div className="modal-body builder-preview-body">
           {error && <div className="loading-dim">{error}</div>}
           {!error && !data && <div className="loading-dim">loading…</div>}
 
           {data && tab === "app" && (
-            data.previewUrl ? (
+            preview?.status === "error" ? (
+              <div className="builder-preview-empty">
+                <p>Preview failed: {preview.error}</p>
+                {previewLog && <pre className="builder-preview-plan-text" style={{ textAlign: "left", maxHeight: 220 }}>{previewLog}</pre>}
+              </div>
+            ) : preview?.status === "ready" && preview.target === "mobile-device" && preview.expUrl ? (
+              <div className="builder-preview-empty">
+                <p>Scan with the <strong>Expo Go</strong> app to open it on your iOS/Android device:</p>
+                <img
+                  className="builder-preview-qr"
+                  alt="Expo QR"
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(preview.expUrl)}`}
+                />
+                <p className="mono dim" style={{ wordBreak: "break-all" }}>{preview.expUrl}</p>
+              </div>
+            ) : preview?.status === "starting" ? (
+              <div className="builder-preview-empty">
+                <p>Launching the {preview.target === "web" ? "web" : "mobile"} dev server and opening a public tunnel…</p>
+                {previewLog && <pre className="builder-preview-plan-text" style={{ textAlign: "left", maxHeight: 240 }}>{previewLog}</pre>}
+              </div>
+            ) : liveUrl ? (
               <iframe
                 key={iframeKey}
                 className="builder-preview-iframe"
-                src={data.previewUrl}
+                src={liveUrl}
                 title="app preview"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               />
             ) : (
               <div className="builder-preview-empty">
-                <p>No live preview URL is configured for this workflow yet.</p>
+                <p>No app is being previewed yet.</p>
                 <p className="dim">
-                  Set an internal or public URL in the workflow's validation profile
-                  (e.g. <span className="mono">http://127.0.0.1:5173</span> for a running dev server)
-                  to embed the built app here. The plan is available in the Plan tab.
+                  Pick a target above and <strong>launch a live preview</strong> — it starts the built app's dev
+                  server and exposes it on a temporary public URL (web &amp; Expo-web render here in the iframe;
+                  pick “Mobile device” for an Expo Go QR to open it on a real phone). The plan is in the Plan tab.
                 </p>
               </div>
             )

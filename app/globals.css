@@ -2785,6 +2785,24 @@ body {
   .builder-preview-modal { width: 100vw; height: 100vh; max-width: none; border-radius: 0; }
 }
 
+.builder-preview-launchbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.builder-preview-launchbar .audit-select { max-width: 200px; }
+.builder-preview-qr {
+  width: 220px;
+  height: 220px;
+  margin: 12px auto;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
 .builder-iterate-modal { width: min(560px, 94vw); }
 .builder-iterate-done { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
 .builder-iterate-done .dim { font-size: 12.5px; }

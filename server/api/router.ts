@@ -57,6 +57,9 @@ import {
   builderWorkflowHandler,
   builderWorkflowPlanHandler,
   builderWorkflowIterateHandler,
+  builderWorkflowPreviewStartHandler,
+  builderWorkflowPreviewStatusHandler,
+  builderWorkflowPreviewStopHandler,
   builderCreateWorkflowHandler,
   builderUpdateWorkflowHandler,
   builderDeleteWorkflowHandler,
@@ -696,6 +699,21 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return builderWorkflowIterateHandler(builderWorkflowIterateMatch[1], req);
+  }
+  const builderPreviewMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/preview$/);
+  if (builderPreviewMatch) {
+    const wfId = builderPreviewMatch[1];
+    if (method === "GET") return builderWorkflowPreviewStatusHandler(wfId);
+    if (method === "POST") {
+      const denied = requireMutation(req);
+      if (denied) return denied;
+      return builderWorkflowPreviewStartHandler(wfId, req);
+    }
+    if (method === "DELETE") {
+      const denied = requireMutation(req);
+      if (denied) return denied;
+      return builderWorkflowPreviewStopHandler(wfId);
+    }
   }
   const builderPassLiveMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/pass-live$/);
   if (method === "GET" && builderPassLiveMatch) {

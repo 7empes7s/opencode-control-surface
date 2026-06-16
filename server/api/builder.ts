@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { createBrainstormSession, runBrainstormLoop } from "../builder/brainstorm-orchestrator.ts";
+import { startPreview, stopPreview, getPreview, getPreviewLog, type PreviewTarget } from "../builder/preview-server.ts";
 import {
   discoverBuilderProject,
   getBuilderModelsInventory,
@@ -393,6 +394,38 @@ export async function builderWorkflowIterateHandler(id: string, req: Request): P
   }
 
   return json(ok({ sessionId, tenantId }, { builder: "ok" }));
+}
+
+// ── Live preview: launch the built app's dev server + public tunnel ──────────
+const PREVIEW_TARGETS: PreviewTarget[] = ["web", "mobile-web", "mobile-device"];
+
+export async function builderWorkflowPreviewStartHandler(id: string, req: Request): Promise<Response> {
+  const reason = dbUnavailable();
+  if (reason) return apiError(reason, 503);
+  const workflow = readBuilderWorkflow(id);
+  if (!workflow) return apiError("not found", 404);
+  if (!workflow.projectRoot) return apiError("workflow has no project root to preview");
+
+  let body: { target?: unknown } = {};
+  try { body = await req.json(); } catch { /* default below */ }
+  const target = (PREVIEW_TARGETS.includes(body.target as PreviewTarget) ? body.target : "web") as PreviewTarget;
+
+  try {
+    const record = await startPreview(id, workflow.projectRoot, target);
+    return json(ok({ preview: record }, { builder: "ok" }));
+  } catch (e) {
+    return apiError(`couldn't start preview: ${e instanceof Error ? e.message : String(e)}`, 500);
+  }
+}
+
+export function builderWorkflowPreviewStatusHandler(id: string): Response {
+  const record = getPreview(id);
+  return json(ok({ preview: record, log: record ? getPreviewLog(id).slice(-2000) : "" }, { builder: "ok" }));
+}
+
+export async function builderWorkflowPreviewStopHandler(id: string): Promise<Response> {
+  await stopPreview(id);
+  return json(ok({ stopped: true }, { builder: "ok" }));
 }
 
 export async function builderCreateWorkflowHandler(req: Request): Promise<Response> {
