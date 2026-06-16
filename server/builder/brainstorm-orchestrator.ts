@@ -344,10 +344,15 @@ async function callLiteLLM(prompt: string, model: string, maxTokens: number): Pr
   // logged + audited (ledger entry with caller, tokens, cost, latency) and gets the
   // gateway's fallback-chain + circuit-breaker resilience. Nothing in the planner
   // talks to LiteLLM directly anymore.
+  // Free editorial models (e.g. minimax-m2.5:free) are slow — ~60s for tiny output,
+  // and the V1/V2 consolidation passes generate up to 8000 tokens. Scale the timeout
+  // with the token budget so a slow-but-valid response isn't aborted (a real abort
+  // still falls through LiteLLM's own fallback chain on the backend).
+  const timeoutMs = Math.min(480_000, Math.max(180_000, maxTokens * 50));
   const res = await gatewayComplete(model, [{ role: "user", content: prompt }], {
     maxTokens,
     temperature: 0.7,
-    timeoutMs: 120_000,
+    timeoutMs,
     caller: "brainstorm-planner",
   });
   if (!res || !Array.isArray((res as any).choices)) {
