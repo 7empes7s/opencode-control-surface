@@ -57,6 +57,7 @@ export function AuthPrompt() {
       message="Your session has expired or this action requires operator authentication."
       inputLabel="Operator token"
       inputPlaceholder="Enter token…"
+      inputType="password"
       confirmLabel="Authenticate"
       loading={loading}
       error={error}

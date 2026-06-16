@@ -1,4 +1,5 @@
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
+import { readOperatorState, writeOperatorState } from "../db/writer.ts";
 import type { ModelTier } from "./config.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
@@ -66,13 +67,23 @@ export function writeLedgerEntry(entry: LedgerEntry): void {
       entry.caller ?? null,
     );
     
-    // Write to cost_events table if cost data is available
-    if (entry.costEstimateUsd !== null && entry.costEstimateUsd > 0) {
-      const costCents = Math.round(entry.costEstimateUsd * 100);
-      
+    // Write a cost_events row for every call that has token usage OR a cost estimate
+    // (including 0 / unpriced). Free-first routing estimates $0 — those $0 rows are
+    // the product story ("free-first keeps spend at zero") and they also keep
+    // budget math honest (it runs against cost_events).
+    const hasUsage = entry.promptTokens != null || entry.completionTokens != null;
+    if (entry.costEstimateUsd !== null || hasUsage) {
+      const costCents = Math.round((entry.costEstimateUsd ?? 0) * 100);
+      const costBasis: string =
+        entry.costEstimateUsd == null
+          ? "unpriced"
+          : entry.costEstimateUsd === 0
+            ? "free-tier"
+            : "litellm-cost-estimate";
+
       db.query(`
         INSERT INTO cost_events
-          (id, ts, tenant_id, source, logical_model, provider, tier, 
+          (id, ts, tenant_id, source, logical_model, provider, tier,
            input_tokens, output_tokens, cost_cents, cost_basis, fallback_reason)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -86,7 +97,7 @@ export function writeLedgerEntry(entry: LedgerEntry): void {
         entry.promptTokens ?? null,
         entry.completionTokens ?? null,
         costCents,
-        "litellm-cost-estimate",
+        costBasis,
         entry.errorClass ? "fallback-trigger" : null,
       );
     }
@@ -121,6 +132,73 @@ export function readLedger(options: { limit?: number; logicalModel?: string; onl
   } catch {
     return [];
   }
+}
+
+export function backfillCostEventsOnce(): number {
+  if (!isDashboardDbEnabled()) return 0;
+  const db = getDashboardDb();
+  if (!db) return 0;
+  if (readOperatorState("cost_backfill_v1") !== null) return 0;
+
+  const rows = db.query(`
+    SELECT gc.id, gc.ts, gc.tenant_id, gc.logical_model, gc.resolved_model, gc.backend,
+           gc.tier, gc.prompt_tokens, gc.completion_tokens, gc.cost_estimate_usd, gc.error_class
+    FROM gateway_calls gc
+    LEFT JOIN cost_events ce
+      ON ce.tenant_id = gc.tenant_id
+     AND ce.source = 'gateway-backfill'
+     AND ce.gateway_call_id = CAST(gc.id AS TEXT)
+    WHERE ce.id IS NULL
+  `).all() as Array<{
+    id: number;
+    ts: number;
+    tenant_id: string;
+    logical_model: string;
+    resolved_model: string;
+    backend: string;
+    tier: string;
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    cost_estimate_usd: number | null;
+    error_class: string | null;
+  }>;
+
+  let inserted = 0;
+  const insert = db.prepare(`
+    INSERT INTO cost_events
+      (id, ts, tenant_id, source, logical_model, provider, tier,
+       input_tokens, output_tokens, cost_cents, cost_basis, fallback_reason, gateway_call_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const row of rows) {
+    const costCents = Math.round((row.cost_estimate_usd ?? 0) * 100);
+    const costBasis: string =
+      row.cost_estimate_usd == null
+        ? "unpriced"
+        : row.cost_estimate_usd === 0
+          ? "free-tier"
+          : "litellm-cost-estimate";
+    insert.run(
+      `cost_backfill_${row.id}_${Math.random().toString(36).slice(2, 9)}`,
+      row.ts,
+      row.tenant_id,
+      "gateway-backfill",
+      row.logical_model,
+      row.backend,
+      row.tier,
+      row.prompt_tokens,
+      row.completion_tokens,
+      costCents,
+      costBasis,
+      row.error_class ? "fallback-trigger" : null,
+      String(row.id),
+    );
+    inserted += 1;
+  }
+
+  writeOperatorState("cost_backfill_v1", { ranAt: Date.now(), inserted });
+  return inserted;
 }
 
 export function ledgerStats(since?: number): {

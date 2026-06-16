@@ -1,5 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleApi } from "./router.ts";
+import { closeObservabilityDb } from "../db/observability.ts";
+
+let tempDir: string;
+let previousObservabilityDbPath: string | undefined;
+let previousOperatorToken: string | undefined;
 
 function resetRateLimitMap(): void {
   (globalThis as unknown as { __rateLimitMap?: Record<string, number> }).__rateLimitMap = {};
@@ -14,6 +22,24 @@ function request(path: string, init: RequestInit = {}): Request {
     },
   });
 }
+
+beforeEach(() => {
+  resetRateLimitMap();
+  closeObservabilityDb();
+  tempDir = mkdtempSync(join(tmpdir(), "finance-intel-test-"));
+  previousObservabilityDbPath = process.env.OBSERVABILITY_DB_PATH;
+  previousOperatorToken = process.env.OPERATOR_TOKEN;
+  process.env.OBSERVABILITY_DB_PATH = join(tempDir, "observability.sqlite");
+});
+
+afterEach(() => {
+  closeObservabilityDb();
+  if (previousObservabilityDbPath === undefined) delete process.env.OBSERVABILITY_DB_PATH;
+  else process.env.OBSERVABILITY_DB_PATH = previousObservabilityDbPath;
+  if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = previousOperatorToken;
+  rmSync(tempDir, { recursive: true, force: true });
+});
 
 describe("GET /api/finance-intel/runs", () => {
   beforeEach(() => {
@@ -85,6 +111,7 @@ describe("GET /api/finance-intel/portfolio-config", () => {
 describe("POST /api/finance-intel/portfolio-config", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 200 when updating portfolio config", async () => {
@@ -92,7 +119,7 @@ describe("POST /api/finance-intel/portfolio-config", () => {
       request("/api/finance-intel/portfolio-config", {
         method: "POST",
         body: JSON.stringify({ name: "Test Portfolio", watchlist: ["AAPL", "GOOGL", "MSFT"] }),
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
       }),
       new URL("http://127.0.0.1:3000/api/finance-intel/portfolio-config"),
     );
@@ -105,6 +132,7 @@ describe("POST /api/finance-intel/portfolio-config", () => {
 describe("POST /api/finance-intel/trigger-analysis", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 200 when triggering analysis", async () => {
@@ -112,7 +140,7 @@ describe("POST /api/finance-intel/trigger-analysis", () => {
       request("/api/finance-intel/trigger-analysis", {
         method: "POST",
         body: JSON.stringify({ portfolio: ["AAPL"] }),
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
       }),
       new URL("http://127.0.0.1:3000/api/finance-intel/trigger-analysis"),
     );

@@ -64,6 +64,61 @@ export interface SpendAnomaly {
   alert_firing_id: string | null;
 }
 
+type CostAnomalyRow = {
+  id: number;
+  ts: number;
+  kind: string;
+  severity: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  summary: string;
+  payload_json: string | null;
+};
+
+const COST_ANOMALY_EVENT_KINDS = [
+  "vast.runway_warning",
+  "vast.runway_critical",
+  "vast.burn_spike",
+  "cost.api_spend_spike",
+  "routing.unexpected_cloud_usage",
+];
+
+function readRecentCostAnomalies(sinceTs: number, limit = 12) {
+  const db = getDashboardDb();
+  if (!db) return [];
+
+  const placeholders = COST_ANOMALY_EVENT_KINDS.map(() => "?").join(", ");
+  const rows = db.query(`
+    SELECT id, ts, kind, severity, entity_type, entity_id, summary, payload_json
+    FROM events
+    WHERE ts >= ? AND kind IN (${placeholders})
+    ORDER BY ts DESC
+    LIMIT ?
+  `).all(sinceTs, ...COST_ANOMALY_EVENT_KINDS, limit) as CostAnomalyRow[];
+
+  return rows.map((row) => {
+    let payload: unknown = null;
+    if (row.payload_json) {
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch {
+        payload = null;
+      }
+    }
+
+    return {
+      id: String(row.id),
+      ts: row.ts,
+      kind: row.kind,
+      severity: row.severity,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      summary: row.summary,
+      payload,
+    };
+  });
+}
+
 // Helper function to get spend data
 async function getSpendData(fromTs: number, toTs: number, groupBy: string) {
   const db = getDashboardDb();
@@ -460,6 +515,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
       spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
       runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
       fallbacks: [],
+      anomalies: [],
       note: "DASHBOARD_DB disabled",
     });
   }
@@ -472,6 +528,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
         spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
         runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
         fallbacks: [],
+        anomalies: [],
         note: "database unavailable",
       });
     }
@@ -514,6 +571,8 @@ export async function getCostSummary(req: Request): Promise<Response> {
       ).all(thirtyDaysAgo) ?? [];
     } catch { /* error_class may not exist */ }
 
+    const anomalies = readRecentCostAnomalies(thirtyDaysAgo);
+
     return Response.json({
       budgets,
       spend: {
@@ -522,6 +581,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
       },
       runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: now },
       fallbacks,
+      anomalies,
     });
   } catch (error) {
     console.error("getCostSummary failed:", error);
@@ -530,6 +590,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
       spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
       runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
       fallbacks: [],
+      anomalies: [],
       error: "Failed to fetch cost summary",
     });
   }

@@ -6,6 +6,7 @@ interface ApiResult<T> {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  request: (targetPath: string, init?: RequestInit) => Promise<Response>;
 }
 
 export function useAuthenticatedApi<T>(path: string, intervalMs = 30_000): ApiResult<T> {
@@ -15,10 +16,18 @@ export function useAuthenticatedApi<T>(path: string, intervalMs = 30_000): ApiRe
   const [tick, setTick] = useState(0);
 
   const refresh = useCallback(() => setTick((value) => value + 1), []);
+  const request = useCallback((targetPath: string, init: RequestInit = {}) => authFetch(targetPath, init), []);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+
+    if (!path) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     authFetch(path)
       .then(async (res) => {
@@ -39,12 +48,12 @@ export function useAuthenticatedApi<T>(path: string, intervalMs = 30_000): ApiRe
         setLoading(false);
       });
 
-    const timer = setInterval(refresh, intervalMs);
+    const timer = intervalMs > 0 ? setInterval(refresh, intervalMs) : null;
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
     };
   }, [path, intervalMs, tick, refresh]);
 
-  return { data, loading, error, refresh };
+  return { data, loading, error, refresh, request };
 }

@@ -12,7 +12,6 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/doctor": { title: "Doctor", sub: "Auto-repair history & error analysis" },
   "/models": { title: "Models", sub: "Inventory, health, discovery" },
   "/litellm": { title: "LiteLLM", sub: "Routing config, health, fallback chains" },
-  "/paperclip": { title: "Paperclip", sub: "Agent roster, task ledger, adapter health" },
   "/newsbites": { title: "NewsBites", sub: "Articles, deploys, site health" },
   "/infra": { title: "Infrastructure", sub: "Hetzner · Vast · GPU · services" },
   "/incidents": { title: "Incidents", sub: "Cross-cutting failure timeline" },
@@ -72,6 +71,7 @@ function TenantProjectPills() {
       <div className="ctx-pill-wrap" ref={tenantRef}>
         <button className="ctx-pill" onClick={() => { setTenantOpen((o) => !o); setProjectOpen(false); }}>
           <span className="ctx-pill-label">tenant</span>
+          <span className="ctx-pill-sep">:</span>
           <span className="ctx-pill-value">{tenantLabel}</span>
           <ChevronDown size={11} />
         </button>
@@ -92,6 +92,7 @@ function TenantProjectPills() {
       <div className="ctx-pill-wrap" ref={projectRef}>
         <button className="ctx-pill" onClick={() => { setProjectOpen((o) => !o); setTenantOpen(false); }}>
           <span className="ctx-pill-label">project</span>
+          <span className="ctx-pill-sep">:</span>
           <span className="ctx-pill-value">{projectLabel}</span>
           <ChevronDown size={11} />
         </button>

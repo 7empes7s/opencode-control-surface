@@ -1,9 +1,223 @@
 import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
 
 type SpanKind = "run" | "pass" | "tool" | "gateway" | "validation";
 type SpanStatus = "ok" | "error" | "cancelled";
+
+type GatewayCall = {
+  ts: number;
+  logicalModel: string;
+  resolvedModel: string;
+  latencyMs: number | null;
+  tokens: number;
+  success: boolean;
+  errorClass: string | null;
+};
+
+type GatewayTrace = {
+  traceId: string | null;
+  caller: string | null;
+  calls: GatewayCall[];
+  totalLatencyMs: number;
+  totalTokens: number;
+  started: number;
+};
+
+type GatewayTracesResponse = {
+  traces: GatewayTrace[];
+  windowMs: number;
+  total: number;
+  degraded: boolean;
+  reason?: string;
+};
+
+function fmtTsShort(ms: number): string {
+  const d = new Date(ms);
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
+function fmtStartedAgo(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function uniqueModels(trace: GatewayTrace): string {
+  const seen = new Set<string>();
+  for (const c of trace.calls) seen.add(c.logicalModel);
+  return Array.from(seen).join(", ") || "—";
+}
+
+function failCount(trace: GatewayTrace): number {
+  return trace.calls.filter((c) => !c.success).length;
+}
+
+function GatewayTraceRow({
+  trace,
+  expanded,
+  onToggle,
+}: {
+  trace: GatewayTrace;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const failed = failCount(trace);
+  const callCount = trace.calls.length;
+  const title = trace.traceId ?? "(untraced call)";
+  const hasFail = failed > 0;
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="gateway-traces-row"
+        aria-expanded={expanded}
+        style={{
+          width: "100%",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          padding: "10px 8px",
+          color: "var(--text)",
+          cursor: "pointer",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
+          gap: "8px 12px",
+          alignItems: "start",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
+              {title}
+            </span>
+            {trace.caller && (
+              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                · {trace.caller}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, marginTop: 4, color: "var(--text)", wordBreak: "break-word" }}>
+            {uniqueModels(trace)}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
+            {callCount} call{callCount === 1 ? "" : "s"} · {trace.totalTokens.toLocaleString()} tokens · {trace.totalLatencyMs}ms · {fmtStartedAgo(trace.started)}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+          {hasFail ? (
+            <span className="pill red">{failed} failed</span>
+          ) : (
+            <span className="pill green">all ok</span>
+          )}
+        </div>
+      </button>
+      {expanded && (
+        <div style={{ padding: "0 8px 12px 8px" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--text-dim)" }}>
+                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Time</th>
+                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Logical</th>
+                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Resolved</th>
+                  <th style={{ textAlign: "right", padding: "4px 6px 4px 0" }}>Latency</th>
+                  <th style={{ textAlign: "right", padding: "4px 6px 4px 0" }}>Tokens</th>
+                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trace.calls.map((c, idx) => (
+                  <tr key={`${c.ts}-${idx}`} style={{ borderBottom: "1px solid color-mix(in oklch, var(--border) 60%, transparent)" }}>
+                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
+                      {fmtTsShort(c.ts)}
+                    </td>
+                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, wordBreak: "break-word" }}>
+                      {c.logicalModel}
+                    </td>
+                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", wordBreak: "break-word" }}>
+                      {c.resolvedModel}
+                    </td>
+                    <td style={{ padding: "4px 6px 4px 0", textAlign: "right", fontFamily: "var(--mono)", fontSize: 10 }}>
+                      {c.latencyMs === null ? "—" : `${c.latencyMs}ms`}
+                    </td>
+                    <td style={{ padding: "4px 6px 4px 0", textAlign: "right", fontFamily: "var(--mono)", fontSize: 10 }}>
+                      {c.tokens.toLocaleString()}
+                    </td>
+                    <td style={{ padding: "4px 6px 4px 0" }}>
+                      {c.success ? (
+                        <span className="pill green">ok</span>
+                      ) : (
+                        <span className="pill red">{c.errorClass ?? "failed"}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GatewayTracesSection() {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const { data, loading } = useAuthenticatedApi<GatewayTracesResponse>(
+    "/api/traces/gateway",
+    15_000,
+  );
+
+  const traces = data?.traces ?? [];
+  const degraded = data?.degraded ?? false;
+  const reason = data?.reason;
+  const total = data?.total ?? 0;
+
+  return (
+    <SectionCard title="Gateway traces">
+      {loading && !data && (
+        <p style={{ color: "var(--text-dim)", fontSize: 12 }}>Loading…</p>
+      )}
+      {!loading && degraded && (
+        <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
+          Traces are temporarily unavailable{reason ? ` (${reason})` : ""}. Once the gateway ledger is recording, trace groups will appear here.
+        </p>
+      )}
+      {!loading && !degraded && traces.length === 0 && (
+        <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
+          No gateway calls recorded in the last 7 days. Traces group related LLM calls under a single trace ID and summarise the model, caller, and totals.
+        </p>
+      )}
+      {!loading && !degraded && traces.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>
+            {total} trace group{total === 1 ? "" : "s"} · expand a row to see each LLM call
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+            {traces.map((t) => {
+              const key = t.traceId ?? `lone-${t.started}-${t.calls[0]?.ts ?? 0}`;
+              return (
+                <GatewayTraceRow
+                  key={key}
+                  trace={t}
+                  expanded={expanded === key}
+                  onToggle={() => setExpanded((curr) => (curr === key ? null : key))}
+                />
+              );
+            })}
+          </div>
+        </>
+      )}
+    </SectionCard>
+  );
+}
 
 type Span = {
   traceId: string;
@@ -114,6 +328,10 @@ export function TracePage() {
   return (
     <div className="dash-page">
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Traces</h1>
+
+      <div style={{ marginBottom: 16 }}>
+        <GatewayTracesSection />
+      </div>
 
       {datesLoading && <p style={{ color: "var(--text-dim)" }}>Loading…</p>}
 

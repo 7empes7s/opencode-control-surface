@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleApi } from "./router.ts";
+
+const originalFetch = globalThis.fetch;
 
 function resetRateLimitMap(): void {
   (globalThis as unknown as { __rateLimitMap?: Record<string, number> }).__rateLimitMap = {};
@@ -10,6 +12,7 @@ function request(path: string, init: RequestInit = {}): Request {
     ...init,
     headers: {
       "x-real-ip": "scout-test",
+      "x-operator-token": "test-token",
       ...(init.headers as Record<string, string> | undefined ?? {}),
     },
   });
@@ -59,9 +62,10 @@ describe("GET /api/scout/config", () => {
   });
 });
 
-describe("POST /api/scout/config", () => {
+describe("PUT /api/scout/config", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 200 when updating scout config", async () => {
@@ -93,6 +97,16 @@ describe("POST /api/scout/config", () => {
 describe("POST /api/scout/trigger", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    process.env.OPERATOR_TOKEN = "test-token";
+    const mockFetch = Object.assign(
+      async () => Response.json({ ok: true }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+    globalThis.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   test("returns 200 when triggering scout run", async () => {

@@ -10,9 +10,13 @@ import { seedPlaybooks } from "./reasoner/playbooks.ts";
 import { createWorkflow, getWorkflow, listWorkflows, updateWorkflow, deleteWorkflow } from "./db/workflows.js";
 import { readFileSync } from "fs";
 import { startRetentionScheduler } from "./governance/retention.ts";
+import { startInsightsScanScheduler, stopInsightsScanScheduler } from "./insights/scheduler.ts";
+import { backfillCostEventsOnce } from "./gateway/ledger.ts";
 import { setLaneLimit } from "./orchestrator/lanes.ts";
 import { seedDefaultTenant } from "./tenancy/store.ts";
 import { upsertProject } from "./projects/index.ts";
+import { seedDemoData } from "./db/demo-seed.ts";
+import { seedDemoTenant } from "./db/demoTenant.ts";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const DIST_PATH = new URL("../dist", import.meta.url).pathname;
@@ -40,7 +44,10 @@ async function serveStatic(pathname: string): Promise<Response> {
   if (pathname === "/" || !pathname.includes(".")) {
     try {
       return new Response(readFileSync(`${DIST_PATH}/index.html`), {
-        headers: { "Content-Type": mimeFor("/index.html") },
+        // The shell must revalidate every load: Cloudflare otherwise applies a
+        // 4h browser TTL and clients keep HTML pointing at purged asset hashes
+        // after a rebuild (page renders unstyled).
+        headers: { "Content-Type": mimeFor("/index.html"), "Cache-Control": "no-cache, must-revalidate" },
       });
     } catch {
       return new Response("Not found", { status: 404 });
@@ -50,8 +57,13 @@ async function serveStatic(pathname: string): Promise<Response> {
   for (const candidate of [pathname, "/index.html"]) {
     const file = Bun.file(`${DIST_PATH}${candidate}`);
     if (await file.exists()) {
+      const cache = candidate.startsWith("/assets/")
+        ? "public, max-age=31536000, immutable" // hashed filenames never change content
+        : candidate === "/index.html"
+          ? "no-cache, must-revalidate"
+          : "public, max-age=3600";
       return new Response(file, {
-        headers: { "Content-Type": mimeFor(candidate) },
+        headers: { "Content-Type": mimeFor(candidate), "Cache-Control": cache },
       });
     }
   }
@@ -67,29 +79,36 @@ async function proxyOpenCode(req: Request, pathname: string, search: string): Pr
   proxyHeaders.delete("host");
   proxyHeaders.delete("content-length");
 
-  let body: BodyInit | undefined =
-    req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined;
-
-  if (req.method === "POST" && targetPath === "/session") {
-    let payload: Record<string, unknown>;
-    try {
-      payload = await req.json() as Record<string, unknown>;
-    } catch {
-      return new Response(JSON.stringify({ error: "invalid json" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+  // Buffer the request body once. Forwarding the raw `req.body` ReadableStream to
+  // Bun's fetch hangs POSTs that carry a body (e.g. /session/:id/message), which is
+  // why chat messages "never even queued". Buffering to an ArrayBuffer is safe here —
+  // these are small JSON payloads, not large uploads.
+  let body: BodyInit | undefined;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const raw = await req.arrayBuffer();
+    if (req.method === "POST" && targetPath === "/session") {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
+      } catch {
+        return new Response(JSON.stringify({ error: "invalid json" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const workspace = normalizeWorkspace(typeof payload.directory === "string" ? payload.directory : undefined);
+      if (workspace.ok === false) {
+        return new Response(JSON.stringify({ error: workspace.error }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      payload.directory = workspace.path;
+      body = JSON.stringify(payload);
+      proxyHeaders.set("content-type", "application/json");
+    } else {
+      body = raw;
     }
-    const workspace = normalizeWorkspace(typeof payload.directory === "string" ? payload.directory : undefined);
-    if (workspace.ok === false) {
-      return new Response(JSON.stringify({ error: workspace.error }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    payload.directory = workspace.path;
-    body = JSON.stringify(payload);
-    proxyHeaders.set("content-type", "application/json");
   }
 
   try {
@@ -129,6 +148,8 @@ export async function startServer(): Promise<{ stop: () => void }> {
     seedPlaybooks(dashboardDb);
     setLaneLimit("builder-passes", 3);
     seedDefaultTenant();
+    seedDemoData(dashboardDb);
+    seedDemoTenant(dashboardDb);
     for (const tbl of ["builder_workflows", "builder_runs", "builder_passes", "builder_artifacts", "builder_validations", "action_audit", "jobs"]) {
       try { dashboardDb.run(`UPDATE ${tbl} SET tenant_id = 'mimule' WHERE tenant_id IS NULL`); } catch { /* table may not exist yet */ }
     }
@@ -174,10 +195,13 @@ export async function startServer(): Promise<{ stop: () => void }> {
   startReasonerWatcher();
 
   startRetentionScheduler();
+  startInsightsScanScheduler();
+  if (dashboardDb) { try { backfillCostEventsOnce(); } catch (e) { console.error("[control-surface] cost backfill failed", e); } }
 
   const shutdown = () => {
     ingestor?.stop();
     builderReconciler?.stop();
+    stopInsightsScanScheduler();
     process.exit(0);
   };
   process.once("SIGTERM", shutdown);
@@ -187,6 +211,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
     stop: () => {
       ingestor?.stop();
       builderReconciler?.stop();
+      stopInsightsScanScheduler();
     },
   };
 }

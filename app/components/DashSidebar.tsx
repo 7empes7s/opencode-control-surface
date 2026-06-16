@@ -32,8 +32,12 @@ import {
   Package,
   TrendingUp,
   Radar,
-  Paperclip,
   Bell,
+  Lightbulb,
+  Bot,
+  Inbox,
+  FileCheck2,
+  FileText,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -52,6 +56,9 @@ type Variant = "terminal" | "compact";
 
 const NAV: NavItem[] = [
   { href: "/", label: "Home", icon: LayoutGrid, match: (l) => l === "/" },
+  { href: "/insights", label: "Insights", icon: Inbox },
+  { href: "/security", label: "Security", icon: Shield },
+  { href: "/agents", label: "Agents", icon: Bot },
   { href: "/today", label: "Today", icon: CalendarDays },
   { href: "/autopipeline", label: "Pipeline", icon: Workflow },
   { href: "/doctor", label: "Doctor", icon: Stethoscope },
@@ -61,8 +68,10 @@ const NAV: NavItem[] = [
   { href: "/infra", label: "Infra", icon: Server },
   { href: "/incidents", label: "Incidents", icon: AlertTriangle },
   { href: "/jobs", label: "Jobs", icon: ClipboardList },
+  { href: "/agent-team", label: "Agent Team", icon: Bot },
   { href: "/audit", label: "Audit", icon: History },
   { href: "/builder", label: "Builder", icon: Hammer },
+  { href: "/brainstorm", label: "Brainstorm", icon: Lightbulb },
   { href: "/workflows", label: "Workflows", icon: GitBranch },
   { href: "/marketplace", label: "Marketplace", icon: Package },
   { href: "/traces", label: "Traces", icon: GitBranch },
@@ -74,7 +83,6 @@ const NAV: NavItem[] = [
   { href: "/about", label: "About", icon: Info },
   { href: "/install", label: "Setup", icon: Wrench, condition: () => localStorage.getItem("tib-install-wizard-done") !== "true" },
   { href: "/litellm", label: "LiteLLM", icon: Route },
-  { href: "/paperclip", label: "Paperclip", icon: Paperclip },
   { href: "/opencode", label: "OpenCode", icon: Terminal },
   { href: "/codex", label: "Codex", icon: Code2 },
   { href: "/claude", label: "Claude Code", icon: Sparkles },
@@ -82,12 +90,14 @@ const NAV: NavItem[] = [
   { href: "/finance-intel", label: "Finance Intel", icon: TrendingUp },
   { href: "/scout", label: "Scout", icon: Radar },
   { href: "/channels", label: "Channels", icon: Bell },
+  { href: "/content-health", label: "Content Health", icon: FileCheck2 },
+  { href: "/reports", label: "Reports", icon: FileText },
 ];
 
 const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");
 const ADVANCED_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "advanced");
 
-const PRIMARY_NAV: NavItem[] = ["/", "/today", "/autopipeline", "/models", "/opencode"]
+const PRIMARY_NAV: NavItem[] = ["/", "/insights", "/security", "/agents", "/today", "/autopipeline", "/models", "/opencode"]
   .map((href) => CORE_NAV.find((item) => item.href === href))
   .filter((item): item is NavItem => Boolean(item));
 
@@ -125,6 +135,20 @@ function usePreferences() {
   };
 
   return { theme, setTheme, variant, setVariant };
+}
+
+function useIsMobile(breakpoint = 600): boolean {
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window === "undefined" ? false : window.innerWidth <= breakpoint
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint}px)`);
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    setIsMobile(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [breakpoint]);
+  return isMobile;
 }
 
 /* ── Compact stack status for top nav ─────────────────────────────────── */
@@ -182,7 +206,7 @@ export function DashSidebar() {
           <span className="rail-brand-sub">Control</span>
         </div>
 
-<nav className="topnav-links" aria-label="Main navigation">
+<nav className="topnav-links desktop-nav" aria-label="Main navigation">
           {CORE_NAV.concat(ADVANCED_NAV).filter(item => !item.condition || item.condition()).map(({ href, label, icon: Icon, match }) => {
             const active = match ? match(location) : location.startsWith(href);
             const exp = isExperimental(href);
@@ -260,16 +284,38 @@ export function DashSidebar() {
               <LayoutDashboard size={11} strokeWidth={1.75} />
             </button>
           </div>
+          {/* Mobile-only: single theme + variant cycling button (the groups above are hidden via CSS). */}
+          <button
+            type="button"
+            className="topnav-mode-cycle active"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            title={`Theme: ${theme} — tap to switch`}
+            aria-label={`Cycle theme (current: ${theme})`}
+          >
+            {theme === "dark" ? <Moon size={13} strokeWidth={1.75} /> : <Sun size={13} strokeWidth={1.75} />}
+          </button>
+          <button
+            type="button"
+            className="topnav-mode-cycle active"
+            onClick={() => setVariant(variant === "terminal" ? "compact" : "terminal")}
+            title={`Variant: ${variant} — tap to switch`}
+            aria-label={`Cycle variant (current: ${variant})`}
+          >
+            {variant === "terminal" ? <Monitor size={13} strokeWidth={1.75} /> : <LayoutDashboard size={13} strokeWidth={1.75} />}
+          </button>
         </div>
       </header>
 
       {/* ── Mobile bottom tab bar ─────────────────────────── */}
       <nav className="dash-bottomnav" aria-label="Mobile navigation">
-        {PRIMARY_NAV.map((item) => {
+        {PRIMARY_NAV.map((item, idx) => {
           const active = isActive(item, location);
           const Icon = item.icon;
+          /* On mobile (≤600px) the CSS hides everything past the 4th tab.
+             The "More" tab then keeps the existing overflow behavior via the drawer. */
+          const overflowClass = idx >= 4 ? " bn-tab-overflow" : "";
           return (
-            <Link key={item.href} href={item.href} className={`bn-tab${active ? " active" : ""}`}>
+            <Link key={item.href} href={item.href} className={`bn-tab${active ? " active" : ""}${overflowClass}`}>
               <Icon size={20} strokeWidth={1.6} />
               <span>{item.label}</span>
             </Link>

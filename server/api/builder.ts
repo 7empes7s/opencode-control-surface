@@ -19,9 +19,11 @@ import {
   readBuilderWorkflow,
   readBuilderWorkflows,
   updateBuilderWorkflow,
+  setBuilderWorkflowLifecycle,
   provisionProject,
   type BuilderArtifact,
   type BuilderDoctorReport,
+  type BuilderLifecycle,
   type BuilderPass,
   type BuilderRun,
   type BuilderValidation,
@@ -42,6 +44,7 @@ import {
   reconcileRunStatus,
   classifyFailureDiagnosis,
   updateBuilderRun,
+  classifyStopReason,
   type FailureDiagnosis,
 } from "../builder/runner.ts";
 import { getNextRunTime } from "../builder/scheduler.ts";
@@ -554,6 +557,38 @@ export async function builderStopWorkflowHandler(workflowId: string, req: Reques
 
     return json(ok<BuilderWorkflowResponse>({
       workflow: readBuilderWorkflow(workflowId),
+      runs: readBuilderRuns(workflowId),
+      degraded: false,
+    }, { builder: "ok" }));
+  } catch (error) {
+    return apiError(errorMessage(error), 400);
+  }
+}
+
+export async function builderSetLifecycleHandler(workflowId: string, req: Request): Promise<Response> {
+  try {
+    const body = await req.json().catch(() => ({})) as { lifecycle?: unknown };
+    const raw = body.lifecycle;
+    const valid: Array<BuilderLifecycle | null> = ["new", "in-progress", "done", null];
+    const lifecycle = (raw === null || raw === "new" || raw === "in-progress" || raw === "done")
+      ? raw as (BuilderLifecycle | null)
+      : undefined;
+    if (lifecycle === undefined) {
+      return apiError(`Invalid lifecycle. Expected one of: ${valid.map(v => v ?? "null").join(", ")}`, 400);
+    }
+    const workflow = setBuilderWorkflowLifecycle(workflowId, lifecycle);
+    if (!workflow) return apiError("Workflow not found", 404);
+    writeActionAudit({
+      actionKind: "builder.workflow.lifecycle",
+      actionId: `builder-workflow:lifecycle:${workflowId}`,
+      targetType: "builder-workflow",
+      targetId: workflowId,
+      risk: "low",
+      result: `lifecycle set to ${lifecycle ?? "auto"}`,
+      resultStatus: "success",
+    });
+    return json(ok<BuilderWorkflowResponse>({
+      workflow,
       runs: readBuilderRuns(workflowId),
       degraded: false,
     }, { builder: "ok" }));

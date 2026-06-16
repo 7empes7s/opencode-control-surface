@@ -64,37 +64,36 @@ function parseMarkdownTable(markdown: string, headerRow: number): DossierClaim[]
   return claims;
 }
 
-// Helper function to parse dossier header
-function parseDossierHeader(content: string): any {
+// Helper function to parse dossier header into sections
+function parseDossierHeader(content: string): Record<string, Record<string, string>> {
   const lines = content.split("\n");
-  const header: any = {};
-  
+  const sections: Record<string, Record<string, string>> = {};
   let inSection = "";
+  let lastKey = "";
+
   for (const line of lines) {
     const trimmed = line.trim();
-    
     if (trimmed.startsWith("## ")) {
-      inSection = trimmed.substring(3);
-      header[inSection] = {};
-    } else if (trimmed.startsWith("- ") && inSection) {
-      const parts = trimmed.substring(2).split(":");
-      if (parts.length >= 2) {
-        const key = parts[0].trim();
-        const value = parts.slice(1).join(":").trim();
-        header[inSection][key] = value;
-      }
-    } else if (trimmed.startsWith("- ") && !inSection) {
-      // Top-level properties
-      const parts = trimmed.substring(2).split(":");
-      if (parts.length >= 2) {
-        const key = parts[0].trim();
-        const value = parts.slice(1).join(":").trim();
-        header[key] = value;
+      inSection = trimmed.substring(3).trim();
+      sections[inSection] = {};
+      lastKey = "";
+    } else if (inSection && trimmed.startsWith("- ")) {
+      const rest = trimmed.substring(2);
+      const colonIdx = rest.indexOf(":");
+      if (colonIdx !== -1) {
+        const key = rest.substring(0, colonIdx).trim();
+        const value = rest.substring(colonIdx + 1).trim();
+        sections[inSection][key] = value;
+        lastKey = key;
+      } else if (lastKey) {
+        // Sub-item value for the previous key (e.g. "- Status:\n  - researching")
+        const existing = sections[inSection][lastKey];
+        sections[inSection][lastKey] = existing ? `${existing} ${rest}` : rest;
       }
     }
   }
-  
-  return header;
+
+  return sections;
 }
 
 // GET /api/dossier/:date/:slug - Get dossier artifacts
@@ -130,12 +129,31 @@ export async function getDossierArtifacts(req: Request, date: string, slug: stri
     ]);
     
     // Parse DOSSIER.md to extract structured data
-    let header = {};
+    let header: any = {};
     let claims: DossierClaim[] = [];
-    
+
     if (dossierContent) {
-      header = parseDossierHeader(dossierContent);
-      
+      const sections = parseDossierHeader(dossierContent);
+      const id = sections["Story Identity"] ?? {};
+      const why = sections["Why This Story Matters"] ?? {};
+      const angle = sections["Core Angle"] ?? {};
+
+      header = {
+        slug: id["Slug"] ?? "",
+        headline: id["Working headline"] ?? id["Headline"] ?? "",
+        vertical: id["Vertical"] ?? "",
+        owner: id["Story owner"] ?? id["Owner"] ?? "",
+        created: id["Created"] ?? "",
+        updated: id["Last updated"] ?? id["Last Updated"] ?? "",
+        status: id["Status"] ?? "",
+        "Public importance": why["Public importance"] ?? "",
+        "News value": why["News value"] ?? "",
+        "Why now": why["Why now"] ?? "",
+        "Why NewsBites should cover it": why["Why NewsBites should cover it"] ?? "",
+        "One-sentence framing": angle["One-sentence framing"] ?? "",
+        "What the story is not": angle["What the story is not"] ?? "",
+      };
+
       // Try to parse claims table
       const claimsTableIndex = dossierContent.indexOf("## Claim Table");
       if (claimsTableIndex !== -1) {
@@ -213,7 +231,7 @@ export async function getDossierArtifacts(req: Request, date: string, slug: stri
     const artifacts: DossierArtifacts = {
       slug,
       date,
-      header: header["Story Identity"] || {},
+      header,
       sources,
       claims,
       draftContent: draftContent || "",

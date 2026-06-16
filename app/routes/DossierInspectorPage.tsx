@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { useParams } from "wouter";
+import { useState } from "react";
+import { useParams, useLocation } from "wouter";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import type { DossierArtifacts } from "../../server/api/types";
@@ -8,212 +8,172 @@ import { ClaimsTable } from "../components/ClaimsTable";
 import { AgentRunList } from "../components/AgentRunList";
 import { DossierInjectPanel } from "../components/DossierInjectPanel";
 
+const PRE: React.CSSProperties = {
+  fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)",
+  background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4,
+  padding: "14px 16px", whiteSpace: "pre-wrap", lineHeight: 1.6,
+  overflow: "auto", maxHeight: "70vh", margin: 0,
+};
+
+const PANEL: React.CSSProperties = {
+  background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4,
+};
+
+const PANEL_HDR: React.CSSProperties = {
+  padding: "7px 14px", borderBottom: "1px solid var(--border)",
+  fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)",
+  textTransform: "uppercase", letterSpacing: "0.08em",
+};
+
+const TABS = [
+  { id: "header",     label: "Header" },
+  { id: "sources",    label: "Sources" },
+  { id: "claims",     label: "Claims" },
+  { id: "draft",      label: "Draft" },
+  { id: "verify",     label: "Verify" },
+  { id: "agent-runs", label: "Agent Runs" },
+  { id: "inject",     label: "Inject" },
+];
+
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    fontFamily: "var(--mono)", fontSize: 11, padding: "7px 16px",
+    background: "none", border: "none", cursor: "pointer",
+    borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+    color: active ? "var(--accent)" : "var(--text-dim)",
+    letterSpacing: "0.02em", whiteSpace: "nowrap",
+  };
+}
+
+function BriefRow({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.55 }}>{value}</div>
+    </div>
+  );
+}
+
 export function DossierInspectorPage() {
   const params: { date?: string; slug?: string } = useParams();
-  const date = params.date || "";
-  const slug = params.slug || "";
-  
+  const date = params.date ?? "";
+  const slug = params.slug ?? "";
+  const [, navigate] = useLocation();
+
   const { data, loading, error, refresh } = useApi<DossierArtifacts>(`/api/dossier/${date}/${slug}`);
   const [activeTab, setActiveTab] = useState("header");
-  
+
   if (loading && !data) return <div className="loading-dim">loading dossier…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
-  
-  const dossier = data;
-  
+
+  const d = data;
+
   const handleInject = async (notes: string, stage: string | null, requeue: boolean) => {
-    const response = await authFetch(`/api/dossier/${date}/${slug}/inject`, {
+    const res = await authFetch(`/api/dossier/${date}/${slug}/inject`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notes, stage, requeue })
+      body: JSON.stringify({ notes, stage, requeue }),
     });
-    
-    if (!response.ok) {
-      const result = await response.json();
-      throw new Error(result.error || "Failed to inject notes");
+    if (!res.ok) {
+      const result = await res.json() as { error?: string };
+      throw new Error(result.error ?? "Failed to inject notes");
     }
-    
-    // Refresh the dossier data
     refresh();
   };
-  
+
   return (
     <div className="dash-page">
       <div className="page-header">
-        <div className="page-title">Dossier Inspector</div>
-        <div className="page-subtitle">{dossier.header.headline || dossier.slug}</div>
-        <div className="action-bar">
-          <button className="btn btn-ghost" onClick={refresh}>Refresh</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => navigate("/autopipeline")}>← Pipeline</button>
+          <div className="page-title" style={{ margin: 0 }}>Dossier</div>
+          <span className="mono dim" style={{ fontSize: 11 }}>{date}</span>
+        </div>
+        {d.header.headline && (
+          <div style={{ fontSize: 14, color: "var(--text-bright)", marginBottom: 4, lineHeight: 1.4 }}>{d.header.headline}</div>
+        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {d.header.vertical && <span className="pill gray">{d.header.vertical}</span>}
+          {d.header.status && <span className="pill amber">{d.header.status}</span>}
+          <button className="btn btn-ghost btn-sm" onClick={refresh}>Refresh</button>
         </div>
       </div>
-      
-      <div className="tabs">
-        <button 
-          className={`tab ${activeTab === "header" ? "active" : ""}`} 
-          onClick={() => setActiveTab("header")}
-        >
-          Header
-        </button>
-        <button 
-          className={`tab ${activeTab === "sources" ? "active" : ""}`} 
-          onClick={() => setActiveTab("sources")}
-        >
-          Sources
-        </button>
-        <button 
-          className={`tab ${activeTab === "claims" ? "active" : ""}`} 
-          onClick={() => setActiveTab("claims")}
-        >
-          Claims
-        </button>
-        <button 
-          className={`tab ${activeTab === "draft" ? "active" : ""}`} 
-          onClick={() => setActiveTab("draft")}
-        >
-          Draft
-        </button>
-        <button 
-          className={`tab ${activeTab === "verify" ? "active" : ""}`} 
-          onClick={() => setActiveTab("verify")}
-        >
-          Verify
-        </button>
-        <button 
-          className={`tab ${activeTab === "agent-runs" ? "active" : ""}`} 
-          onClick={() => setActiveTab("agent-runs")}
-        >
-          Agent Runs
-        </button>
-        <button 
-          className={`tab ${activeTab === "inject" ? "active" : ""}`} 
-          onClick={() => setActiveTab("inject")}
-        >
-          Inject
-        </button>
+
+      {/* Tab bar */}
+      <div style={{ display: "flex", borderBottom: "1px solid var(--border)", marginBottom: 16, overflowX: "auto" }}>
+        {TABS.map((t) => (
+          <button key={t.id} style={tabStyle(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
       </div>
-      
-      <div className="tab-content">
-        {activeTab === "header" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <h3 className="section-title">Story Identity</h3>
-                  <table className="data-table">
-                    <tbody>
-                      <tr>
-                        <td>Slug</td>
-                        <td className="mono">{dossier.header.slug}</td>
-                      </tr>
-                      <tr>
-                        <td>Headline</td>
-                        <td>{dossier.header.headline}</td>
-                      </tr>
-                      <tr>
-                        <td>Vertical</td>
-                        <td>{dossier.header.vertical}</td>
-                      </tr>
-                      <tr>
-                        <td>Owner</td>
-                        <td>{dossier.header.owner}</td>
-                      </tr>
-                      <tr>
-                        <td>Created</td>
-                        <td>{dossier.header.created}</td>
-                      </tr>
-                      <tr>
-                        <td>Last Updated</td>
-                        <td>{dossier.header.updated}</td>
-                      </tr>
-                      <tr>
-                        <td>Status</td>
-                        <td>{dossier.header.status}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                
-                <div>
-                  <h3 className="section-title">Editorial Brief</h3>
-                  <div className="prose">
-                    <p><strong>Why This Story Matters:</strong></p>
-                    <ul>
-                      <li>Public importance: {dossier.header["Public importance"]}</li>
-                      <li>News value: {dossier.header["News value"]}</li>
-                      <li>Why now: {dossier.header["Why now"]}</li>
-                      <li>Why NewsBites should cover it: {dossier.header["Why NewsBites should cover it"]}</li>
-                    </ul>
-                    
-                    <p><strong>Core Angle:</strong></p>
-                    <ul>
-                      <li>One-sentence framing: {dossier.header["One-sentence framing"]}</li>
-                      <li>What the story is not: {dossier.header["What the story is not"]}</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-              
-              <h3 className="section-title">Research Notes</h3>
-              <div className="prose">
-                <pre>{dossier.header["Research Notes"]}</pre>
-              </div>
+
+      {activeTab === "header" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {/* Story Identity */}
+          <div style={PANEL}>
+            <div style={PANEL_HDR}>Story Identity</div>
+            <table className="data-table">
+              <tbody>
+                {([
+                  ["Slug",    d.header.slug,    true],
+                  ["Owner",   d.header.owner,   false],
+                  ["Created", d.header.created, true],
+                  ["Updated", d.header.updated, true],
+                  ["Status",  d.header.status,  false],
+                ] as [string, string, boolean][]).map(([lbl, val, mono]) => (
+                  <tr key={lbl}>
+                    <td style={{ width: 72, color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 11, whiteSpace: "nowrap" }}>{lbl}</td>
+                    <td style={{ fontFamily: mono ? "var(--mono)" : undefined, fontSize: mono ? 11 : 12, wordBreak: "break-all" }}>{val || <span className="dim">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Editorial Brief */}
+          <div style={PANEL}>
+            <div style={PANEL_HDR}>Editorial Brief</div>
+            <div style={{ padding: "12px 14px" }}>
+              <BriefRow label="Why now"            value={d.header["Why now"]} />
+              <BriefRow label="Importance"         value={d.header["Public importance"]} />
+              <BriefRow label="Core angle"         value={d.header["One-sentence framing"]} />
+              <BriefRow label="Not about"          value={d.header["What the story is not"]} />
+              <BriefRow label="Coverage reason"    value={d.header["Why NewsBites should cover it"]} />
             </div>
           </div>
-        )}
-        
-        {activeTab === "sources" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <SourcesTable sources={dossier.sources} />
-            </div>
-          </div>
-        )}
-        
-        {activeTab === "claims" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <ClaimsTable claims={dossier.claims} />
-            </div>
-          </div>
-        )}
-        
-        {activeTab === "draft" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <pre className="code-block">{dossier.draftContent}</pre>
-            </div>
-          </div>
-        )}
-        
-        {activeTab === "verify" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              {dossier.verifyContent ? (
-                <pre className="code-block">{dossier.verifyContent}</pre>
-              ) : (
-                <div className="loading-dim">No verification content found</div>
-              )}
-            </div>
-          </div>
-        )}
-        
-        {activeTab === "agent-runs" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <AgentRunList agentRuns={dossier.agentRuns} />
-            </div>
-          </div>
-        )}
-        
-        {activeTab === "inject" && (
-          <div className="section-card">
-            <div className="section-card-body">
-              <DossierInjectPanel dossier={dossier} onInject={handleInject} />
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {activeTab === "sources" && (
+        <div style={PANEL}>
+          <div style={PANEL_HDR}>Sources</div>
+          <SourcesTable sources={d.sources} />
+        </div>
+      )}
+
+      {activeTab === "claims" && (
+        <div style={PANEL}>
+          <div style={PANEL_HDR}>Claims</div>
+          <ClaimsTable claims={d.claims} />
+        </div>
+      )}
+
+      {activeTab === "draft" && (
+        <pre style={PRE}>{d.draftContent || "No draft content yet."}</pre>
+      )}
+
+      {activeTab === "verify" && (
+        d.verifyContent
+          ? <pre style={PRE}>{d.verifyContent}</pre>
+          : <div className="loading-dim">No verification content yet.</div>
+      )}
+
+      {activeTab === "agent-runs" && <AgentRunList agentRuns={d.agentRuns} />}
+
+      {activeTab === "inject" && <DossierInjectPanel dossier={d} onInject={handleInject} />}
     </div>
   );
 }

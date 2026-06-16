@@ -14,6 +14,10 @@ let previousDoctorLogWarnBytes: string | undefined;
 let previousDoctorLogCritBytes: string | undefined;
 let previousBackupRoot: string | undefined;
 let previousBackupStaleMs: string | undefined;
+let previousContentArticlesPath: string | undefined;
+let previousContentPublicPath: string | undefined;
+let previousContentAllowedVerticals: string | undefined;
+let previousContentDigestMinWords: string | undefined;
 
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) {
@@ -35,6 +39,11 @@ function registerSamplerTests(): void {
     previousDoctorLogCritBytes = process.env.DASHBOARD_DOCTOR_LOG_CRIT_BYTES;
     previousBackupRoot = process.env.DASHBOARD_BACKUP_ROOT;
     previousBackupStaleMs = process.env.DASHBOARD_BACKUP_STALE_MS;
+    previousContentArticlesPath = process.env.DASHBOARD_CONTENT_ARTICLES_PATH;
+    previousContentPublicPath = process.env.DASHBOARD_CONTENT_PUBLIC_PATH;
+    previousContentAllowedVerticals = process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS;
+    previousContentDigestMinWords = process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS;
+    process.env.DASHBOARD_CONTENT_ARTICLES_PATH = join(tempDir, "missing-content");
   });
 
   afterEach(() => {
@@ -58,6 +67,10 @@ function registerSamplerTests(): void {
     restoreEnv("DASHBOARD_DOCTOR_LOG_CRIT_BYTES", previousDoctorLogCritBytes);
     restoreEnv("DASHBOARD_BACKUP_ROOT", previousBackupRoot);
     restoreEnv("DASHBOARD_BACKUP_STALE_MS", previousBackupStaleMs);
+    restoreEnv("DASHBOARD_CONTENT_ARTICLES_PATH", previousContentArticlesPath);
+    restoreEnv("DASHBOARD_CONTENT_PUBLIC_PATH", previousContentPublicPath);
+    restoreEnv("DASHBOARD_CONTENT_ALLOWED_VERTICALS", previousContentAllowedVerticals);
+    restoreEnv("DASHBOARD_CONTENT_DIGEST_MIN_WORDS", previousContentDigestMinWords);
 
     rmSync(tempDir, { recursive: true, force: true });
   });
@@ -647,6 +660,153 @@ function registerSamplerTests(): void {
     expect(rows[0].summary).toContain("24 queued");
     expect(JSON.parse(rows[0].payload_json).largestStage.stage).toBe("draft");
   });
+
+  test("content health detector emits article quality findings", () => {
+    openTempDb();
+    const articlesRoot = join(tempDir, "articles");
+    const publicRoot = join(tempDir, "public");
+    mkdirSync(articlesRoot, { recursive: true });
+    mkdirSync(publicRoot, { recursive: true });
+    process.env.DASHBOARD_CONTENT_ARTICLES_PATH = articlesRoot;
+    process.env.DASHBOARD_CONTENT_PUBLIC_PATH = publicRoot;
+    process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS = "ai,finance";
+    process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS = "4";
+
+    writeArticle(articlesRoot, "bad.md", {
+      title: "Bad Article",
+      slug: "bad",
+      status: "published",
+      vertical: "unknown",
+      lead: "short digest",
+      digest: "short digest",
+      coverImage: "/images/articles/missing.jpg",
+    });
+
+    runHomeSampler(stubHome());
+    runHomeSampler(stubHome());
+
+    const rows = getDashboardDb()!.query(`
+      SELECT kind, severity, entity_id, summary, payload_json
+      FROM events
+      WHERE kind LIKE 'article.%'
+      ORDER BY kind ASC
+    `).all() as Array<{ kind: string; severity: string; entity_id: string; summary: string; payload_json: string }>;
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "article.invalid_vertical",
+      "article.missing_image",
+      "article.thin_digest",
+    ]);
+    expect(rows.every((row) => row.severity === "warn")).toBe(true);
+    expect(rows.every((row) => row.entity_id === "bad")).toBe(true);
+    expect(rows[0].summary).toContain("Bad Article");
+    expect(JSON.parse(rows[0].payload_json).vertical).toBe("unknown");
+  });
+
+  test("content health detector skips healthy drafts and valid published articles", () => {
+    openTempDb();
+    const articlesRoot = join(tempDir, "articles");
+    const publicRoot = join(tempDir, "public");
+    const imageDir = join(publicRoot, "images", "articles");
+    mkdirSync(articlesRoot, { recursive: true });
+    mkdirSync(imageDir, { recursive: true });
+    writeFileSync(join(imageDir, "ok.jpg"), "image");
+    process.env.DASHBOARD_CONTENT_ARTICLES_PATH = articlesRoot;
+    process.env.DASHBOARD_CONTENT_PUBLIC_PATH = publicRoot;
+    process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS = "ai,finance";
+    process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS = "4";
+
+    writeArticle(articlesRoot, "ok.md", {
+      title: "Good Article",
+      slug: "ok",
+      status: "published",
+      vertical: "ai",
+      lead: "The lead is intentionally different from the digest.",
+      digest: "This digest has enough distinct words for the content health detector.",
+      coverImage: "/images/articles/ok.jpg",
+    });
+    writeArticle(articlesRoot, "draft.md", {
+      title: "Draft Article",
+      slug: "draft",
+      status: "draft",
+      vertical: "",
+      lead: "",
+      digest: "",
+      coverImage: "",
+    });
+
+    runHomeSampler(stubHome());
+
+    const row = getDashboardDb()!.query(`
+      SELECT COUNT(*) AS count
+      FROM events
+      WHERE kind LIKE 'article.%'
+    `).get() as { count: number };
+
+    expect(row.count).toBe(0);
+  });
+
+  test("content health detector emits broken link duplicate and vertical coverage findings", () => {
+    openTempDb();
+    const articlesRoot = join(tempDir, "articles");
+    const publicRoot = join(tempDir, "public");
+    const imageDir = join(publicRoot, "images", "articles");
+    mkdirSync(articlesRoot, { recursive: true });
+    mkdirSync(imageDir, { recursive: true });
+    writeFileSync(join(imageDir, "ok.jpg"), "image");
+    process.env.DASHBOARD_CONTENT_ARTICLES_PATH = articlesRoot;
+    process.env.DASHBOARD_CONTENT_PUBLIC_PATH = publicRoot;
+    process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS = "ai,finance,space";
+    process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS = "4";
+
+    const healthyFields = {
+      status: "published",
+      vertical: "ai",
+      lead: "The lead is intentionally different from the digest.",
+      digest: "This digest has enough distinct words for the content health detector.",
+      coverImage: "/images/articles/ok.jpg",
+    };
+    writeArticle(articlesRoot, "one.md", {
+      ...healthyFields,
+      title: "Shared Title",
+      slug: "one",
+    }, "See [missing local page](/missing-page).");
+    writeArticle(articlesRoot, "two.md", {
+      ...healthyFields,
+      title: "Shared Title",
+      slug: "two",
+    });
+    writeArticle(articlesRoot, "three.md", {
+      ...healthyFields,
+      title: "Finance Coverage",
+      slug: "finance-coverage",
+      vertical: "finance",
+    });
+
+    runHomeSampler(stubHome());
+    runHomeSampler(stubHome());
+
+    const rows = getDashboardDb()!.query(`
+      SELECT kind, severity, entity_type, entity_id, summary, payload_json
+      FROM events
+      WHERE kind IN ('article.broken_link', 'content.near_duplicate', 'content.vertical_concentration', 'content.vertical_gap')
+      ORDER BY kind ASC, entity_id ASC, summary ASC
+    `).all() as Array<{ kind: string; severity: string; entity_type: string; entity_id: string | null; summary: string; payload_json: string }>;
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "article.broken_link",
+      "content.near_duplicate",
+      "content.vertical_concentration",
+      "content.vertical_gap",
+    ]);
+    expect(rows.find((row) => row.kind === "article.broken_link")?.entity_id).toBe("one");
+    expect(JSON.parse(rows.find((row) => row.kind === "article.broken_link")!.payload_json).brokenLinks).toEqual(["/missing-page"]);
+    expect(rows.find((row) => row.kind === "content.near_duplicate")?.entity_id).toBe("one");
+    expect(JSON.parse(rows.find((row) => row.kind === "content.near_duplicate")!.payload_json).duplicateOf).toBe("two");
+    expect(JSON.parse(rows.find((row) => row.kind === "content.vertical_concentration")!.payload_json).vertical).toBe("ai");
+    expect(rows.find((row) => row.kind === "content.vertical_gap")?.severity).toBe("warn");
+    expect(JSON.parse(rows.find((row) => row.kind === "content.vertical_gap")!.payload_json).vertical).toBe("space");
+  });
 }
 
 function openTempDb(): void {
@@ -693,6 +853,13 @@ function insertServiceSamples(service: string, states: string[]): void {
   states.forEach((state, index) => {
     statement.run(startTs + index * 60 * 1000, "services", `${service}.state`, JSON.stringify({ state }));
   });
+}
+
+function writeArticle(root: string, file: string, fields: Record<string, string>, body?: string): void {
+  const frontmatter = Object.entries(fields)
+    .map(([key, value]) => `${key}: "${value.replace(/"/g, '\\"')}"`)
+    .join("\n");
+  writeFileSync(join(root, file), `---\n${frontmatter}\n---\n\n${body ?? `Body text for ${fields.slug}.`}\n`);
 }
 
 function stubHome(overrides: {

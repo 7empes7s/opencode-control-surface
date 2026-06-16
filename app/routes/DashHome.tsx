@@ -246,15 +246,105 @@ function OrchestratorStatusStrip() {
   );
 }
 
+function HomeLoadingState({ error }: { error?: string | null }) {
+  const sections: Array<{ title: string; cards: string[] }> = [
+    { title: "stack health", cards: ["services", "gpu", "vast balance", "hetzner"] },
+    { title: "newsbites", cards: ["total published", "7d publish rate", "top verticals", "latest published"] },
+    { title: "doctor", cards: ["repairs 24h", "top error classes", "top failing models", "verdict mix"] },
+  ];
+
+  return (
+    <div className="dash-page">
+      <div className="dash-section">
+        <div className="dash-section-title">mission control</div>
+        <div className={`loading-panel${error ? " error" : ""}`}>
+          <div style={{ fontWeight: 600 }}>{error ? "Home data did not load" : "Loading home data"}</div>
+          <div>{error ? `The API returned: ${error}` : "Waiting for the stream or polling fallback. The dashboard will fill in automatically."}</div>
+        </div>
+      </div>
+      {sections.map(({ title, cards }) => (
+        <div className="dash-section" key={title}>
+          <div className="dash-section-title">{title}</div>
+          <div className="widget-grid">
+            {cards.map((label) => (
+              <WCard key={label}>
+                <div className="w-label">{label}</div>
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+              </WCard>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type HealthFinding = { id: string; name: string; status: string; severity: string; detail: string };
+function ProductHealthTile() {
+  const { data } = useApi<{ score: number | null; fails: number; warns: number; checkedAtISO: string | null; findings: HealthFinding[] }>("/api/product-health", 30_000);
+  if (!data) return null;
+  const score = data.score;
+  const color = score == null ? "blue" : score >= 90 ? "green" : score >= 70 ? "amber" : "red";
+  const fails = (data.findings ?? []).filter((f) => f.status === "fail");
+  return (
+    <div className="dash-section">
+      <div className="dash-section-title">product health · sentinel</div>
+      <WCard href="/insights" className="full">
+        <div className="w-label">live product self-check (every 30 min)</div>
+        <div className="w-headline sm">Health {score == null ? "—" : `${score}/100`}</div>
+        <div className="w-row">
+          <Pill color={color}>{data.fails} fail</Pill>
+          <Pill color={data.warns > 0 ? "amber" : "green"}>{data.warns} warn</Pill>
+          {data.checkedAtISO && <span className="w-caption">checked {data.checkedAtISO.replace("T", " ").replace("Z", " UTC")}</span>}
+        </div>
+        {fails.slice(0, 5).map((f) => (
+          <div key={f.id} className="w-caption" style={{ color: "var(--danger, #e5564b)" }}>⚠ {f.name}: {f.detail}</div>
+        ))}
+        {fails.length === 0 && <div className="w-caption">All live checks passing.</div>}
+      </WCard>
+    </div>
+  );
+}
+
+function ShowcaseTile() {
+  const { data: rawData, loading } = useApi<{ data: { headline: any } }>("/api/metrics/showcase", 60_000);
+  const data = rawData?.data;
+
+  if (loading && !data) return null;
+  const h = data?.headline || {};
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-title">showcase metrics</div>
+      <WCard href="/agent-team" className="full">
+        <div className="w-label">platform reliability & self-correction</div>
+        <div className="w-headline sm" style={{ marginBottom: 12 }}>
+          {h.headlineSentence || "—"}
+        </div>
+        <div className="w-row" style={{ flexWrap: "wrap", gap: 8 }}>
+          <Pill color="gray">{h.buildsAudited ?? "—"} builds audited</Pill>
+          <Pill color="green">{h.buildsShipped ?? "—"} shipped</Pill>
+          <Pill color="amber">{h.buildsRolledBack ?? "—"} safely rolled back</Pill>
+          <Pill color="blue">{h.freeModelsAvailable ?? "—"} free models available</Pill>
+          <Pill color="green">{h.platformHealth ?? "—"} health score</Pill>
+          <Pill color="gray">{h.uptimeDays ?? "—"} uptime days</Pill>
+        </div>
+      </WCard>
+    </div>
+  );
+}
+
 export function DashHome() {
   const { data: streamData, connected } = useStream<HomeData>("/api/stream");
   // Fallback poll for initial load if SSE hasn't fired yet
   const { data: pollData, loading, error } = useApi<HomeData>("/api/home", 60_000);
+  const { data: insightsData } = useApi<{ insights: unknown[]; openCount: number }>("/api/insights?status=open", 10_000);
   const data = streamData ?? pollData;
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">failed to load: {error}</div>;
-  if (!data) return null;
+  if (loading && !data) return <HomeLoadingState />;
+  if (error && !data) return <HomeLoadingState error={error} />;
+  if (!data) return <HomeLoadingState error="No home data is available yet." />;
 
   const d = data;
 
@@ -274,6 +364,29 @@ export function DashHome() {
 
   return (
     <div className="dash-page">
+
+      {/* ── Demo opener: Insights Inbox ────────────────── */}
+      <div className="dash-section">
+        <WCard href="/insights" className="full">
+          <div className="w-label">demo opener</div>
+          <div className="w-headline sm">Insights Inbox</div>
+          <div className="w-caption">
+            AI recommendations are grouped by cost, security, build, and data. Apply actions are audited and reversible.
+          </div>
+          <div className="w-row">
+            <Pill color={(insightsData?.openCount ?? 0) > 0 ? "amber" : "green"}>
+              {insightsData?.openCount ?? 0} open
+            </Pill>
+            <span className="pill blue">Open inbox →</span>
+          </div>
+        </WCard>
+      </div>
+
+      {/* ── Product health (sentinel scorecard) ─────────── */}
+      <ProductHealthTile />
+
+      {/* ── Showcase metrics (self-correction story) ────── */}
+      <ShowcaseTile />
 
       {/* ── Mission Control deck ────────────────────────── */}
       <MissionControlDeck />

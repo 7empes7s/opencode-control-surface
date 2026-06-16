@@ -103,6 +103,23 @@ interface SystemConfigHistory {
   configSnapshot: Record<string, any>;
 }
 
+type AccessRole = "owner" | "operator" | "auditor" | "viewer";
+
+interface AccessUser {
+  id: string;
+  email: string;
+  name: string | null;
+  authMethod: string;
+  createdAt: number;
+  tenantId: string;
+  role: AccessRole;
+}
+
+interface AccessState {
+  users: AccessUser[];
+  currentRole: AccessRole;
+}
+
 function WCard({ children, className = "", style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return <div className={`w-card ${className}`} style={style}>{children}</div>;
 }
@@ -120,10 +137,11 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
-type TabId = "auth" | "license" | "telemetry" | "finance" | "pipeline" | "alerts" | "approval" | "history";
+type TabId = "auth" | "access" | "license" | "telemetry" | "finance" | "pipeline" | "alerts" | "approval" | "history";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "auth", label: "Auth & Stack" },
+  { id: "access", label: "Access" },
   { id: "license", label: "License" },
   { id: "telemetry", label: "Telemetry" },
   { id: "finance", label: "Finance Agent" },
@@ -140,6 +158,10 @@ export function SettingsPage() {
   const [telemetryConsent, setTelemetryConsent] = useState<TelemetryConsent | null>(null);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [configHistory, setConfigHistory] = useState<SystemConfigHistory[]>([]);
+  const [accessState, setAccessState] = useState<AccessState | null>(null);
+  const [accessMessage, setAccessMessage] = useState<string | null>(null);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [inviteForm, setInviteForm] = useState({ email: "", name: "", password: "", role: "viewer" as AccessRole });
   const [activeTab, setActiveTab] = useState<TabId>("auth");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -165,7 +187,12 @@ export function SettingsPage() {
         .then(setSystemConfig),
       authFetch("/api/system-config/history")
         .then(res => res.json())
-        .then(data => setConfigHistory(data.history || []))
+        .then(data => setConfigHistory(data.history || [])),
+      authFetch("/api/settings/access")
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data.users)) setAccessState(data);
+        })
     ])
     .then(() => setLoading(false))
     .catch(err => {
@@ -265,6 +292,53 @@ export function SettingsPage() {
     }));
   };
 
+  const refreshAccess = async () => {
+    const response = await authFetch("/api/settings/access");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Access settings could not be loaded.");
+    }
+    setAccessState(data);
+  };
+
+  const handleInviteUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAccessMessage(null);
+    setAccessError(null);
+    try {
+      const response = await authFetch("/api/settings/access/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(inviteForm),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The user could not be invited.");
+      setInviteForm({ email: "", name: "", password: "", role: "viewer" });
+      setAccessMessage("User access was saved.");
+      await refreshAccess();
+    } catch (err) {
+      setAccessError(err instanceof Error ? err.message : "The user could not be invited.");
+    }
+  };
+
+  const handleRoleChange = async (userId: string, role: AccessRole) => {
+    setAccessMessage(null);
+    setAccessError(null);
+    try {
+      const response = await authFetch(`/api/settings/access/users/${encodeURIComponent(userId)}/role`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The role could not be changed.");
+      setAccessMessage("Role updated.");
+      await refreshAccess();
+    } catch (err) {
+      setAccessError(err instanceof Error ? err.message : "The role could not be changed.");
+    }
+  };
+
   if (loading) return <div className="loading-dim">loading…</div>;
   if (error) return <div className="loading-dim error">error: {error}</div>;
 
@@ -360,6 +434,98 @@ export function SettingsPage() {
         </WCard>
       </div>
         </>
+      )}
+
+      {activeTab === "access" && (
+        <div className="dash-section">
+          <div className="dash-section-title">Access</div>
+          <WCard style={{ marginBottom: 16 }}>
+            <div className="w-row">
+              <span className="w-label">Your role</span>
+              <Pill color={accessState?.currentRole === "owner" ? "green" : "blue"}>
+                {accessState?.currentRole ?? "viewer"}
+              </Pill>
+            </div>
+            <div className="w-caption">Owners can invite users and change roles. Auditors and viewers can only review access.</div>
+          </WCard>
+
+          {accessMessage && <div className="w-caption" style={{ color: "var(--success)", marginBottom: 12 }}>{accessMessage}</div>}
+          {accessError && <div className="w-caption" style={{ color: "var(--danger)", marginBottom: 12 }}>{accessError}</div>}
+
+          <WCard style={{ marginBottom: 16 }}>
+            <form onSubmit={handleInviteUser}>
+              <div className="dash-section-title" style={{ marginBottom: 12 }}>Invite user</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+                <input
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(e) => setInviteForm(prev => ({ ...prev, email: e.target.value }))}
+                  placeholder="email"
+                  className="flex-1 px-2 py-1 border rounded"
+                  required
+                />
+                <input
+                  type="text"
+                  value={inviteForm.name}
+                  onChange={(e) => setInviteForm(prev => ({ ...prev, name: e.target.value }))}
+                  placeholder="name"
+                  className="flex-1 px-2 py-1 border rounded"
+                />
+                <input
+                  type="password"
+                  value={inviteForm.password}
+                  onChange={(e) => setInviteForm(prev => ({ ...prev, password: e.target.value }))}
+                  placeholder="temporary password"
+                  className="flex-1 px-2 py-1 border rounded"
+                  minLength={8}
+                  required
+                />
+                <select
+                  value={inviteForm.role}
+                  onChange={(e) => setInviteForm(prev => ({ ...prev, role: e.target.value as AccessRole }))}
+                  className="flex-1 px-2 py-1 border rounded"
+                >
+                  <option value="viewer">viewer</option>
+                  <option value="auditor">auditor</option>
+                  <option value="operator">operator</option>
+                  <option value="owner">owner</option>
+                </select>
+              </div>
+              <div className="flex justify-end mt-4">
+                <button className="btn-primary" type="submit">Invite user</button>
+              </div>
+            </form>
+          </WCard>
+
+          <div className="dash-section-title" style={{ marginBottom: 8 }}>Users and roles</div>
+          {accessState?.users?.length ? (
+            accessState.users.map((user) => (
+              <WCard key={user.id} style={{ marginBottom: 8, padding: "10px 12px" }}>
+                <div className="w-row" style={{ gap: 12, alignItems: "center" }}>
+                  <div style={{ flex: 1, minWidth: 180 }}>
+                    <div className="w-label">{user.name || user.email}</div>
+                    <div className="w-caption">{user.email} · {user.authMethod} · {new Date(user.createdAt).toLocaleDateString()}</div>
+                  </div>
+                  <select
+                    value={user.role}
+                    onChange={(e) => handleRoleChange(user.id, e.target.value as AccessRole)}
+                    className="px-2 py-1 border rounded"
+                    aria-label={`Role for ${user.email}`}
+                  >
+                    <option value="viewer">viewer</option>
+                    <option value="auditor">auditor</option>
+                    <option value="operator">operator</option>
+                    <option value="owner">owner</option>
+                  </select>
+                </div>
+              </WCard>
+            ))
+          ) : (
+            <WCard>
+              <div className="w-caption">No local users have been invited yet.</div>
+            </WCard>
+          )}
+        </div>
       )}
 
       {activeTab === "license" && (

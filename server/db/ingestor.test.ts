@@ -173,6 +173,33 @@ function registerIngestorTests(): void {
     expect(rows[0].summary).toContain("token=[REDACTED]");
     expect(JSON.parse(rows[0].payload_json).raw).toContain("token=[REDACTED]");
   });
+
+  test("manual tick creates scheduled daily and weekly report archive runs once", async () => {
+    openTempDb();
+    const now = Date.UTC(2026, 5, 11, 12, 0, 0);
+    getDashboardDb()!.query(
+      `INSERT INTO action_audit (ts, actor, target, target_type, action_kind, result_status, tenant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(now - 2 * 60 * 60 * 1000, "system", "autopipeline", "autopipeline", "autopipeline.command", "success", "mimule");
+    getDashboardDb()!.query(
+      `INSERT INTO events (ts, kind, severity, entity_type, entity_id, summary, tenant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(now - 2 * 24 * 60 * 60 * 1000, "article.thin_digest", "warn", "article", "story-a", "Thin digest", "mimule");
+
+    const { runScheduledReports } = await import("./ingestor.ts");
+    await runScheduledReports(now);
+    await runScheduledReports(now);
+
+    const rows = getDashboardDb()!.query(`
+      SELECT template_id, status, row_count
+      FROM report_runs
+      ORDER BY template_id
+    `).all() as Array<{ template_id: string; status: string; row_count: number }>;
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.template_id)).toEqual(["daily-pipeline", "weekly-content-health"]);
+    expect(rows.every((row) => row.status === "success")).toBe(true);
+  });
 }
 
 function openTempDb(): void {

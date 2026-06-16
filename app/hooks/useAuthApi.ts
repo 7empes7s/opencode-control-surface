@@ -51,8 +51,11 @@ export function useAuthApi<T>(path: string, intervalMs = 30_000): AuthApiResult<
     setLoading(true);
     fetchData();
 
-    const timer = setInterval(fetchData, intervalMs);
-    return () => { cancelled = true; clearInterval(timer); };
+    const timer = intervalMs > 0 ? setInterval(fetchData, intervalMs) : null;
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, intervalMs, tick]);
 

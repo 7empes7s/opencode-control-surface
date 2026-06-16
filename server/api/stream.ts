@@ -13,6 +13,12 @@ export function streamHandler(): Response {
         if (closed) return;
         try {
           ctrl.enqueue(encoder.encode(text));
+          // Consumer stopped reading (disconnected client): queue backs up — self-terminate.
+          if (ctrl.desiredSize !== null && ctrl.desiredSize < -3) {
+            closed = true;
+            clearInterval(pushInterval);
+            clearInterval(heartbeat);
+          }
         } catch {
           closed = true;
           clearInterval(pushInterval);
@@ -30,7 +36,7 @@ export function streamHandler(): Response {
       };
 
       await push();
-      pushInterval = setInterval(push, 5_000);
+      pushInterval = setInterval(push, 15_000);
       heartbeat = setInterval(
         () => enqueue(": heartbeat\n\n"),
         25_000,

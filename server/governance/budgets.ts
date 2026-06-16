@@ -23,6 +23,8 @@ export type BudgetCheckResult = {
   period?: "daily" | "monthly";
   cap?: number;
   spent?: number;
+  pctUsed?: number;
+  warn?: boolean;
 };
 
 function getStartOfDay(): number {
@@ -75,7 +77,12 @@ export function checkBudget(scope: BudgetScope, projectId?: string, ctx?: Tenant
     return { allowed: false, reason: "Monthly budget exceeded", period: "monthly", cap: budget.monthly_cap_usd, spent: monthSpent };
   }
 
-  return { allowed: true };
+  const dayPct = budget.daily_cap_usd ? daySpent / budget.daily_cap_usd : 0;
+  const monthPct = budget.monthly_cap_usd ? monthSpent / budget.monthly_cap_usd : 0;
+  const pctUsed = Math.max(dayPct, monthPct);
+  const warn = pctUsed >= (budget.warn_pct ?? 0.8);
+
+  return { allowed: true, pctUsed, warn };
 }
 
 export function upsertBudget(

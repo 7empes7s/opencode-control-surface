@@ -1,9 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { ok, type ApiEnvelope, type ScoutRun } from './types.ts';
+import { ok, type ApiEnvelope, type ScoutRun, type ScoutConfig } from './types.ts';
+import { readOperatorState, writeOperatorState } from '../db/writer.ts';
+import { writeActionAudit } from '../db/writer.ts';
 
 // Real scout runs live in the autopipeline's runs/ directory
 const RUNS_ROOT = '/opt/mimoun/openclaw-config/workspace/newsbites_editorial/runs';
+const SCOUT_CONFIG_KEY = 'scout.config';
 
 async function fileExists(filePath: string): Promise<boolean> {
   try { await fs.access(filePath); return true; } catch { return false; }
@@ -98,9 +101,9 @@ export async function getScoutRun(_req: Request, runId: string): Promise<Respons
 // Get scout configuration
 export async function getScoutConfig(_req: Request): Promise<Response> {
   try {
-    // This would typically connect to a database to get the config
-    // For now, return a default configuration
-    const defaultConfig = {
+    const stored = readOperatorState(SCOUT_CONFIG_KEY) as ScoutConfig | null;
+    
+    const defaultConfig: ScoutConfig = {
       enabled: true,
       frequency: 'every 4 hours',
       verticals: ['ai', 'finance', 'global-politics', 'trends', 'science'],
@@ -110,7 +113,8 @@ export async function getScoutConfig(_req: Request): Promise<Response> {
       autoQueueThreshold: 0.8
     };
 
-    const envelope: ApiEnvelope<any> = ok(defaultConfig, {});
+    const config = stored ?? defaultConfig;
+    const envelope: ApiEnvelope<ScoutConfig> = ok(config, {});
     return new Response(JSON.stringify(envelope), { 
       headers: { "Content-Type": "application/json" } 
     });
@@ -127,20 +131,52 @@ export async function getScoutConfig(_req: Request): Promise<Response> {
 export async function updateScoutConfig(req: Request): Promise<Response> {
   try {
     const body = await req.json();
-    const config = body;
+    const config = body as Partial<ScoutConfig>;
 
-    // In a real implementation, this would save to a database
-    // For now, just validate and return the config
-    
-    // TODO: Actually persist the config in a database or config file
-    console.log('Updating scout config:', config);
+    // Validate config
+    const validatedConfig: ScoutConfig = {
+      enabled: typeof config.enabled === 'boolean' ? config.enabled : true,
+      frequency: typeof config.frequency === 'string' && config.frequency.length > 0 ? config.frequency : 'every 4 hours',
+      verticals: Array.isArray(config.verticals) && config.verticals.every(v => typeof v === 'string') ? config.verticals : ['ai', 'finance', 'global-politics', 'trends', 'science'],
+      maxTopicsPerRun: typeof config.maxTopicsPerRun === 'number' && config.maxTopicsPerRun > 0 ? config.maxTopicsPerRun : 10,
+      minNoveltyScore: typeof config.minNoveltyScore === 'number' && config.minNoveltyScore >= 0 && config.minNoveltyScore <= 1 ? config.minNoveltyScore : 0.7,
+      minRecencyHours: typeof config.minRecencyHours === 'number' && config.minRecencyHours >= 0 ? config.minRecencyHours : 24,
+      autoQueueThreshold: typeof config.autoQueueThreshold === 'number' && config.autoQueueThreshold >= 0 && config.autoQueueThreshold <= 1 ? config.autoQueueThreshold : 0.8
+    };
 
-    const envelope: ApiEnvelope<any> = ok({ success: true, config }, {});
+    // Persist to operator_state
+    writeOperatorState(SCOUT_CONFIG_KEY, validatedConfig);
+
+    // Audit log
+    writeActionAudit({
+      actionKind: 'scout.config.update',
+      targetType: 'scout',
+      targetId: 'config',
+      risk: 'medium',
+      reason: 'Updated scout configuration',
+      request: validatedConfig,
+      result: 'config updated',
+      resultStatus: 'success',
+    });
+
+    const envelope: ApiEnvelope<{ success: boolean; config: ScoutConfig }> = ok({ success: true, config: validatedConfig }, {});
     return new Response(JSON.stringify(envelope), { 
       headers: { "Content-Type": "application/json" } 
     });
   } catch (error) {
     console.error('Error updating scout config:', error);
+    
+    writeActionAudit({
+      actionKind: 'scout.config.update',
+      targetType: 'scout',
+      targetId: 'config',
+      risk: 'medium',
+      reason: 'Failed to update scout configuration',
+      request: {},
+      resultStatus: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+
     return new Response(JSON.stringify({ error: 'Failed to update scout config' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
@@ -154,21 +190,58 @@ export async function triggerScoutRun(req: Request): Promise<Response> {
     const body = await req.json();
     const { reason = "Manual trigger" } = body;
 
-    // In a real implementation, this would trigger the scout script
-    // For now, just return a success response
-    console.log('Triggering scout run:', reason);
+    // Call the autopipeline command API to trigger a scout run
+    const PIPELINE_API = "http://127.0.0.1:3200";
+    
+    const res = await fetch(`${PIPELINE_API}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "run_scout", reason }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    
+    const result = await res.json().catch(() => ({}));
+
+    // Audit log
+    writeActionAudit({
+      actionKind: 'scout.run.trigger',
+      targetType: 'scout',
+      targetId: 'run',
+      risk: 'high',
+      reason: `Manual scout run triggered: ${reason}`,
+      request: { reason },
+      result: res.ok ? 'scout run triggered' : 'failed',
+      resultStatus: res.ok ? 'success' : 'failed',
+      resultJson: result,
+      error: res.ok ? undefined : JSON.stringify(result),
+    });
 
     const envelope: ApiEnvelope<any> = ok({ 
-      success: true, 
-      message: 'Scout run triggered successfully',
+      success: res.ok,
+      message: res.ok ? 'Scout run triggered successfully' : 'Failed to trigger scout run',
       reason,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      pipelineResult: result
     }, {});
+    
     return new Response(JSON.stringify(envelope), { 
+      status: res.ok ? 200 : 502,
       headers: { "Content-Type": "application/json" } 
     });
   } catch (error) {
     console.error('Error triggering scout run:', error);
+    
+    writeActionAudit({
+      actionKind: 'scout.run.trigger',
+      targetType: 'scout',
+      targetId: 'run',
+      risk: 'high',
+      reason: 'Failed to trigger scout run',
+      request: {},
+      resultStatus: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+
     return new Response(JSON.stringify({ error: 'Failed to trigger scout run' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

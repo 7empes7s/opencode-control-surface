@@ -1,5 +1,20 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { handleApi } from "./router.ts";
+
+const REPO_ROOT = new URL("../..", import.meta.url).pathname;
+
+function gitValue(args: string[]): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", ...args], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
 
 function resetRateLimitMap(): void {
   (globalThis as unknown as { __rateLimitMap?: Record<string, [number, number]> }).__rateLimitMap = {};
@@ -33,9 +48,44 @@ describe("GET /api/version", () => {
     expect(typeof body.buildHash).toBe("string");
     expect(typeof body.commit).toBe("string");
     expect(typeof body.buildTime).toBe("string");
+    expect(Number.isNaN(Date.parse(body.buildTime as string))).toBe(false);
     expect(typeof body.nodeEnv).toBe("string");
     expect(typeof body.platform).toBe("string");
     expect(typeof body.arch).toBe("string");
+  });
+
+  test("uses explicit build metadata or repo git metadata", async () => {
+    const response = await handleApi(
+      request("/api/version"),
+      new URL("http://127.0.0.1:3000/api/version"),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    const envCommit = process.env.BUILD_COMMIT;
+    const envHash = process.env.BUILD_HASH;
+    const gitCommit = gitValue(["HEAD"]);
+    const gitHash = gitValue(["--short", "HEAD"]);
+
+    if (envCommit && envCommit.length > 0) {
+      expect(body.commit).toBe(envCommit);
+    } else if (gitCommit) {
+      expect(body.commit).toBe(gitCommit);
+    } else {
+      expect(body.commit).toBe("dev");
+    }
+
+    if (envHash && envHash.length > 0) {
+      expect(body.buildHash).toBe(envHash);
+    } else if (gitHash) {
+      expect(body.buildHash).toBe(gitHash);
+    } else {
+      expect(body.buildHash).toBe("dev");
+    }
+
+    if (gitCommit || envCommit) {
+      expect(body.commit).not.toBe("dev");
+      expect(body.buildHash).not.toBe("dev");
+    }
   });
 
   test("returns same shape on repeated calls", async () => {

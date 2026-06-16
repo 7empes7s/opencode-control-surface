@@ -16,10 +16,7 @@ export function DossierInjectPanel({ dossier, onInject }: DossierInjectPanelProp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    setSuccess(false);
-    setError("");
-    
+    setLoading(true); setSuccess(false); setError("");
     try {
       await onInject(notes, stage || null, requeue);
       setSuccess(true);
@@ -31,69 +28,62 @@ export function DossierInjectPanel({ dossier, onInject }: DossierInjectPanelProp
     }
   };
 
+  const SEL: React.CSSProperties = {
+    fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)",
+    border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3,
+  };
+
   return (
-    <div className="grid grid-cols-2 gap-6">
-      <div>
-        <form onSubmit={handleSubmit}>
+    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      {/* Form */}
+      <div style={{ flex: 1, background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4 }}>
+        <div style={{ padding: "7px 14px", borderBottom: "1px solid var(--border)", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Inject Notes</div>
+        <form onSubmit={handleSubmit} style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
           <div className="form-group">
-            <label>Notes <span className="form-tooltip">ⓘ<span className="tooltip-text">Enter notes to inject into the dossier. These will be appended to the existing notes.</span></span></label>
-            <textarea 
-              className="form-input" 
+            <label className="form-label">Notes</label>
+            <textarea
+              className="form-input"
               rows={6}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Enter notes to inject into the dossier... (e.g., 'Focus on technical accuracy in the verification stage')"
+              placeholder="Additional context or instructions for the AI…"
               required
+              style={{ resize: "vertical" }}
             />
-            <div className="form-help">Provide additional context or instructions for the AI to consider when processing this dossier.</div>
           </div>
-          
+
           <div className="form-group">
-            <label>Stage to re-queue (optional) <span className="form-tooltip">ⓘ<span className="tooltip-text">Select a stage to re-queue the dossier. Leave blank to keep current position.</span></span></label>
-            <select 
-              className="form-select"
-              value={stage}
-              onChange={(e) => setStage(e.target.value)}
-            >
+            <label className="form-label">Re-queue at stage (optional)</label>
+            <select style={SEL} value={stage} onChange={(e) => setStage(e.target.value)}>
               <option value="">Don't re-queue</option>
               <option value="research">Research</option>
               <option value="write">Write</option>
               <option value="verify">Verify</option>
               <option value="publish-prep">Publish Prep</option>
             </select>
-            <div className="form-help">Choose a pipeline stage to restart processing from, or leave blank to continue from current position.</div>
           </div>
-          
-          <div className="form-group">
-            <label className="form-checkbox">
-              <input
-                type="checkbox"
-                checked={requeue}
-                onChange={(e) => setRequeue(e.target.checked)}
-              />
-              <span>Re-queue after injecting <span className="form-tooltip">ⓘ<span className="tooltip-text">Automatically re-queue the dossier after injecting these notes.</span></span></span>
-            </label>
-            <div className="form-help">Enable this to automatically restart the dossier processing after injecting your notes.</div>
-          </div>
-          
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", cursor: "pointer" }}>
+            <input type="checkbox" checked={requeue} onChange={(e) => setRequeue(e.target.checked)} />
+            Re-queue automatically after injecting
+          </label>
+
           <div className="action-bar">
-            <button 
-              className="btn btn-primary" 
-              type="submit"
-              disabled={loading || !notes.trim()}
-            >
-              {loading ? "Injecting Notes..." : "Inject Notes Into Dossier"}
+            <button className="btn btn-primary" type="submit" disabled={loading || !notes.trim()}>
+              {loading ? "Injecting…" : "Inject Notes"}
             </button>
-            
-            {success && <span className="action-feedback ok">Notes injected successfully!</span>}
+            {success && <span className="action-feedback ok">Injected successfully</span>}
             {error && <span className="action-feedback err">{error}</span>}
           </div>
         </form>
       </div>
-      
-      <div>
-        <h3 className="section-title">Existing Notes</h3>
-        <pre className="code-block">{dossier.notesContent}</pre>
+
+      {/* Existing notes */}
+      <div style={{ flex: 1, background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4 }}>
+        <div style={{ padding: "7px 14px", borderBottom: "1px solid var(--border)", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Existing Notes</div>
+        <pre style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", padding: "14px 16px", whiteSpace: "pre-wrap", overflow: "auto", maxHeight: 400, margin: 0 }}>
+          {dossier.notesContent || "No notes yet."}
+        </pre>
       </div>
     </div>
   );

@@ -5,9 +5,16 @@ import { SectionCard } from "../components/SectionCard";
 import { useTableControls } from "../hooks/useTableControls";
 import { TableControls } from "../components/TableControls";
 import type { ActionAuditRow } from "../../server/db/writer";
+import type { EventRow } from "../../server/api/events";
 
 interface AuditData {
   audit: ActionAuditRow[];
+  degraded: boolean;
+  reason?: string;
+}
+
+interface EventsData {
+  events: EventRow[];
   degraded: boolean;
   reason?: string;
 }
@@ -27,6 +34,13 @@ function riskColor(risk: string | null): string {
   if (risk === "high" || risk === "destructive") return "red";
   if (risk === "medium") return "amber";
   if (risk === "low") return "green";
+  return "gray";
+}
+
+function severityColor(severity: string): string {
+  if (severity === "error") return "red";
+  if (severity === "warn") return "amber";
+  if (severity === "info") return "blue";
   return "gray";
 }
 
@@ -64,18 +78,60 @@ function ChainStatusBadge() {
   );
 }
 
+function EventDrawer({ event, onClose }: { event: EventRow; onClose: () => void }) {
+  return (
+    <div className="evidence-drawer-overlay" onClick={onClose}>
+      <aside className="evidence-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="evidence-drawer-head">
+          <div>
+            <div className="evidence-drawer-kicker">system event</div>
+            <div className="evidence-drawer-title">#{event.id} · {event.kind}</div>
+          </div>
+          <button className="drawer-close" onClick={onClose} aria-label="Close event drawer">×</button>
+        </div>
+
+        <div className="evidence-drawer-summary">
+          <Pill color={severityColor(event.severity)}>{event.severity}</Pill>
+          {event.entityType && <Pill color="gray">{event.entityType}</Pill>}
+        </div>
+
+        <div className="audit-detail-grid">
+          <div><span>time</span><strong>{fmtTs(event.ts)}</strong></div>
+          <div><span>kind</span><strong>{event.kind}</strong></div>
+          {event.entityType && <div><span>entity</span><strong>{event.entityType}</strong></div>}
+          {event.entityId && <div><span>entity id</span><strong className="mono trunc">{event.entityId}</strong></div>}
+          <div><span>summary</span><strong>{event.summary}</strong></div>
+        </div>
+
+        {event.payload && (
+          <div className="evidence-block">
+            <div className="evidence-block-title">Payload</div>
+            <pre className="audit-pre">{stringify(event.payload)}</pre>
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
 export function AuditPage() {
   const [resultStatus, setResultStatus] = useState("");
   const [targetType, setTargetType] = useState("");
   const [actionKind, setActionKind] = useState("");
   const [selected, setSelected] = useState<ActionAuditRow | null>(null);
-  const query = new URLSearchParams({ limit: "100" });
-  if (resultStatus) query.set("resultStatus", resultStatus);
-  if (targetType) query.set("targetType", targetType);
-  if (actionKind) query.set("actionKind", actionKind);
-  const { data, loading, error, refresh } = useAuthenticatedApi<AuditData>(`/api/actions/audit?${query.toString()}`, 20_000);
+  const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
+  const [activeTab, setActiveTab] = useState<"actions" | "events">("events");
+
+  const auditQuery = new URLSearchParams({ limit: "100" });
+  if (resultStatus) auditQuery.set("resultStatus", resultStatus);
+  if (targetType) auditQuery.set("targetType", targetType);
+  if (actionKind) auditQuery.set("actionKind", actionKind);
+
+  const { data, loading, error, refresh } = useAuthenticatedApi<AuditData>(`/api/actions/audit?${auditQuery.toString()}`, 20_000);
+  const { data: eventsData, loading: eventsLoading, error: eventsError, refresh: refreshEvents } = useAuthenticatedApi<EventsData>("/api/events?limit=100", 20_000);
 
   const rows = data?.audit ?? [];
+  const events = eventsData?.events ?? [];
   const targetTypes = useMemo(() => Array.from(new Set(rows.map((row) => row.targetType).filter(Boolean) as string[])).sort(), [rows]);
   const actionKinds = useMemo(() => Array.from(new Set(rows.map((row) => row.actionKind))).sort(), [rows]);
   const counts = useMemo(() => ({
@@ -99,8 +155,26 @@ export function AuditPage() {
     },
   });
 
+  type EventSortKey = "ts" | "kind" | "severity" | "entityType" | "entityId";
+  const eventsCtrl = useTableControls<EventRow, EventSortKey>({
+    rows: events,
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [row.kind, row.severity, row.entityType ?? "", row.entityId ?? "", row.summary],
+    sortValue: (row, key) => {
+      if (key === "ts") return row.ts;
+      if (key === "kind") return row.kind;
+      if (key === "severity") return row.severity;
+      if (key === "entityType") return row.entityType ?? "";
+      if (key === "entityId") return row.entityId ?? "";
+      return null;
+    },
+  });
+
   if (loading && !data) return <div className="loading-dim">loading...</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+
+  const combinedLoading = loading || eventsLoading;
+  const combinedError = error || eventsError;
 
   return (
     <div className="dash-page">
@@ -170,10 +244,29 @@ export function AuditPage() {
         </div>
       )}
 
+      {selectedEvent && (
+        <EventDrawer event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+      )}
+
       <div className="page-header">
         <div className="page-title">Audit</div>
-        <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>
+        <button className="btn btn-sm btn-ghost" onClick={activeTab === "actions" ? refresh : refreshEvents} disabled={combinedLoading}>
           <RefreshCw size={14} /> refresh
+        </button>
+      </div>
+
+      <div className="audit-tabs" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button
+          className={`btn btn-sm ${activeTab === "actions" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setActiveTab("actions")}
+        >
+          Operator Actions (stale)
+        </button>
+        <button
+          className={`btn btn-sm ${activeTab === "events" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setActiveTab("events")}
+        >
+          System Events
         </button>
       </div>
 
@@ -212,7 +305,14 @@ export function AuditPage() {
         <div className="section-card-body table-wrap">
           <TableControls {...auditCtrl.controlsProps} searchPlaceholder="Filter by action, target, actor…" />
           {rows.length === 0 ? (
-            <div className="loading-dim">no audit records</div>
+            <div className="empty-state" style={{ padding: "18px 14px", lineHeight: 1.6 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>No operator actions in this period</div>
+              <div className="dim">
+                This log records <strong>manual operator actions</strong> (apply/approve button clicks), and is hash-chained for tamper-evidence.
+                The platform has been running autonomously, so there are none recently — this is expected, not an error.
+                Live, ongoing system activity is in the <strong>System Events</strong> tab above.
+              </div>
+            </div>
           ) : (
             <table className="data-table audit-entries-table">
               <thead>
@@ -245,6 +345,48 @@ export function AuditPage() {
           )}
         </div>
       </SectionCard>
+
+      {activeTab === "events" && (
+        <SectionCard
+          title="system events"
+          defaultOpen={true}
+          right={<span className="mono dim">{events.length} rows</span>}
+        >
+          <div className="section-card-body table-wrap">
+            <TableControls {...eventsCtrl.controlsProps} searchPlaceholder="Filter by kind, entity, summary…" />
+            {events.length === 0 ? (
+              <div className="loading-dim">no system events</div>
+            ) : (
+              <table className="data-table audit-entries-table">
+                <thead>
+                  <tr>
+                    <th {...eventsCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{eventsCtrl.sort.key === "ts" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...eventsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{eventsCtrl.sort.key === "kind" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...eventsCtrl.sortHeaderProps("severity")}>severity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "severity" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...eventsCtrl.sortHeaderProps("entityType")}>entity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "entityType" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th>summary</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {eventsCtrl.rows.map((row) => (
+                    <tr key={row.id} onClick={() => setSelectedEvent(row)} style={{ cursor: "pointer" }}>
+                      <td className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
+                      <td className="mono">{row.kind}</td>
+                      <td><Pill color={severityColor(row.severity)}>{row.severity}</Pill></td>
+                      <td className="mono trunc">{row.entityType ?? "-"}{row.entityId ? ` · #{row.entityId}` : ""}</td>
+                      <td className="trunc" style={{ maxWidth: 400 }}>{row.summary}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button className="btn btn-sm btn-ghost" onClick={(event) => { event.stopPropagation(); setSelectedEvent(row); }}>details</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </SectionCard>
+      )}
     </div>
   );
 }

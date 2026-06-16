@@ -23,6 +23,7 @@ describe("API Smoke Tests", () => {
     ["/api/litellm/status", "GET"],
     ["/api/scout/runs", "GET"],
     ["/api/paperclip/agents", "GET"],
+    ["/api/content-health", "GET"],
     ["/api/fs/browse", "GET"],
     ["/api/dossier/2026-05-18/test", "GET"],
     ["/api/models/routing-log", "GET"],

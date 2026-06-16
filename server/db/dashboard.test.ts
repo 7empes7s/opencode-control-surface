@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,8 @@ const expectedTables = [
   "metric_samples",
   "events",
   "action_audit",
+  "users",
+  "local_account_credentials",
   "operator_state",
   "jobs",
   "workspace_sessions",
@@ -32,6 +35,7 @@ const expectedTables = [
   "channels_log",
   "report_archive",
   "content_health_findings",
+  "insights",
   "source_stats",
   "runbooks",
   "builder_projects",
@@ -43,6 +47,11 @@ const expectedTables = [
   "builder_locks",
   "marketplace_skills",
   "marketplace_skill_runs",
+  "agents",
+  "gateway_keys",
+  "prompts",
+  "webhooks",
+  "webhook_deliveries",
 ];
 
 let tempDir: string;
@@ -91,7 +100,51 @@ function registerDashboardDbTests(): void {
     }
 
     const version = getDashboardDb()!.query("SELECT version FROM schema_version").get() as { version: number };
-    expect(version.version).toBe(3);
+    expect(version.version).toBe(10);
+  });
+
+  test("migration tolerates historical v5 and v6 schema_version rows", () => {
+    process.env.DASHBOARD_DB = "1";
+    const path = tempDbPath();
+    const seed = new Database(path);
+    seed.exec(`
+      CREATE TABLE schema_version (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_version (version, applied_at) VALUES (5, 1), (6, 2);
+      CREATE TABLE insights (
+        id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        title TEXT NOT NULL,
+        plain_summary TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        action_descriptor_id TEXT,
+        manual_page_href TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        tenant_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        source_key TEXT
+      );
+      INSERT INTO insights (
+        id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+        action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key
+      ) VALUES (
+        'insight-1', 'build', 'warn', 'Build signal', 'Summary', 0.8, '[]',
+        NULL, '/reports', 'open', 'mimule', 100, 'seed'
+      );
+    `);
+    seed.close();
+
+    const db = initDashboardDb({ path });
+    expect(db).not.toBeNull();
+
+    const versions = getDashboardDb()!.query("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>;
+    expect(versions.map((row) => row.version)).toEqual([10]);
+    const columns = getDashboardDb()!.query("PRAGMA table_info(insights)").all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "resolved_at")).toBe(true);
   });
 
   test("operator_state write and read round-trips JSON values", () => {
@@ -193,6 +246,8 @@ function registerDashboardDbTests(): void {
     const db = getDashboardDb()!;
     const tenantTables = [
       "metric_samples", "events", "action_audit", "jobs", "operator_state",
+      "users",
+      "content_health_findings", "insights",
       "builder_projects", "builder_workflows", "builder_runs", "builder_passes",
       "builder_artifacts", "builder_validations", "builder_locks", "builder_doctor_reports",
       "governance_policies", "governance_policy_decisions", "governance_role_bindings",
@@ -266,6 +321,9 @@ function registerDashboardDbTests(): void {
       "idx_events_tenant_ts",
       "idx_action_audit_tenant_ts",
       "idx_jobs_tenant_ts",
+      "idx_content_health_findings_tenant_ts",
+      "idx_insights_tenant_created",
+      "idx_insights_tenant_status_severity",
       "idx_builder_workflows_tenant_project",
       "idx_builder_runs_tenant_workflow",
       "idx_builder_passes_tenant_workflow",

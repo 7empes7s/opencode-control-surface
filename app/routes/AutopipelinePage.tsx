@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useApi, fmtMs } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
@@ -50,6 +51,7 @@ export function AutopipelinePage() {
   const [showFullApprovals, setShowFullApprovals] = useState(false);
   const [showFullDurations, setShowFullDurations] = useState(false);
   const cmd = useAction("/api/autopipeline/command");
+  const [, navigate] = useLocation();
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -134,9 +136,9 @@ export function AutopipelinePage() {
             if (modal.type === "pause") body = { cmd: "pause" };
             else if (modal.type === "resume") body = { cmd: "resume" };
             else if (modal.type === "inject") body = { cmd: "add", topic: val, vertical: "ai" };
-            else if (modal.type === "rush") body = { cmd: "rush", storyId: modal.id };
-            else if (modal.type === "kill") body = { cmd: "kill", storyId: modal.id };
-            else if (modal.type === "publish") body = { cmd: "publish", storyId: modal.id };
+            else if (modal.type === "rush") body = { cmd: "rush", slug: modal.slug ?? modal.id };
+            else if (modal.type === "kill") body = { cmd: "kill", slug: modal.slug ?? modal.id };
+            else if (modal.type === "publish") body = { cmd: "publish", slug: modal.slug ?? modal.id };
             const ok = await cmd.run(body);
             if (ok) { setModal(null); refresh(); }
           }}
@@ -184,7 +186,7 @@ export function AutopipelinePage() {
                     <td><div style={{ display: "flex", gap: 4 }} className="queue-actions">
                         <button className="btn btn-sm btn-ghost" onClick={() => {
                           if (!item.dossierDate || !item.dossierSlug) return;
-                          window.location.hash = `#/autopipeline/dossier/${item.dossierDate}/${item.dossierSlug}`;
+                          navigate(`/autopipeline/dossier/${item.dossierDate}/${item.dossierSlug}`);
                         }} disabled={!item.dossierDate || !item.dossierSlug}>inspect</button>
                         {item.stage === "publish" && item.waitingApproval && (
                           <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>

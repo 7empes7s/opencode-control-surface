@@ -54,6 +54,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/control-surface
+Environment=NODE_ENV=production
 EnvironmentFile=-/etc/control-surface/config.env
 WorkingDirectory=/var/lib/control-surface
 Restart=always

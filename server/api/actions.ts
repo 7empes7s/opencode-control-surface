@@ -1,7 +1,13 @@
 import { execSync, spawn } from "node:child_process";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
+import {
+  constantEqual,
+  expectedLegacySessionValue,
+  getAuthenticatedUser,
+} from "../auth/session.ts";
+import { requireMutation } from "../governance/rbac.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 
@@ -33,49 +39,8 @@ function reasonFromBody(body: unknown): string | undefined {
     : undefined;
 }
 
-function isLocalRequest(req: Request): boolean {
-  const host = req.headers.get("host")?.split(":")[0] ?? "";
-  return host === "localhost" || host === "127.0.0.1" || host === "::1";
-}
-
-function expectedSessionValue(token: string): string {
-  return createHmac("sha256", token)
-    .update("opencode-control-surface.operator-session.v1")
-    .digest("base64url");
-}
-
-function parseCookies(req: Request): Record<string, string> {
-  const header = req.headers.get("cookie") ?? "";
-  const cookies: Record<string, string> = {};
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    const value = part.slice(idx + 1).trim();
-    if (key) cookies[key] = decodeURIComponent(value);
-  }
-  return cookies;
-}
-
-function constantEqual(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a);
-  const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return timingSafeEqual(aBuf, bBuf);
-}
-
 export function checkToken(req: Request): boolean {
-  const token = process.env.OPERATOR_TOKEN;
-  if (!token) {
-    return process.env.NODE_ENV !== "production" && isLocalRequest(req);
-  }
-
-  const headerToken = req.headers.get("x-operator-token");
-  if (headerToken && constantEqual(headerToken, token)) return true;
-
-  const sessionCookie = parseCookies(req).operator_session;
-  const expected = expectedSessionValue(token);
-  return Boolean(sessionCookie && constantEqual(sessionCookie, expected));
+  return Boolean(getAuthenticatedUser(req));
 }
 
 export function authStatusHandler(req: Request): Response {
@@ -83,7 +48,7 @@ export function authStatusHandler(req: Request): Response {
   return json({
     configured,
     authenticated: checkToken(req),
-    devBypass: !configured && process.env.NODE_ENV !== "production" && isLocalRequest(req),
+    devBypass: getAuthenticatedUser(req)?.source === "dev-bootstrap",
   });
 }
 
@@ -103,7 +68,7 @@ export async function authSessionHandler(req: Request): Promise<Response> {
     headers: {
       "Content-Type": "application/json",
       "Set-Cookie": [
-        `operator_session=${encodeURIComponent(expectedSessionValue(token))}`,
+        `operator_session=${encodeURIComponent(expectedLegacySessionValue(token))}`,
         "Path=/",
         "HttpOnly",
         "SameSite=Strict",
@@ -115,7 +80,8 @@ export async function authSessionHandler(req: Request): Promise<Response> {
 
 // POST /api/autopipeline/command
 export async function autopipelineCommandHandler(req: Request): Promise<Response> {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
   let body: unknown;
   try { body = await req.json(); } catch { return json({ error: "invalid json" }, 400); }
   try {
@@ -155,7 +121,8 @@ export async function autopipelineCommandHandler(req: Request): Promise<Response
 
 // POST /api/models/action
 export async function modelsActionHandler(req: Request): Promise<Response> {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
   let body: { action: string; model?: string };
   try { body = await req.json() as { action: string; model?: string }; }
   catch { return json({ error: "invalid json" }, 400); }
@@ -248,7 +215,8 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
 
 // POST /api/doctor/scan
 export async function doctorScanHandler(req: Request): Promise<Response> {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
   try {
     const res = await fetch(`${PIPELINE_API}/doctor/scan`, {
       method: "POST",
@@ -306,7 +274,8 @@ const deployJobs = new Map<string, DeployJob>();
 
 // POST /api/newsbites/deploy
 export function newsBitesDeployHandler(req: Request): Response {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
 
   const jobId = randomUUID();
   const job: DeployJob = { jobId, status: "running", output: "", startedAt: Date.now() };
@@ -397,7 +366,8 @@ export function newsBitesDeployStatusHandler(jobId: string): Response {
 
 // POST /api/infra/service-restart
 export async function infraServiceRestartHandler(req: Request): Promise<Response> {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
   let body: { service: string };
   try { body = await req.json() as { service: string }; }
   catch { return json({ error: "invalid json" }, 400); }
@@ -482,7 +452,8 @@ export async function infraServiceRestartHandler(req: Request): Promise<Response
 
 // POST /api/infra/run-timer
 export async function infraRunTimerHandler(req: Request): Promise<Response> {
-  if (!checkToken(req)) return json({ error: "unauthorized" }, 401);
+  const denied = requireMutation(req);
+  if (denied) return denied;
   let body: { timer: string };
   try { body = await req.json() as { timer: string }; }
   catch { return json({ error: "invalid json" }, 400); }

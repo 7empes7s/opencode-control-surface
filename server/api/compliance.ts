@@ -7,11 +7,9 @@ import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 
 export function complianceDpaHandler(req: Request): Response {
   const ctx = getTenantContext(req);
-  const body = (req as any)._parsedUrl?.searchParams
-    ? Object.fromEntries((req as any)._parsedUrl.searchParams)
-    : {};
-  const customerName = body.customerName ?? "Customer";
-  const effectiveDate = body.effectiveDate ?? new Date().toISOString().split("T")[0];
+  const url = new URL(req.url);
+  const customerName = url.searchParams.get("customerName") ?? "Customer";
+  const effectiveDate = url.searchParams.get("effectiveDate") ?? new Date().toISOString().split("T")[0];
 
   const dpa = generateDpa(ctx.tenantId, customerName, effectiveDate);
   const envelope: ApiEnvelope<{ document: string }> = ok({ document: dpa });

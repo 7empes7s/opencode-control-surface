@@ -10,6 +10,7 @@ import { FileBrowser } from "../components/FileBrowser";
 import type {
   BuilderDiscovery,
   BuilderModelsInventory,
+  BuilderPlanCandidate,
   BuilderProject,
   BuilderSkillStatus,
 } from "../../server/builder/discovery";
@@ -417,7 +418,10 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
     name: `${data.project.label} builder pass`,
     projectRoot,
     planFile: plan?.path ?? "",
-    mode: "once",
+    // auto-continue keeps iterating passes until the plan checklist has 0 unchecked
+    // `- [ ]` items (the loop self-stops on plan-complete), so a full app can finish
+    // in a single launch instead of needing manual reruns.
+    mode: "auto-continue",
     status: "draft",
     config: {
       projectRoot,
@@ -449,7 +453,9 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
       },
       gitPolicy: { commit: "manual", push: "never" },
       backupPolicy: { enabled: true, beforeRun: true },
-      riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      // Generous ceiling — the run self-stops once the plan checklist is complete,
+      // so this is a safety cap against runaway loops, not a target pass count.
+      riskPolicy: { liveDeploys: "disabled", maxPasses: 30 },
       geminiApprovalMode: "auto_edit",
     },
   };
@@ -528,7 +534,7 @@ function WorkflowModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new Error(`The request couldn't be completed (${response.status}). Please try again, or check the run logs for details.`);
       await response.json() as BuilderWorkflowResponse;
       onSaved();
     } catch (err) {
@@ -546,6 +552,7 @@ function WorkflowModal({
           <button className="btn btn-xs btn-ghost modal-close" onClick={onClose} disabled={saving} aria-label="close">✕</button>
         </div>
         <div className="modal-body">
+        <ModalSection title="Basics" defaultOpen>
         <div className="builder-form-grid">
           <label className="modal-input-row">
             <span className="modal-input-label">Name</span>
@@ -557,26 +564,12 @@ function WorkflowModal({
           </label>
           <label className="modal-input-row">
             <span className="modal-input-label">Plan</span>
-            <FileBrowser
+            <PlanPicker
+              plans={selectablePlans}
               value={draft.planFile}
               onChange={(path) => setDraft((prev) => ({ ...prev, planFile: path }))}
-              filter="plan"
-              type="file"
-              placeholder="Select a plan file..."
               rootPath={selectedRoot}
             />
-            <div className="file-browser-hint">
-              {selectablePlans.map((plan) => (
-                <button
-                  key={plan.path}
-                  type="button"
-                  className="file-browser-suggestion"
-                  onClick={() => setDraft((prev) => ({ ...prev, planFile: plan.path }))}
-                >
-                  {plan.exists ? "" : "create: "}{plan.title}
-                </button>
-              ))}
-            </div>
           </label>
           <ButtonGroup
             label="Mode"
@@ -689,6 +682,10 @@ function WorkflowModal({
               { value: "ready", label: "ready" },
             ]}
           />
+        </div>
+        </ModalSection>
+        <ModalSection title="Agents & models">
+        <div className="builder-form-grid">
           <OrderedPicker label="Agent order" value={agentOrder} onChange={setAgentOrder} options={agentOptions} />
           <OrderedPicker label="Fallback targets" value={fallbackTargets} onChange={setFallbackTargets} options={modelOptions} />
           <ModelSelect
@@ -718,6 +715,10 @@ function WorkflowModal({
             }))}
             models={data.models}
           />
+        </div>
+        </ModalSection>
+        <ModalSection title="Validation">
+        <div className="builder-form-grid">
           <label className="modal-input-row builder-form-wide">
             <span className="modal-input-label">internal</span>
             <textarea
@@ -753,6 +754,10 @@ function WorkflowModal({
             />
             playwright
           </label>
+        </div>
+        </ModalSection>
+        <ModalSection title="Policies">
+        <div className="builder-form-grid">
           <ButtonGroup
             label="Commit"
             value={draft.config.gitPolicy.commit}
@@ -908,6 +913,7 @@ function WorkflowModal({
             auto-remediate
           </label>
         </div>
+        </ModalSection>
         </div>
         <div className="modal-footer">
           {error && <div className="modal-error">{error}</div>}
@@ -1447,7 +1453,7 @@ function ConvertToBuildButton({ workflow }: { workflow: BuilderWorkflow }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new Error(`The request couldn't be completed (${response.status}). Please try again, or check the run logs for details.`);
       window.location.reload();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
@@ -2178,6 +2184,168 @@ function DoctorReportModal({
   );
 }
 
+const LIFECYCLE_META: Record<string, { label: string; color: string }> = {
+  "new": { label: "New", color: "gray" },
+  "in-progress": { label: "In progress", color: "amber" },
+  "done": { label: "Done", color: "green" },
+};
+
+function LifecycleControl({ workflow, onChanged }: { workflow: BuilderWorkflow; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const meta = LIFECYCLE_META[workflow.lifecycle] ?? { label: workflow.lifecycle, color: "gray" };
+
+  async function setLifecycle(value: string) {
+    setBusy(true);
+    try {
+      const lifecycle = value === "auto" ? null : value;
+      const res = await authFetch(`/api/builder/workflows/${workflow.id}/lifecycle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lifecycle }),
+      });
+      if (!res.ok) throw new Error(`The request couldn't be completed (${res.status}).`);
+      onChanged();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <Pill color={meta.color}>{meta.label}</Pill>
+      <select
+        value={workflow.lifecycleStatus ?? "auto"}
+        disabled={busy}
+        onChange={(e) => setLifecycle(e.target.value)}
+        title={workflow.lifecycleStatus ? "Manual override — pick 'auto' to revert to run-derived status" : "Automatic (derived from run history)"}
+        className="mono"
+        style={{ fontSize: 10, background: "var(--bg)", color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 3px" }}
+      >
+        <option value="auto">auto</option>
+        <option value="new">New</option>
+        <option value="in-progress">In progress</option>
+        <option value="done">Done</option>
+      </select>
+    </div>
+  );
+}
+
+function riskColor(risk: string): string {
+  return risk === "high" ? "red" : risk === "medium" ? "amber" : "green";
+}
+
+function baseName(path: string): string {
+  if (!path) return "";
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function ProjectPicker({ projects, selectedRoot, onSelect }: { projects: BuilderProject[]; selectedRoot: string; onSelect: (root: string) => void }) {
+  if (!projects.length) return <span className="loading-dim">no projects</span>;
+  return (
+    <div className="builder-project-picker" style={{ display: "flex", gap: 8, flexWrap: "wrap", width: "100%" }}>
+      {projects.map((project) => {
+        const active = project.root === selectedRoot;
+        return (
+          <button
+            key={project.root}
+            type="button"
+            onClick={() => onSelect(project.root)}
+            title={project.root}
+            style={{
+              textAlign: "left", minWidth: 180, maxWidth: 280, padding: "8px 10px",
+              borderRadius: 8, cursor: "pointer",
+              background: "var(--bg-panel)",
+              border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+              boxShadow: active ? "0 0 0 1px var(--accent)" : "none",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{project.label}</span>
+              <Pill color={riskColor(project.risk)}>{project.risk}</Pill>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {project.note || project.root}
+            </div>
+            {!project.writable && <div style={{ fontSize: 10, color: "var(--amber-warn)" }}>read-only</div>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PlanPicker({ plans, value, onChange, rootPath }: { plans: BuilderPlanCandidate[]; value: string; onChange: (path: string) => void; rootPath: string }) {
+  const [query, setQuery] = useState("");
+  const [browse, setBrowse] = useState(false);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? plans.filter((p) => p.title.toLowerCase().includes(q) || p.path.toLowerCase().includes(q) || (p.relevance ?? "").toLowerCase().includes(q))
+    : plans;
+  return (
+    <div className="plan-picker" style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <input className="modal-input" placeholder="Search plans…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 10, fontSize: 12, color: "var(--text-dim)" }}>No matching plans.</div>
+        ) : filtered.map((plan) => {
+          const active = plan.path === value;
+          return (
+            <button
+              key={plan.path}
+              type="button"
+              onClick={() => onChange(plan.path)}
+              title={plan.path}
+              style={{
+                width: "100%", textAlign: "left", display: "block", padding: "7px 10px", cursor: "pointer",
+                background: active ? "var(--accent)" : "transparent",
+                color: active ? "var(--bg)" : "var(--text-bright)",
+                border: "none", borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "space-between" }}>
+                <span style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {plan.exists ? "" : "＋ create: "}{plan.title}
+                </span>
+                {!plan.exists && <span style={{ fontSize: 10, opacity: 0.7 }}>new</span>}
+              </div>
+              <div style={{ fontSize: 10, color: active ? "var(--bg)" : "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: active ? 0.85 : 1 }}>
+                {plan.relevance || plan.path}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {value && <div style={{ fontSize: 11, color: "var(--text-dim)" }} title={value}>Selected: {baseName(value)}</div>}
+      <button type="button" className="btn btn-xs btn-ghost" onClick={() => setBrowse((b) => !b)} style={{ alignSelf: "flex-start" }}>
+        {browse ? "Hide file browser" : "Browse files manually"}
+      </button>
+      {browse && (
+        <FileBrowser value={value} onChange={onChange} filter="plan" type="file" placeholder="Select a plan file..." rootPath={rootPath} />
+      )}
+    </div>
+  );
+}
+
+function ModalSection({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="builder-modal-section" style={{ borderTop: "1px solid var(--border)" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 2px", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-bright)", fontSize: 13, fontWeight: 600 }}
+      >
+        <span style={{ fontSize: 11, color: "var(--text-dim)", width: 10 }}>{open ? "▾" : "▸"}</span>
+        {title}
+      </button>
+      {open && <div style={{ paddingBottom: 8 }}>{children}</div>}
+    </div>
+  );
+}
+
 export function BuilderPage() {
   const [selectedRoot, setSelectedRoot] = useState("/opt/opencode-control-surface");
   const [creating, setCreating] = useState(false);
@@ -2201,6 +2369,10 @@ export function BuilderPage() {
   const projects = projectsApi.data?.projects ?? [];
   const data = discoverApi.data;
   const workflows = workflowsApi.data?.workflows ?? [];
+  const [lifecycleFilter, setLifecycleFilter] = useState<string>("all");
+  const filteredWorkflows = lifecycleFilter === "all"
+    ? workflows
+    : workflows.filter((w) => w.lifecycle === lifecycleFilter);
   const runs = runsApi.data?.runs ?? [];
   const doctorReports = doctorReportsApi.data?.reports ?? [];
 
@@ -2332,15 +2504,7 @@ export function BuilderPage() {
       )}
 
       <div className="action-bar audit-filter-bar">
-        <select
-          className="audit-select builder-project-select"
-          value={selectedRoot}
-          onChange={(event) => setSelectedRoot(event.target.value)}
-        >
-          {projects.map((project: BuilderProject) => (
-            <option key={project.root} value={project.root}>{project.label} - {project.root}</option>
-          ))}
-        </select>
+        <ProjectPicker projects={projects} selectedRoot={selectedRoot} onSelect={setSelectedRoot} />
       </div>
 
       <div className="stat-row">
@@ -2405,7 +2569,22 @@ export function BuilderPage() {
           <SectionCard
             title="workflows"
             defaultOpen={true}
-            right={<span className="mono dim">{workflows.length} saved</span>}
+            right={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(["all", "new", "in-progress", "done"] as const).map((f) => (
+                    <button
+                      key={f}
+                      className={`btn btn-xs ${lifecycleFilter === f ? "btn-primary" : "btn-ghost"}`}
+                      onClick={(e) => { e.stopPropagation(); setLifecycleFilter(f); }}
+                    >
+                      {f === "all" ? "All" : f === "in-progress" ? "In progress" : f === "new" ? "New" : "Done"}
+                    </button>
+                  ))}
+                </div>
+                <span className="mono dim">{filteredWorkflows.length}/{workflows.length}</span>
+              </div>
+            }
           >
             <div className="section-card-body table-wrap">
               {workflowsApi.data?.degraded ? (
@@ -2416,16 +2595,17 @@ export function BuilderPage() {
                 <table className="data-table workflows-table">
                   <thead>
                     <tr>
-                      <th>status</th><th>mode</th><th>name</th><th>source</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
+                      <th>status</th><th>lifecycle</th><th>mode</th><th>name</th><th>source</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {workflows.map((workflow) => {
+                    {filteredWorkflows.map((workflow) => {
                       const hasDoctor = hasDoctorReportsForWorkflow(workflow.id);
                       const latestReport = getLatestDoctorReport(workflow.id);
                       return (
                         <tr key={workflow.id}>
                           <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
+                          <td><LifecycleControl workflow={workflow} onChanged={() => workflowsApi.refresh()} /></td>
                           <td>
                             <ModeBadge mode={workflow.mode} />
                             {workflow.mode === "scheduled" && workflow.nextRunAt && (
@@ -2434,10 +2614,10 @@ export function BuilderPage() {
                           </td>
                           <td>{workflow.name}</td>
                           <td><SourceSessionMini source={workflow.config.sourceSession} /></td>
-                          <td className="mono trunc">{workflow.projectRoot}</td>
-                          <td className="mono trunc">{workflow.planFile}</td>
-                          <td>{workflow.config.agentOrder.join(" -> ")}</td>
-                          <td>{workflow.config.validationProfile.commands.length} checks</td>
+                          <td className="trunc" title={workflow.projectRoot}>{projects.find((p) => p.root === workflow.projectRoot)?.label ?? baseName(workflow.projectRoot)}</td>
+                          <td className="mono trunc" title={workflow.planFile}>{baseName(workflow.planFile) || <span className="dim">—</span>}</td>
+                          <td>{(workflow.config.agentOrder ?? []).join(" -> ")}</td>
+                          <td>{workflow.config.validationProfile?.commands?.length ?? 0} checks</td>
                           <td>
                             {hasDoctor && latestReport ? (
                               <button

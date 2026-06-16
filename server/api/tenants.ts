@@ -2,6 +2,7 @@ import { checkToken } from "./actions.ts";
 import { upsertTenant, getTenant, listTenants } from "../tenancy/store.ts";
 import { getDashboardDb } from "../db/dashboard.ts";
 import { spawnSync } from "node:child_process";
+import { requireMutation } from "../governance/rbac.ts";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -17,6 +18,10 @@ function operatorOnly(req: Request): Response | null {
   return null;
 }
 
+function mutationOnly(req: Request): Response | null {
+  return requireMutation(req);
+}
+
 export function tenantsListHandler(req: Request): Response {
   const guard = operatorOnly(req);
   if (guard) return guard;
@@ -24,7 +29,7 @@ export function tenantsListHandler(req: Request): Response {
 }
 
 export async function tenantsCreateHandler(req: Request): Promise<Response> {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   let body: { id?: string; name?: string };
   try {
@@ -52,7 +57,7 @@ export function tenantGetHandler(req: Request, id: string): Response {
 }
 
 export async function tenantPatchHandler(req: Request, id: string): Promise<Response> {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   const existing = getTenant(id);
   if (!existing) return json({ error: "not found" }, 404);

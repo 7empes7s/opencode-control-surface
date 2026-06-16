@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { HomeData, ServicePill } from "../api/types.ts";
 import { getDashboardDb, isDashboardDbEnabled } from "./dashboard.ts";
 import { writeEvent, writeMetricSample } from "./writer.ts";
@@ -96,6 +96,53 @@ type CostBurnSpike = {
   credit: number | null;
 };
 
+type ContentHealthFinding = {
+  kind:
+    | "article.missing_image"
+    | "article.thin_digest"
+    | "article.invalid_vertical"
+    | "article.broken_link"
+    | "content.near_duplicate"
+    | "content.vertical_concentration"
+    | "content.vertical_gap";
+  severity: Severity;
+  entityType: "article" | "content";
+  slug: string | null;
+  title: string;
+  path: string | null;
+  status: string;
+  vertical: string;
+  detail: string;
+  payload: Record<string, unknown>;
+};
+
+type PublishedArticle = {
+  slug: string;
+  title: string;
+  path: string;
+  status: string;
+  vertical: string;
+  publishedAt: number;
+};
+
+type PendingExternalLinkProbe = {
+  target: string;
+  article: {
+    slug: string;
+    title: string;
+    path: string;
+    status: string;
+    vertical: string;
+    basePayload: Record<string, unknown>;
+  };
+};
+
+type BrokenExternalLink = {
+  target: string;
+  status: number | null;
+  error: string | null;
+};
+
 const DISK_PROJECTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DISK_PROJECTION_MIN_SPAN_MS = 60 * 60 * 1000;
 const COST_BURN_SPIKE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -107,6 +154,34 @@ const TUNNEL_FLAPPING_WINDOW_MS = 30 * 60 * 1000;
 const DEFAULT_DOCTOR_LOG_WARN_BYTES = 50 * 1024 * 1024;
 const DEFAULT_DOCTOR_LOG_CRIT_BYTES = 100 * 1024 * 1024;
 const DEFAULT_BACKUP_STALE_MS = 25 * 60 * 60 * 1000;
+const DEFAULT_CONTENT_ARTICLES_PATH = "/opt/newsbites/content/articles";
+const DEFAULT_CONTENT_PUBLIC_PATH = "/opt/newsbites/public";
+const DEFAULT_CONTENT_DIGEST_MIN_WORDS = 40;
+const CONTENT_RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const CONTENT_NEAR_DUPLICATE_SLUG_THRESHOLD = 0.8;
+const CONTENT_NEAR_DUPLICATE_TITLE_THRESHOLD = 0.7;
+const CONTENT_VERTICAL_CONCENTRATION_THRESHOLD = 0.4;
+const CONTENT_VERTICAL_MIN_RECENT_ARTICLES = 3;
+const DEFAULT_CONTENT_EXTERNAL_LINK_LIMIT = 25;
+const DEFAULT_CONTENT_EXTERNAL_LINK_TIMEOUT_MS = 3000;
+const DEFAULT_CONTENT_ALLOWED_VERTICALS = [
+  "ai",
+  "anime",
+  "climate",
+  "crypto",
+  "cybersecurity",
+  "economy",
+  "energy",
+  "finance",
+  "gaming",
+  "global-politics",
+  "healthcare",
+  "skincare",
+  "space",
+  "sports",
+  "tcm",
+  "trends",
+];
 
 function logMetricError(metric: string, error: unknown): void {
   console.error(`[sampler] ${metric} failed`, error);
@@ -540,6 +615,510 @@ function getBackupFreshness(): BackupFreshness | null {
   } catch {
     return null;
   }
+}
+
+function parseScalarFrontmatter(content: string): { fm: Record<string, string>; body: string } | null {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const fmText = match[1];
+  const fm: Record<string, string> = {};
+  for (const line of fmText.split(/\r?\n/)) {
+    const field = line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (!field) {
+      continue;
+    }
+    const key = field[1];
+    let value = field[2].trim();
+    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    fm[key] = value.trim();
+  }
+
+  return { fm, body: match[2] ?? "" };
+}
+
+function getContentAllowedVerticals(): Set<string> {
+  const raw = process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS;
+  const values = raw
+    ? raw.split(",").map((entry) => entry.trim()).filter(Boolean)
+    : DEFAULT_CONTENT_ALLOWED_VERTICALS;
+  return new Set(values.map((entry) => entry.toLowerCase()));
+}
+
+function countWords(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeDuplicateKey(value: string): string {
+  return normalizeText(value).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function duplicateTokens(value: string): string[] {
+  return normalizeDuplicateKey(value).split(" ").filter(Boolean);
+}
+
+function tokenOverlapRatio(left: string, right: string): number {
+  const leftTokens = duplicateTokens(left);
+  const rightTokens = duplicateTokens(right);
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    return 0;
+  }
+  if (leftTokens.join(" ") === rightTokens.join(" ")) {
+    return 1;
+  }
+
+  const rightCounts = new Map<string, number>();
+  for (const token of rightTokens) {
+    rightCounts.set(token, (rightCounts.get(token) ?? 0) + 1);
+  }
+
+  let overlap = 0;
+  for (const token of leftTokens) {
+    const count = rightCounts.get(token) ?? 0;
+    if (count > 0) {
+      overlap += 1;
+      rightCounts.set(token, count - 1);
+    }
+  }
+
+  return overlap / Math.max(leftTokens.length, rightTokens.length);
+}
+
+function parseContentPublishedAt(fm: Record<string, string>, path: string): number {
+  const raw = fm.publishedAt || fm.published_at || fm.date || fm.createdAt || fm.created_at;
+  if (raw) {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+}
+
+function coverImageExists(coverImage: string, articleRoot: string, publicRoot: string): boolean {
+  if (!coverImage) {
+    return false;
+  }
+  if (/^https?:\/\//i.test(coverImage)) {
+    return true;
+  }
+  const path = coverImage.startsWith("/")
+    ? `${publicRoot}${coverImage}`
+    : `${articleRoot}/${coverImage}`;
+  return existsSync(path);
+}
+
+function findBrokenMarkdownLinks(body: string, articleRoot: string, publicRoot: string): string[] {
+  const broken = new Set<string>();
+  const markdownLinkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
+
+  for (const match of body.matchAll(markdownLinkPattern)) {
+    const rawTarget = match[1].trim();
+    const target = rawTarget.split("#")[0].split("?")[0].trim();
+    if (!target || target.startsWith("mailto:") || /^https?:\/\//i.test(target)) {
+      continue;
+    }
+
+    if (target.startsWith("/")) {
+      if (!existsSync(`${publicRoot}${target}`)) {
+        broken.add(rawTarget);
+      }
+      continue;
+    }
+
+    if (target.startsWith("./") || target.startsWith("../")) {
+      if (!existsSync(`${articleRoot}/${target}`)) {
+        broken.add(rawTarget);
+      }
+      continue;
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
+      broken.add(rawTarget);
+    }
+  }
+
+  return [...broken].sort();
+}
+
+function findExternalMarkdownLinks(body: string): string[] {
+  const links = new Set<string>();
+  const markdownLinkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
+
+  for (const match of body.matchAll(markdownLinkPattern)) {
+    const rawTarget = match[1].trim();
+    const target = rawTarget.split("#")[0].trim();
+    if (/^https?:\/\//i.test(target)) {
+      links.add(rawTarget);
+    }
+  }
+
+  return [...links].sort();
+}
+
+function isPrivateLinkProbeTarget(target: string): boolean {
+  try {
+    const host = new URL(target).hostname.toLowerCase();
+    return host === "localhost"
+      || host === "0.0.0.0"
+      || host === "::1"
+      || host.startsWith("127.")
+      || host.startsWith("10.")
+      || host.startsWith("192.168.")
+      || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+  } catch {
+    return true;
+  }
+}
+
+async function fetchWithTimeout(target: string, method: "HEAD" | "GET", timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(target, { method, redirect: "follow", signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function probeExternalLink(target: string, timeoutMs: number): Promise<BrokenExternalLink | null> {
+  try {
+    let response = await fetchWithTimeout(target, "HEAD", timeoutMs);
+    if (response.status === 405 || response.status === 501) {
+      response = await fetchWithTimeout(target, "GET", timeoutMs);
+    }
+    if (response.status >= 400) {
+      return { target, status: response.status, error: null };
+    }
+    return null;
+  } catch (error) {
+    return {
+      target,
+      status: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function probeExternalLinks(probes: PendingExternalLinkProbe[]): Promise<Map<string, BrokenExternalLink[]>> {
+  const limit = readNumberEnv("DASHBOARD_CONTENT_EXTERNAL_LINK_LIMIT", DEFAULT_CONTENT_EXTERNAL_LINK_LIMIT);
+  const timeoutMs = readNumberEnv("DASHBOARD_CONTENT_EXTERNAL_LINK_TIMEOUT_MS", DEFAULT_CONTENT_EXTERNAL_LINK_TIMEOUT_MS);
+  const allowPrivate = process.env.DASHBOARD_CONTENT_ALLOW_PRIVATE_LINK_PROBES === "1";
+  const brokenBySlug = new Map<string, BrokenExternalLink[]>();
+  const bounded = probes
+    .filter((probe) => allowPrivate || !isPrivateLinkProbeTarget(probe.target))
+    .slice(0, Math.max(0, limit));
+
+  for (const probe of bounded) {
+    const broken = await probeExternalLink(probe.target, Math.max(500, timeoutMs));
+    if (!broken) {
+      continue;
+    }
+    const existing = brokenBySlug.get(probe.article.slug) ?? [];
+    existing.push(broken);
+    brokenBySlug.set(probe.article.slug, existing);
+  }
+
+  return brokenBySlug;
+}
+
+function addBrokenLinkFinding(
+  findings: ContentHealthFinding[],
+  article: PendingExternalLinkProbe["article"],
+  localBrokenLinks: string[],
+  externalBrokenLinks: BrokenExternalLink[] = [],
+): void {
+  if (localBrokenLinks.length === 0 && externalBrokenLinks.length === 0) {
+    return;
+  }
+
+  const localCount = localBrokenLinks.length;
+  const externalCount = externalBrokenLinks.length;
+  const parts: string[] = [];
+  if (localCount > 0) {
+    parts.push(`${localCount} local markdown link target${localCount === 1 ? "" : "s"} missing`);
+  }
+  if (externalCount > 0) {
+    parts.push(`${externalCount} external link probe${externalCount === 1 ? "" : "s"} failed`);
+  }
+
+  findings.push({
+    kind: "article.broken_link",
+    severity: externalCount > 0 ? "error" : "warn",
+    entityType: "article",
+    slug: article.slug,
+    title: article.title,
+    path: article.path,
+    status: article.status,
+    vertical: article.vertical,
+    detail: parts.join("; "),
+    payload: {
+      ...article.basePayload,
+      brokenLinks: localBrokenLinks,
+      brokenExternalLinks: externalBrokenLinks,
+    },
+  });
+}
+
+function getContentHealthFindings(): {
+  findings: ContentHealthFinding[];
+  externalProbes: PendingExternalLinkProbe[];
+  localBrokenBySlug: Map<string, string[]>;
+  articleBySlug: Map<string, PendingExternalLinkProbe["article"]>;
+} {
+  const root = process.env.DASHBOARD_CONTENT_ARTICLES_PATH ?? DEFAULT_CONTENT_ARTICLES_PATH;
+  if (!existsSync(root)) {
+    return { findings: [], externalProbes: [], localBrokenBySlug: new Map(), articleBySlug: new Map() };
+  }
+
+  const publicRoot = process.env.DASHBOARD_CONTENT_PUBLIC_PATH ?? DEFAULT_CONTENT_PUBLIC_PATH;
+  const allowedVerticals = getContentAllowedVerticals();
+  const digestMinWords = readNumberEnv("DASHBOARD_CONTENT_DIGEST_MIN_WORDS", DEFAULT_CONTENT_DIGEST_MIN_WORDS);
+  const findings: ContentHealthFinding[] = [];
+  const publishedArticles: PublishedArticle[] = [];
+  const externalProbes: PendingExternalLinkProbe[] = [];
+  const localBrokenBySlug = new Map<string, string[]>();
+  const articleBySlug = new Map<string, PendingExternalLinkProbe["article"]>();
+
+  let files: string[];
+  try {
+    files = readdirSync(root).filter((file) => file.endsWith(".md")).sort().slice(0, 500);
+  } catch {
+    return { findings: [], externalProbes: [], localBrokenBySlug, articleBySlug };
+  }
+
+  for (const file of files) {
+    const path = `${root}/${file}`;
+    let parsed: { fm: Record<string, string>; body: string } | null = null;
+    try {
+      parsed = parseScalarFrontmatter(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
+    if (!parsed) {
+      continue;
+    }
+
+    const slug = parsed.fm.slug || file.replace(/\.md$/, "");
+    const status = (parsed.fm.status || "").toLowerCase();
+    if (status !== "published") {
+      continue;
+    }
+
+    const title = parsed.fm.title || slug;
+    const vertical = (parsed.fm.vertical || "").toLowerCase();
+    const digest = parsed.fm.digest || "";
+    const lead = parsed.fm.lead || "";
+    const coverImage = parsed.fm.coverImage || "";
+    const basePayload = { slug, title, path, status, vertical };
+    const article = { slug, title, path, status, vertical, basePayload };
+    articleBySlug.set(slug, article);
+    publishedArticles.push({ slug, title, path, status, vertical, publishedAt: parseContentPublishedAt(parsed.fm, path) });
+
+    if (!coverImageExists(coverImage, root, publicRoot)) {
+      findings.push({
+        kind: "article.missing_image",
+        severity: "warn",
+        entityType: "article",
+        slug,
+        title,
+        path,
+        status,
+        vertical,
+        detail: coverImage ? `cover image not found: ${coverImage}` : "coverImage is missing",
+        payload: { ...basePayload, coverImage: coverImage || null },
+      });
+    }
+
+    const digestWords = countWords(digest);
+    if (!digest || digestWords < digestMinWords || (lead && normalizeText(digest) === normalizeText(lead))) {
+      findings.push({
+        kind: "article.thin_digest",
+        severity: "warn",
+        entityType: "article",
+        slug,
+        title,
+        path,
+        status,
+        vertical,
+        detail: !digest
+          ? "digest is missing"
+          : normalizeText(digest) === normalizeText(lead)
+            ? "digest duplicates lead"
+            : `digest has ${digestWords} words`,
+        payload: { ...basePayload, digestWords, digestMinWords, duplicatesLead: Boolean(lead && normalizeText(digest) === normalizeText(lead)) },
+      });
+    }
+
+    if (!vertical || !allowedVerticals.has(vertical)) {
+      findings.push({
+        kind: "article.invalid_vertical",
+        severity: "warn",
+        entityType: "article",
+        slug,
+        title,
+        path,
+        status,
+        vertical,
+        detail: vertical ? `vertical is not allowed: ${vertical}` : "vertical is missing",
+        payload: { ...basePayload, allowedVerticals: [...allowedVerticals].sort() },
+      });
+    }
+
+    const brokenLinks = findBrokenMarkdownLinks(parsed.body, root, publicRoot);
+    if (brokenLinks.length > 0) {
+      localBrokenBySlug.set(slug, brokenLinks);
+    }
+    for (const target of findExternalMarkdownLinks(parsed.body)) {
+      externalProbes.push({ target, article });
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < publishedArticles.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < publishedArticles.length; rightIndex += 1) {
+      const left = publishedArticles[leftIndex];
+      const right = publishedArticles[rightIndex];
+      const slugSimilarity = tokenOverlapRatio(left.slug, right.slug);
+      const titleSimilarity = tokenOverlapRatio(left.title, right.title);
+      if (slugSimilarity < CONTENT_NEAR_DUPLICATE_SLUG_THRESHOLD && titleSimilarity < CONTENT_NEAR_DUPLICATE_TITLE_THRESHOLD) {
+        continue;
+      }
+
+      const article = left.slug <= right.slug ? left : right;
+      const duplicate = article === left ? right : left;
+      const score = Math.max(slugSimilarity, titleSimilarity);
+      findings.push({
+        kind: "content.near_duplicate",
+        severity: "warn",
+        entityType: "article",
+        slug: article.slug,
+        title: article.title,
+        path: article.path,
+        status: article.status,
+        vertical: article.vertical,
+        detail: `${article.slug} resembles ${duplicate.slug} (${Math.round(score * 100)}% similarity)`,
+        payload: {
+          slug: article.slug,
+          title: article.title,
+          path: article.path,
+          status: article.status,
+          vertical: article.vertical,
+          duplicateOf: duplicate.slug,
+          duplicateTitle: duplicate.title,
+          duplicatePath: duplicate.path,
+          duplicateVertical: duplicate.vertical,
+          slugSimilarity,
+          titleSimilarity,
+        },
+      });
+    }
+  }
+
+  const recentCutoff = Date.now() - CONTENT_RECENT_WINDOW_MS;
+  const recentArticles = publishedArticles.filter((article) => article.publishedAt >= recentCutoff);
+  if (recentArticles.length >= CONTENT_VERTICAL_MIN_RECENT_ARTICLES) {
+    const recentVerticalCounts = new Map<string, number>();
+    for (const article of recentArticles) {
+      if (article.vertical && allowedVerticals.has(article.vertical)) {
+        recentVerticalCounts.set(article.vertical, (recentVerticalCounts.get(article.vertical) ?? 0) + 1);
+      }
+    }
+
+    for (const [vertical, count] of recentVerticalCounts) {
+      const pct = count / recentArticles.length;
+      if (pct <= CONTENT_VERTICAL_CONCENTRATION_THRESHOLD) {
+        continue;
+      }
+      findings.push({
+        kind: "content.vertical_concentration",
+        severity: "warn",
+        entityType: "content",
+        slug: null,
+        title: vertical,
+        path: null,
+        status: "published",
+        vertical,
+        detail: `${vertical} is ${Math.round(pct * 100)}% of recent published volume`,
+        payload: {
+          title: vertical,
+          vertical,
+          count,
+          recentTotal: recentArticles.length,
+          pct,
+          windowDays: 7,
+        },
+      });
+    }
+
+    for (const vertical of [...allowedVerticals].sort()) {
+      if ((recentVerticalCounts.get(vertical) ?? 0) > 0) {
+        continue;
+      }
+      findings.push({
+        kind: "content.vertical_gap",
+        severity: "warn",
+        entityType: "content",
+        slug: null,
+        title: vertical,
+        path: null,
+        status: "published",
+        vertical,
+        detail: `${vertical} has no published articles in the last 7 days`,
+        payload: {
+          title: vertical,
+          vertical,
+          count: 0,
+          recentTotal: recentArticles.length,
+          windowDays: 7,
+        },
+      });
+    }
+  }
+
+  return { findings, externalProbes, localBrokenBySlug, articleBySlug };
+}
+
+export async function runContentHealthScan(options: { probeExternalLinks?: boolean } = {}): Promise<number> {
+  let generated = 0;
+  const { findings, externalProbes, localBrokenBySlug, articleBySlug } = getContentHealthFindings();
+  const brokenExternalBySlug = options.probeExternalLinks
+    ? await probeExternalLinks(externalProbes)
+    : new Map<string, BrokenExternalLink[]>();
+
+  for (const [slug, article] of articleBySlug) {
+    addBrokenLinkFinding(findings, article, localBrokenBySlug.get(slug) ?? [], brokenExternalBySlug.get(slug) ?? []);
+  }
+
+  for (const finding of findings) {
+    try {
+      writeEvent({
+        kind: finding.kind,
+        severity: finding.severity,
+        entityType: finding.entityType,
+        entityId: finding.slug ?? undefined,
+        summary: `${finding.title}: ${finding.detail}`,
+        payload: finding.payload,
+        dedupeKey: `content-health:${finding.kind}:${finding.slug ?? finding.vertical}:${finding.detail}`,
+      });
+      generated += 1;
+    } catch (error) {
+      console.error(`[sampler] ${finding.kind} failed`, error);
+    }
+  }
+  return generated;
 }
 
 function getLargestPipelineStage(home: HomeData): { stage: string; count: number; pct: number } | null {
@@ -1305,6 +1884,7 @@ export function runHomeSampler(home: HomeData): void {
   if (!isDashboardDbEnabled()) return;
   try { sampleHomeMetrics(home); } catch (e) { console.error("[sampler] sampleHomeMetrics failed", e); }
   try { prevSnapshot = detectHomeTransitions(home, prevSnapshot); } catch (e) { console.error("[sampler] detectHomeTransitions failed", e); }
+  runContentHealthScan().catch((e) => { console.error("[sampler] sampleContentHealth failed", e); });
 }
 
 export function __resetSamplerStateForTests(): void {

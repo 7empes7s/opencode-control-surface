@@ -2,6 +2,8 @@ import { getDashboardDb, isDashboardDbEnabled } from "./dashboard.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import type { TenantContext } from "../tenancy/context.ts";
 import { whereTenant } from "./tenantScope.ts";
+import { getCurrentAuthenticatedUser } from "../auth/session.ts";
+import { markAuditWritten } from "../api/auditFlag.ts";
 
 type MetricSampleInput = {
   source: string;
@@ -10,6 +12,7 @@ type MetricSampleInput = {
 };
 
 type EventInput = {
+  ts?: number;
   kind: string;
   severity: string;
   entityType?: string;
@@ -20,6 +23,7 @@ type EventInput = {
 };
 
 type ActionAuditInput = {
+  userId?: string | null;
   actor?: string;
   actorSource?: string;
   actionKind: string;
@@ -118,6 +122,7 @@ export type JobRow = {
 export type ActionAuditRow = {
   id: number;
   ts: number;
+  userId: string | null;
   actor: string | null;
   actorSource: string | null;
   actionKind: string;
@@ -237,7 +242,7 @@ export function writeEvent(input: EventInput): void {
       `;
 
     db.query(sql).run(
-      Date.now(),
+      input.ts ?? Date.now(),
       input.kind,
       input.severity,
       input.entityType ?? null,
@@ -262,22 +267,28 @@ export function writeActionAudit(input: ActionAuditInput): void {
     return;
   }
 
+  markAuditWritten();
+
   const tenantId = getCurrentTenantContext().tenantId;
+  const currentUser = getCurrentAuthenticatedUser();
+  const userId = input.userId ?? currentUser?.userId ?? null;
+  const actor = input.actor ?? currentUser?.email ?? currentUser?.name ?? userId ?? "operator";
 
   try {
     db.query(`
       INSERT INTO action_audit
         (
-          ts, actor, actor_source, action_kind, action, action_id, reason,
+          ts, user_id, actor, actor_source, action_kind, action, action_id, reason,
           target, target_type, target_id, risk, args_json, request_json,
           result, result_status, result_json, evidence_json, job_id, event_id,
           rollback_hint, error, tenant_id
         )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       Date.now(),
-      input.actor ?? "operator",
-      input.actorSource ?? "dashboard",
+      userId,
+      actor,
+      input.actorSource ?? currentUser?.source ?? "dashboard",
       input.actionKind,
       input.actionKind,
       input.actionId ?? null,
@@ -344,6 +355,7 @@ export function createJob(input: JobInput): boolean {
   const now = Date.now();
   const status = input.status ?? "running";
   const tenantId = getCurrentTenantContext().tenantId;
+  const currentUser = getCurrentAuthenticatedUser();
 
   try {
     db.query(`
@@ -360,7 +372,7 @@ export function createJob(input: JobInput): boolean {
       input.kind,
       status,
       status,
-      input.actor ?? "operator",
+      input.actor ?? currentUser?.email ?? currentUser?.name ?? currentUser?.userId ?? "operator",
       input.reason ?? null,
       input.targetType ?? null,
       input.targetId ?? null,
@@ -816,6 +828,7 @@ export function readJob(id: string): JobRow | null {
 type DbActionAuditRow = {
   id: number;
   ts: number;
+  user_id: string | null;
   actor: string | null;
   actor_source: string | null;
   action_kind: string;
@@ -842,6 +855,7 @@ function mapAudit(row: DbActionAuditRow): ActionAuditRow {
   return {
     id: row.id,
     ts: row.ts,
+    userId: row.user_id,
     actor: row.actor,
     actorSource: row.actor_source,
     actionKind: row.action_kind,
@@ -879,7 +893,7 @@ export function readActionAudit(
   const limit = Math.max(1, Math.min(500, options.limit ?? 100));
   const params: Array<string | number> = [];
   let sql = `
-    SELECT id, ts, actor, actor_source, action_kind, action_id, reason, target,
+    SELECT id, ts, user_id, actor, actor_source, action_kind, action_id, reason, target,
       target_type, target_id, risk, request_json, args_json, result_status,
       result, result_json, evidence_json, job_id, event_id, rollback_hint, error,
       tenant_id

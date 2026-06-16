@@ -1,0 +1,24 @@
+{
+  "check": "bun run check",
+  "serve": {
+    "url": "http://127.0.0.1:3000",
+    "routes": ["/", "/gateway", "/doctor", "/compliance", "/governance", "/agent-team"],
+    "auth": {
+      "token_cmd": "systemctl show control-surface.service -p Environment --value | tr ' ' '\\n' | grep ^OPERATOR_TOKEN= | cut -d= -f2",
+      "session_endpoint": "/api/auth/session",
+      "cookie_name": "operator_session"
+    },
+    "reload_cmd": "systemctl restart control-surface && sleep 8"
+  },
+  "forbidden": [],
+  "focus": [
+    "functionality",
+    "live-data-refresh",
+    "visibility",
+    "reliability",
+    "actions-and-quick-buttons",
+    "reports",
+    "helpful-banners",
+    "m365-admin-center"
+  ]
+}

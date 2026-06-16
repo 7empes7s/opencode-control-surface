@@ -2,6 +2,9 @@ import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.ts";
+import { selectHealthiestGatewayModel } from "./gateway.ts";
+import { setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
+import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 
@@ -13,7 +16,7 @@ interface ExecuteRequest {
 }
 
 type ExecuteResult =
-  | { ok: true; action: string; jobId?: string; text?: string; url?: string; path?: string; route?: string; message?: string }
+  | { ok: true; action: string; jobId?: string; text?: string; url?: string; path?: string; route?: string; message?: string; result?: Record<string, unknown> }
   | { ok: false; error: string; code: "BAD_REQUEST" | "NOT_FOUND" | "DISABLED" | "CONFIRM_REQUIRED" | "REASON_REQUIRED" | "ALLOWLIST" | "NOT_IMPLEMENTED" | "EXEC_ERROR" }
 
 interface ParsedActionId {
@@ -53,10 +56,13 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   return { confirm: false, reasonRequired: false };
 }
 
-function getRisk(kind: string, targetType: string): "low" | "medium" | "high" {
+function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
-  if (kind === "mutate-policy") return "high";
+  if (kind === "mutate-policy") {
+    if (targetType === "budget") return "medium";
+    return "high";
+  }
   return "low";
 }
 
@@ -154,6 +160,30 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     }
   }
 
+  if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
+    const selected = selectHealthiestGatewayModel();
+    if (!selected) {
+      return { ok: false, error: "no gateway models available", code: "NOT_FOUND" };
+    }
+    const ctx = getCurrentTenantContext();
+    const ttlMs = typeof body.params?.ttlMs === "number" && Number.isFinite(body.params.ttlMs)
+      ? body.params.ttlMs
+      : 15 * 60_000;
+    const routeOverride = setGatewayRouteOverrideForGatewayAdmin({
+      targetModel: selected.logicalName,
+      resolvedModel: selected.resolvedModel,
+      tier: selected.tier,
+      reason: body.reason,
+      setBy: ctx.actor ?? "operator",
+      ttlMs,
+    });
+    return {
+      ok: true,
+      action: "start-job",
+      message: `Routing gateway traffic to ${selected.logicalName} until ${routeOverride.expiresAt}.`,
+    };
+  }
+
   if (kind === "mutate-policy" && targetType === "model") {
     if (!suffix || !["block", "unblock", "probation-clear"].includes(suffix)) {
       return { ok: false, error: "invalid mutate-policy suffix", code: "BAD_REQUEST" };
@@ -170,6 +200,29 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       }
       writeFileSync(path, JSON.stringify(quality, null, 2));
       return { ok: true, action: "mutate-policy", message: targetId + " → " + suffix };
+    } catch {
+      return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "mutate-policy" && targetType === "budget" && targetId === "global" && suffix === "set-cap") {
+    const dailyCapUsd = typeof body.params?.dailyCapUsd === "number" ? body.params.dailyCapUsd : 5;
+    const monthlyCapUsd = typeof body.params?.monthlyCapUsd === "number" ? body.params.monthlyCapUsd : 50;
+    if (!Number.isFinite(dailyCapUsd) || dailyCapUsd <= 0 || dailyCapUsd > 10000) {
+      return { ok: false, error: "dailyCapUsd must be a number between 1 and 10000", code: "BAD_REQUEST" };
+    }
+    if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0 || monthlyCapUsd > 10000) {
+      return { ok: false, error: "monthlyCapUsd must be a number between 1 and 10000", code: "BAD_REQUEST" };
+    }
+    try {
+      const { upsertBudget } = await import("../governance/budgets.ts");
+      const budget = upsertBudget("global", { dailyCapUsd, monthlyCapUsd, warnPct: 0.8 });
+      return {
+        ok: true,
+        action: "mutate-policy",
+        result: { budget },
+        message: `Global budget cap set: $${dailyCapUsd}/day, $${monthlyCapUsd}/month. Gateway calls are now governed by this cap.`,
+      };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
     }
@@ -227,7 +280,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       actionId,
       targetType,
       targetId,
-      risk: getRisk(kind, targetType),
+      risk: getRisk(kind, targetType, suffix),
       reason,
       request: { actionId, confirmed, params },
       resultStatus: "failed",
@@ -245,7 +298,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       actionId,
       targetType,
       targetId,
-      risk: getRisk(kind, targetType),
+      risk: getRisk(kind, targetType, suffix),
       reason,
       request: { actionId, confirmed, params },
       resultStatus: "failed",
@@ -264,7 +317,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
     actionId,
     targetType,
     targetId,
-    risk: getRisk(kind, targetType),
+    risk: getRisk(kind, targetType, suffix),
     reason,
     request: { actionId, confirmed, params },
     resultStatus: result.ok ? "success" : "failed",

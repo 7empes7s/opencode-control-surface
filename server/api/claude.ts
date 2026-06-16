@@ -56,7 +56,7 @@ function json(body: unknown, status = 200): Response {
 async function probe(cmd: string, args: string[], timeoutMs = 4000): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
-      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", IS_SANDBOX: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -234,7 +234,7 @@ export async function claudeStreamHandler(req: Request, id: string): Promise<Res
 
       const child = spawn(CLAUDE_BIN, args, {
         cwd: session.directory,
-        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb" },
+        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", TERM: "dumb", IS_SANDBOX: "1" },
         stdio: ["ignore", "pipe", "pipe"],
       });
       activeClaudeRuns.set(id, { child, startedAt: Date.now() });

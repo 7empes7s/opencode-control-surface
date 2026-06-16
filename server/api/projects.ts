@@ -3,6 +3,7 @@ import { upsertProject, getProject, listProjects, deleteProject, detectProject }
 import { writeActionAudit } from "../db/writer.ts";
 import type { Project } from "../projects/types.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { requireMutation } from "../governance/rbac.ts";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -16,6 +17,10 @@ function operatorOnly(req: Request): Response | null {
   return null;
 }
 
+function mutationOnly(req: Request): Response | null {
+  return requireMutation(req);
+}
+
 export function projectsListHandler(req: Request, url: URL): Response {
   const guard = operatorOnly(req);
   if (guard) return guard;
@@ -25,7 +30,7 @@ export function projectsListHandler(req: Request, url: URL): Response {
 }
 
 export async function projectsCreateHandler(req: Request): Promise<Response> {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   let body: Partial<Omit<Project, "createdAt" | "updatedAt">>;
   try {
@@ -69,7 +74,7 @@ export function projectGetHandler(req: Request, id: string): Response {
 }
 
 export async function projectPatchHandler(req: Request, id: string): Promise<Response> {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   const existing = getProject(id);
   if (!existing) return json({ error: "not found" }, 404);
@@ -95,7 +100,7 @@ export async function projectPatchHandler(req: Request, id: string): Promise<Res
 }
 
 export function projectDeleteHandler(req: Request, id: string): Response {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   const existing = getProject(id);
   if (!existing) return json({ error: "not found" }, 404);
@@ -104,7 +109,7 @@ export function projectDeleteHandler(req: Request, id: string): Response {
 }
 
 export async function projectsDetectHandler(req: Request): Promise<Response> {
-  const guard = operatorOnly(req);
+  const guard = mutationOnly(req);
   if (guard) return guard;
   let body: { repoPath?: string };
   try {

@@ -50,6 +50,7 @@ describe("GET /api/dossier/:date/:slug", () => {
 describe("POST /api/dossier/:date/:slug/inject", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 404 for non-existent dossier (expected behavior)", async () => {
@@ -57,7 +58,7 @@ describe("POST /api/dossier/:date/:slug/inject", () => {
       request("/api/dossier/2026-01-01/test-slug/inject", {
         method: "POST",
         body: JSON.stringify({ notes: "test notes", requeueStage: null }),
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
       }),
       new URL("http://127.0.0.1:3000/api/dossier/2026-01-01/test-slug/inject"),
     );

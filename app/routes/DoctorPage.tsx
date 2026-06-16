@@ -19,6 +19,38 @@ function verdictColor(action: string): string {
   return "gray";
 }
 
+function DoctorLoadingState({ error }: { error?: string | null }) {
+  return (
+    <div className="dash-page">
+      <div className="page-header">
+        <div className="page-title">Doctor</div>
+        <div className={`loading-panel${error ? " error" : ""}`} style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 600 }}>{error ? "Doctor data did not load" : "Loading doctor data"}</div>
+          <div>{error ? `The API returned: ${error}` : "Waiting for repair stats, charts, and the decision log."}</div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, marginBottom: 16 }}>
+        {["error classes (24h)", "top failing models", "verdict mix"].map((title) => (
+          <SectionCard key={title} title={title} defaultOpen={true}>
+            <div className="section-card-body" style={{ padding: "12px 16px" }}>
+              <div className="skeleton-line wide" />
+              <div className="skeleton-line" />
+              <div className="skeleton-line short" />
+            </div>
+          </SectionCard>
+        ))}
+      </div>
+      <SectionCard title="decision log" defaultOpen={true}>
+        <div className="section-card-body" style={{ padding: "12px 16px" }}>
+          <div className="skeleton-line wide" />
+          <div className="skeleton-line wide" />
+          <div className="skeleton-line" />
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
 export function DoctorPage() {
   const { data, loading, error, refresh } = useApi<DoctorDetail>("/api/doctor", 15_000);
   const scan = useAction("/api/doctor/scan");
@@ -26,9 +58,9 @@ export function DoctorPage() {
   const [filterError, setFilterError] = useState("");
   const [filterModel, setFilterModel] = useState("");
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
-  if (!data) return null;
+  if (loading && !data) return <DoctorLoadingState />;
+  if (error && !data) return <DoctorLoadingState error={error} />;
+  if (!data) return <DoctorLoadingState error="No doctor data is available yet." />;
 
   const d = data;
   const successPct = d.stats.total > 0 ? Math.round(d.stats.successRate * 100) : null;

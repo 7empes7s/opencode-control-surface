@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
@@ -20,8 +21,161 @@ function statusColor(s: string) {
   return "gray";
 }
 
+// ── Change Picture Modal ────────────────────────────────────────────────────
+
+type PicMode = "search" | "upload";
+interface PicResult { coverImage: string; photographer?: string; sourceUrl?: string; query?: string }
+
+function ChangePicModal({
+  slug, title,
+  onClose, onDone,
+}: { slug: string; title: string; onClose: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState<PicMode>("search");
+  const [keywords, setKeywords] = useState(title);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PicResult | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [fileName, setFileName] = useState("");
+
+  const tabBtn = (m: PicMode, label: string) => (
+    <button
+      onClick={() => { setMode(m); setError(null); setResult(null); }}
+      style={{
+        fontFamily: "var(--mono)", fontSize: 11, padding: "6px 16px",
+        background: "none", border: "none", cursor: "pointer",
+        borderBottom: mode === m ? "2px solid var(--accent)" : "2px solid transparent",
+        color: mode === m ? "var(--accent)" : "var(--text-dim)",
+      }}
+    >{label}</button>
+  );
+
+  const doSearch = async () => {
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const res = await authFetch(`/api/newsbites/articles/${encodeURIComponent(slug)}/refresh-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keywords: keywords.trim() }),
+      });
+      const json = await res.json() as PicResult & { error?: string };
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setResult(json);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  };
+
+  const doUpload = async () => {
+    const file = fileRef.current?.files?.[0];
+    if (!file) { setError("Select an image file first"); return; }
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      const res = await authFetch(`/api/newsbites/articles/${encodeURIComponent(slug)}/upload-image`, {
+        method: "POST",
+        body: form,
+      });
+      const json = await res.json() as PicResult & { error?: string };
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setResult(json);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 6, width: 480, maxWidth: "95vw" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-bright)" }}>Change cover image</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding: "8px 16px 4px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{slug}</div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
+          {tabBtn("search", "Search Pexels")}
+          {tabBtn("upload", "Upload custom")}
+        </div>
+
+        <div style={{ padding: "16px" }}>
+          {mode === "search" && (
+            <>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginBottom: 6 }}>Search keywords</div>
+              <input
+                className="form-input"
+                style={{ width: "100%", marginBottom: 12, boxSizing: "border-box" }}
+                value={keywords}
+                onChange={(e) => setKeywords(e.target.value)}
+                placeholder="e.g. basketball playoffs crowd"
+                onKeyDown={(e) => e.key === "Enter" && doSearch()}
+              />
+              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginBottom: 12 }}>
+                Will avoid the current image. Leave as-is to use the article title as the query.
+              </div>
+              {result && (
+                <div style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, marginBottom: 12, fontFamily: "var(--mono)", fontSize: 11 }}>
+                  <div style={{ color: "var(--accent)", marginBottom: 4 }}>✓ Image updated</div>
+                  {result.photographer && <div className="dim">Photo: {result.photographer}</div>}
+                  {result.query && <div className="dim">Query: {result.query}</div>}
+                </div>
+              )}
+              {error && <div style={{ color: "var(--red)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 12 }}>{error}</div>}
+              <div className="action-bar">
+                <button className="btn btn-primary" onClick={doSearch} disabled={loading || !keywords.trim()}>
+                  {loading ? "Searching…" : "Find new image"}
+                </button>
+                <button className="btn btn-ghost" onClick={onClose}>Close</button>
+              </div>
+            </>
+          )}
+
+          {mode === "upload" && (
+            <>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginBottom: 6 }}>Image file (jpg, png, webp — max 10 MB)</div>
+              <div
+                style={{ border: "1px dashed var(--border)", borderRadius: 4, padding: "20px", textAlign: "center", marginBottom: 12, cursor: "pointer", color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 11 }}
+                onClick={() => fileRef.current?.click()}
+              >
+                {fileName || "Click to select image file"}
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                style={{ display: "none" }}
+                onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")}
+              />
+              {result && (
+                <div style={{ padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, marginBottom: 12, fontFamily: "var(--mono)", fontSize: 11 }}>
+                  <div style={{ color: "var(--accent)" }}>✓ Custom image uploaded</div>
+                </div>
+              )}
+              {error && <div style={{ color: "var(--red)", fontFamily: "var(--mono)", fontSize: 11, marginBottom: 12 }}>{error}</div>}
+              <div className="action-bar">
+                <button className="btn btn-primary" onClick={doUpload} disabled={loading || !fileName}>
+                  {loading ? "Uploading…" : "Upload image"}
+                </button>
+                <button className="btn btn-ghost" onClick={onClose}>Close</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
+
 export function NewsBitesPage() {
-  const { data, loading, error } = useApi<NewsBitesDetail>("/api/newsbites", 30_000);
+  const { data, loading, error, refresh } = useApi<NewsBitesDetail>("/api/newsbites", 30_000);
+  const [, navigate] = useLocation();
   const [filterStatus, setFilterStatus] = useState("");
   const [filterVertical, setFilterVertical] = useState("");
   const [deployModal, setDeployModal] = useState(false);
@@ -29,6 +183,12 @@ export function NewsBitesPage() {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<{ status: string; output: string } | null>(null);
+
+  // Article actions
+  const [killSlug, setKillSlug] = useState<string | null>(null);
+  const [killing, setKilling] = useState(false);
+  const [killError, setKillError] = useState<string | null>(null);
+  const [picSlug, setPicSlug] = useState<{ slug: string; title: string } | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -70,72 +230,98 @@ export function NewsBitesPage() {
 
   const d = data;
   const s = d.stats;
-
   const statuses = [...new Set(d.articles.map((a) => a.status).filter(Boolean))].sort();
   const verticals = [...new Set(d.articles.map((a) => a.vertical).filter(Boolean))].sort();
-
   const last30dTotal = s.publishedLast30d.reduce((acc, x) => acc + x.count, 0);
+
+  const handleKill = async () => {
+    if (!killSlug) return;
+    setKilling(true); setKillError(null);
+    try {
+      const res = await authFetch(`/api/newsbites/articles/${encodeURIComponent(killSlug)}`, { method: "DELETE" });
+      const json = await res.json() as { error?: string };
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setKillSlug(null);
+      refresh();
+    } catch (e) {
+      setKillError(e instanceof Error ? e.message : String(e));
+    } finally { setKilling(false); }
+  };
+
+  const handleInspect = async (slug: string) => {
+    const res = await authFetch(`/api/newsbites/articles/${encodeURIComponent(slug)}/dossier-path`);
+    const json = await res.json() as { date: string | null; slug: string };
+    if (json.date) {
+      navigate(`/autopipeline/dossier/${json.date}/${json.slug}`);
+    } else {
+      alert("No dossier found for this article.");
+    }
+  };
 
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">NewsBites</div>
-        <div className="stat-row">
-          <div className="stat-item">
-            <div className="stat-val">{s.totalPublished}</div>
-            <div className="stat-lbl">published</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-val">{s.totalApproved}</div>
-            <div className="stat-lbl">approved</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-val">{s.totalDraft}</div>
-            <div className="stat-lbl">draft/other</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-val">{s.publishedToday}</div>
-            <div className="stat-lbl">today</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-val">{last30dTotal}</div>
-            <div className="stat-lbl">last 30d</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-lbl">site</div>
-            <Pill color={d.deploy.siteReachable ? "green" : "red"} >{d.deploy.siteReachable ? "up" : "down"}</Pill>
-          </div>
-        </div>
-      </div>
+      {/* Kill modal */}
+      {killSlug && (
+        <ConfirmModal
+          title="Delete article?"
+          message={`Permanently deletes "${killSlug}" from disk and removes its cover image. The NewsBites service will restart.`}
+          confirmLabel="Delete"
+          danger
+          loading={killing}
+          error={killError}
+          onCancel={() => { setKillSlug(null); setKillError(null); }}
+          onConfirm={handleKill}
+        />
+      )}
 
+      {/* Change picture modal */}
+      {picSlug && (
+        <ChangePicModal
+          slug={picSlug.slug}
+          title={picSlug.title}
+          onClose={() => setPicSlug(null)}
+          onDone={() => { setPicSlug(null); refresh(); }}
+        />
+      )}
+
+      {/* Deploy modal */}
       {deployModal && (
         <ConfirmModal
           title="Deploy NewsBites?"
-          message="Runs ./deploy.sh — npm install + build + restart. Takes ~15 seconds. The site will be briefly restarted."
+          message="Runs ./deploy.sh — npm install + build + restart. Takes ~15 seconds."
           confirmLabel="Deploy"
           loading={deploying}
           error={deployError}
           onCancel={() => { setDeployModal(false); setDeployError(null); }}
           onConfirm={async () => {
-            setDeploying(true);
-            setDeployError(null);
+            setDeploying(true); setDeployError(null);
             try {
-              const res = await authFetch("/api/newsbites/deploy", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-              });
+              const res = await authFetch("/api/newsbites/deploy", { method: "POST", headers: { "Content-Type": "application/json" } });
               const json = await res.json() as { jobId?: string; error?: string };
               if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
               if (json.jobId) { setJobId(json.jobId); setJobStatus(null); }
               setDeployModal(false);
             } catch (e) {
               setDeployError(e instanceof Error ? e.message : String(e));
-            } finally {
-              setDeploying(false);
-            }
+            } finally { setDeploying(false); }
           }}
         />
       )}
+
+      <div className="page-header">
+        <div className="page-title">NewsBites</div>
+        <div className="stat-row">
+          <div className="stat-item"><div className="stat-val">{s.totalPublished}</div><div className="stat-lbl">published</div></div>
+          <div className="stat-item"><div className="stat-val">{s.totalApproved}</div><div className="stat-lbl">approved</div></div>
+          <div className="stat-item"><div className="stat-val">{s.totalDraft}</div><div className="stat-lbl">draft/other</div></div>
+          <div className="stat-item"><div className="stat-val">{s.publishedToday}</div><div className="stat-lbl">today</div></div>
+          <div className="stat-item"><div className="stat-val">{last30dTotal}</div><div className="stat-lbl">last 30d</div></div>
+          <div className="stat-item">
+            <div className="stat-lbl">site</div>
+            <Pill color={d.deploy.siteReachable ? "green" : "red"}>{d.deploy.siteReachable ? "up" : "down"}</Pill>
+          </div>
+        </div>
+      </div>
 
       {/* Deploy info */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -172,7 +358,7 @@ export function NewsBitesPage() {
         </div>
       </SectionCard>
 
-      {/* Publish rate last 30d */}
+      {/* Publish rate */}
       <SectionCard
         title="publish rate · last 30 days"
         id="publish-rate"
@@ -182,12 +368,7 @@ export function NewsBitesPage() {
         <div className="section-card-body" style={{ padding: "10px 14px" }}>
           <ResponsiveContainer width="100%" height={80}>
             <BarChart data={s.publishedLast30d} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-              <XAxis
-                dataKey="date"
-                tick={false}
-                axisLine={false}
-                tickLine={false}
-              />
+              <XAxis dataKey="date" tick={false} axisLine={false} tickLine={false} />
               <YAxis hide />
               <Tooltip
                 contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
@@ -227,7 +408,7 @@ export function NewsBitesPage() {
               style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3 }}
             >
               <option value="">all status</option>
-              {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
+              {statuses.map((st) => <option key={st} value={st}>{st}</option>)}
             </select>
             <select
               value={filterVertical}
@@ -238,12 +419,7 @@ export function NewsBitesPage() {
               {verticals.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
             {(filterStatus || filterVertical) && (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => { setFilterStatus(""); setFilterVertical(""); }}
-              >
-                Clear
-              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setFilterStatus(""); setFilterVertical(""); }}>Clear</button>
             )}
           </div>
 
@@ -258,12 +434,13 @@ export function NewsBitesPage() {
                   <th {...articlesCtrl.sortHeaderProps("date")}>date <span className="sortable-th-arrow">{articlesCtrl.sort.key === "date" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                   <th {...articlesCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{articlesCtrl.sort.key === "status" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                   <th {...articlesCtrl.sortHeaderProps("wordCount")}>~words <span className="sortable-th-arrow">{articlesCtrl.sort.key === "wordCount" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th style={{ width: 160 }}>actions</th>
                 </tr>
               </thead>
               <tbody>
                 {articlesCtrl.rows.map((a) => (
                   <tr key={a.slug}>
-                    <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       <a href={`https://news.techinsiderbytes.com/articles/${a.slug}`}
                         target="_blank" rel="noreferrer"
                         style={{ color: "var(--text)", textDecoration: "none" }}
@@ -276,6 +453,25 @@ export function NewsBitesPage() {
                     <td className="mono dim">{a.date}</td>
                     <td><Pill color={statusColor(a.status)}>{a.status}</Pill></td>
                     <td className="mono dim">{a.wordCount > 0 ? `~${a.wordCount}` : "—"}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          title="Inspect dossier"
+                          onClick={() => handleInspect(a.slug)}
+                        >inspect</button>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          title="Replace cover image"
+                          onClick={() => setPicSlug({ slug: a.slug, title: a.title || a.slug })}
+                        >pic</button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          title="Permanently delete article"
+                          onClick={() => setKillSlug(a.slug)}
+                        >kill</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

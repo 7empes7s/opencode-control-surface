@@ -533,3 +533,188 @@ export interface ForceRouteResponse {
   targetModel: string;
   message: string;
 }
+
+// ── Agent Team types ────────────────────────────────────────────────────────
+ 
+export interface AgentTeamJobItem {
+  id: string;
+  type: string;
+  goal: string;
+  dir: string;
+  created: number;
+}
+
+export interface AgentTeamJobsState {
+  state: string;
+  count: number;
+  items: AgentTeamJobItem[];
+}
+
+export interface AgentTeamCooldown {
+  provider: string;
+  until: number;
+  untilIso: string;
+  secondsRemaining: number;
+  scope: string;
+  msg: string;
+}
+
+export interface AgentTeamModels {
+  count: number;
+  providers: string[];
+  usableFree: number;
+}
+
+export interface AgentTeamRole {
+  role: string;
+  mode: string;
+  chain: string[];
+}
+
+export type AgentTeamLatestReport = {
+  file: string;
+  head: string;
+} | null;
+
+export interface AgentTeamProject {
+  name: string;
+  path: string;
+  capability: string;
+  lastImprove: number;
+  counts: { queue: number; running: number; done: number; failed: number; rejected: number };
+}
+
+export interface AgentTeamDetail {
+  jobs: AgentTeamJobsState[];
+  cooldowns: AgentTeamCooldown[];
+  models: AgentTeamModels;
+  roles: AgentTeamRole[];
+  projects: AgentTeamProject[];
+  latestReport: AgentTeamLatestReport;
+  recentActivity: string[];
+  selfCorrection?: AgentTeamSelfCorrection;
+  generatedAt: string;
+}
+
+export interface AgentTeamSelfCorrectionEvent {
+  jobId: string;
+  goal: string;
+  outcome: "rolled-back" | "shipped";
+  verdict: string;
+  finding: string;
+  ts: number;
+}
+
+export interface AgentTeamSelfCorrection {
+  summary: { audited: number; rolledBack: number; shipped: number };
+  events: AgentTeamSelfCorrectionEvent[];
+}
+
+export interface AgentTeamJobFile {
+  name: string;
+  content: string;
+}
+
+export interface AgentTeamJobDetail {
+  id: string;
+  files: AgentTeamJobFile[];
+}
+
+// ── Builder Run Outcome types ──────────────────────────────────────────────
+
+export interface PlanProgressSection {
+  title: string;
+  done: number;
+  total: number;
+}
+
+export interface PlanNextStep {
+  text: string;
+  section: string;
+}
+
+export interface ChangedFile {
+  path: string;
+  status: "edited" | "created" | "deleted";
+  patchArtifactId?: string | null;
+  patchArtifactPath?: string | null;
+}
+
+export interface ValidationResultSummary {
+  kind: string;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  items: Array<{
+    id: string;
+    command: string | null;
+    url: string | null;
+    status: string;
+    error: string | null;
+    startedAt: number | null;
+    finishedAt: number | null;
+  }>;
+}
+
+export interface CostModelTraceEntry {
+  passId: string;
+  passSequence: number;
+  agent: string | null;
+  model: string | null;
+  provider: string | null;
+  estimatedCostUsd: number | null;
+  latencyMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}
+
+export interface FailureDiagnosis {
+  failureClass: string;
+  title: string;
+  whatHappened: string;
+  lastActivity: string;
+  likelyCause: string;
+  suggestedActions: string[];
+  confidence: "high" | "medium" | "low";
+  evidence: string[];
+}
+
+export interface BuilderRunOutcomeResponse {
+  runId: string;
+  workflowId: string;
+  status: string;
+  trigger: string;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  passCount: number;
+  successPasses: number;
+  failedPasses: number;
+
+  planProgress: {
+    sections: PlanProgressSection[];
+    totalDone: number;
+    totalItems: number;
+    percentDone: number;
+    lastParsedAt: number;
+    nextSteps: PlanNextStep[];
+    planFile: string;
+    error?: string;
+  };
+
+  changedFiles: ChangedFile[];
+
+  validationResults: ValidationResultSummary[];
+
+  costModelTrace: CostModelTraceEntry[];
+
+  failureDiagnosis: FailureDiagnosis | null;
+
+  stopReason: string | null;
+
+  recommendedAction: string | null;
+
+  degraded: boolean;
+  reason?: string;
+}

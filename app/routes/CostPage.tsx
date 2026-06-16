@@ -47,6 +47,16 @@ interface CostData {
     trace_id: string | null;
     caller: string | null;
   }>;
+  anomalies: Array<{
+    id: string;
+    ts: number;
+    kind: string;
+    severity: string;
+    entityType: string | null;
+    entityId: string | null;
+    summary: string;
+    payload: unknown;
+  }>;
 }
 
 export function CostPage() {
@@ -100,6 +110,50 @@ export function CostPage() {
         <div className="w-caption" style={{ marginTop: 8 }}>
           Last checked {fmtAge(d.runway.last_checked_at)}
         </div>
+      </div>
+
+      {/* Cost Anomalies */}
+      <div className="dash-section">
+        <div className="dash-section-title">Cost Anomalies</div>
+        <SectionCard
+          title="Recent Detector Findings"
+          id="cost-anomalies"
+          defaultOpen={true}
+        >
+          <div className="section-card-body table-wrap">
+            {d.anomalies.length === 0 ? (
+              <div className="loading-dim">No cost anomalies detected in the last 30 days</div>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Severity</th>
+                    <th>Finding</th>
+                    <th>Target</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.anomalies.map((anomaly) => (
+                    <tr key={anomaly.id}>
+                      <td className="mono">{fmtAge(anomaly.ts)}</td>
+                      <td>
+                        <span className={`pill ${anomaly.severity === "error" ? "critical" : "warning"}`}>
+                          {anomaly.severity}
+                        </span>
+                      </td>
+                      <td>
+                        <div>{anomaly.summary}</div>
+                        <div className="w-caption mono">{anomaly.kind}</div>
+                      </td>
+                      <td>{anomaly.entityId || anomaly.entityType || "cost"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </SectionCard>
       </div>
 
       {/* Budgets Section */}

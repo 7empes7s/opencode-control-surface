@@ -106,6 +106,11 @@ export type BuilderWorkflowInput = {
   pausedReason?: string | null;
 };
 
+// High-level lifecycle, independent of the granular operational `status`.
+// `lifecycle` is the effective value (manual override if set, else derived from
+// run history); `lifecycleStatus` is the raw manual override (null = automatic).
+export type BuilderLifecycle = "new" | "in-progress" | "done";
+
 export type BuilderWorkflow = {
   id: string;
   projectId: string;
@@ -115,6 +120,8 @@ export type BuilderWorkflow = {
   planFile: string;
   mode: BuilderWorkflowMode;
   status: BuilderWorkflowStatus;
+  lifecycle: BuilderLifecycle;
+  lifecycleStatus: BuilderLifecycle | null;
   config: BuilderWorkflowConfig;
   createdAt: number;
   updatedAt: number;
@@ -138,6 +145,11 @@ export type BuilderRun = {
   error: string | null;
   traceId: string | null;
   orchestratorInstanceId: string | null;
+  githubIssueUrl: string | null;
+  githubBranchName: string | null;
+  githubCommitHash: string | null;
+  githubPullRequestUrl: string | null;
+  githubPullRequestStatus: string | null;
 };
 
 export type BuilderPass = {
@@ -196,7 +208,18 @@ export type BuilderValidation = {
 };
 
 const MODES: BuilderWorkflowMode[] = ["once", "auto-continue", "scheduled", "permanent", "doctor", "plan"];
-const DRAFT_STATUSES: Array<BuilderWorkflowInput["status"]> = ["draft", "ready"];
+const DRAFT_STATUSES: BuilderWorkflowInput["status"][] = ["draft", "ready"];
+
+export const DEFAULT_WORKFLOW_CONFIG: BuilderWorkflowConfig = {
+  projectRoot: "",
+  agentOrder: [],
+  modelPolicy: { fallbackTargets: [] },
+  validationProfile: { commands: [], internal: [], runtime: [], public: [] },
+  gitPolicy: { commit: "manual", push: "never" },
+  backupPolicy: { enabled: false, beforeRun: false },
+  riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+  geminiApprovalMode: "auto_edit",
+};
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(redactForDashboard(value)) ?? "null";
@@ -321,6 +344,7 @@ type DbWorkflowRow = {
   name: string;
   mode: BuilderWorkflowMode;
   status: BuilderWorkflowStatus;
+  lifecycle_status: string | null;
   plan_file: string;
   config_json: string;
   created_at: number;
@@ -330,17 +354,35 @@ type DbWorkflowRow = {
   paused_reason: string | null;
 };
 
+function normalizeLifecycle(value: unknown): BuilderLifecycle | null {
+  return value === "new" || value === "in-progress" || value === "done" ? value : null;
+}
+
+// Effective lifecycle: a manual override always wins; otherwise derive from run
+// history — no runs = new, latest run succeeded = done, anything else = in-progress.
+function deriveLifecycle(row: DbWorkflowRow): BuilderLifecycle {
+  const manual = normalizeLifecycle(row.lifecycle_status);
+  if (manual) return manual;
+  const db = getDashboardDb();
+  if (!db) return "new";
+  const latest = db
+    .query(`SELECT status FROM builder_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT 1`)
+    .get(row.id) as { status?: string } | null;
+  if (!latest) return "new";
+  return latest.status === "success" ? "done" : "in-progress";
+}
+
 function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
-  const config = parseJson<BuilderWorkflowConfig>(row.config_json, {
-    projectRoot: "",
-    agentOrder: [],
-    modelPolicy: { fallbackTargets: [] },
-    validationProfile: { commands: [], internal: [], runtime: [], public: [] },
-    gitPolicy: { commit: "manual", push: "never" },
-    backupPolicy: { enabled: false, beforeRun: false },
-    riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
-    geminiApprovalMode: "auto_edit",
-  });
+  const parsed = parseJson<Partial<BuilderWorkflowConfig>>(row.config_json, {});
+  const config: BuilderWorkflowConfig = {
+    ...DEFAULT_WORKFLOW_CONFIG,
+    ...parsed,
+    modelPolicy: { ...DEFAULT_WORKFLOW_CONFIG.modelPolicy, ...(parsed.modelPolicy ?? {}) },
+    validationProfile: { ...DEFAULT_WORKFLOW_CONFIG.validationProfile, ...(parsed.validationProfile ?? {}) },
+    gitPolicy: { ...DEFAULT_WORKFLOW_CONFIG.gitPolicy, ...(parsed.gitPolicy ?? {}) },
+    backupPolicy: { ...DEFAULT_WORKFLOW_CONFIG.backupPolicy, ...(parsed.backupPolicy ?? {}) },
+    riskPolicy: { ...DEFAULT_WORKFLOW_CONFIG.riskPolicy, ...(parsed.riskPolicy ?? {}) },
+  };
   return {
     id: row.id,
     projectId: row.project_id,
@@ -350,6 +392,8 @@ function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
     planFile: row.plan_file,
     mode: row.mode,
     status: row.status,
+    lifecycle: deriveLifecycle(row),
+    lifecycleStatus: normalizeLifecycle(row.lifecycle_status),
     config,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -373,8 +417,8 @@ export function createBuilderWorkflow(input: BuilderWorkflowInput): BuilderWorkf
   const tenantId = ctx.tenantId;
   db.query(`
     INSERT INTO builder_workflows
-      (id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, project_id, tenant_id, name, mode, status, lifecycle_status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     projectId,
@@ -382,6 +426,7 @@ export function createBuilderWorkflow(input: BuilderWorkflowInput): BuilderWorkf
     input.name.trim(),
     input.mode,
     input.status,
+    null,
     input.planFile,
     stringifyJson({ ...input.config, projectRoot: input.projectRoot }),
     now,
@@ -437,7 +482,7 @@ export function readBuilderWorkflows(): BuilderWorkflow[] {
     const ctx = getCurrentTenantContext();
     const { tenantId } = ctx;
     return (getDashboardDb()!.query(`
-      SELECT id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at,
+      SELECT id, project_id, tenant_id, name, mode, status, lifecycle_status, plan_file, config_json, created_at,
         updated_at, last_run_id, next_run_at, paused_reason
       FROM builder_workflows
       WHERE tenant_id = ? OR tenant_id IS NULL
@@ -454,7 +499,7 @@ export function readBuilderWorkflow(id: string): BuilderWorkflow | null {
   try {
     const tenantWhere = whereTenant();
     const row = getDashboardDb()!.query(`
-      SELECT id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at,
+      SELECT id, project_id, tenant_id, name, mode, status, lifecycle_status, plan_file, config_json, created_at,
         updated_at, last_run_id, next_run_at, paused_reason
       FROM builder_workflows
       WHERE id = ?${tenantWhere.clause}
@@ -464,6 +509,16 @@ export function readBuilderWorkflow(id: string): BuilderWorkflow | null {
     console.error("[control-surface] readBuilderWorkflow failed", error);
     return null;
   }
+}
+
+// Set or clear the manual lifecycle override (null = revert to automatic).
+export function setBuilderWorkflowLifecycle(id: string, lifecycle: BuilderLifecycle | null): BuilderWorkflow | null {
+  if (!isDashboardDbEnabled() || !getDashboardDb()) return null;
+  const db = getDashboardDb()!;
+  const tenantWhere = whereTenant();
+  db.query(`UPDATE builder_workflows SET lifecycle_status = ? WHERE id = ?${tenantWhere.clause}`)
+    .run(lifecycle, id, ...tenantWhere.params);
+  return readBuilderWorkflow(id);
 }
 
 type DbRunRow = {
@@ -481,6 +536,11 @@ type DbRunRow = {
   error: string | null;
   trace_id: string | null;
   orchestrator_instance_id: string | null;
+  github_issue_url: string | null;
+  github_branch_name: string | null;
+  github_commit_hash: string | null;
+  github_pull_request_url: string | null;
+  github_pull_request_status: string | null;
 };
 
 function mapRun(row: DbRunRow): BuilderRun {
@@ -499,6 +559,11 @@ function mapRun(row: DbRunRow): BuilderRun {
     error: row.error,
     traceId: row.trace_id ?? null,
     orchestratorInstanceId: row.orchestrator_instance_id ?? null,
+    githubIssueUrl: row.github_issue_url ?? null,
+    githubBranchName: row.github_branch_name ?? null,
+    githubCommitHash: row.github_commit_hash ?? null,
+    githubPullRequestUrl: row.github_pull_request_url ?? null,
+    githubPullRequestStatus: row.github_pull_request_status ?? null,
   };
 }
 
@@ -889,8 +954,8 @@ export function provisionProject(input: {
 
   db.query(`
     INSERT INTO builder_workflows
-      (id, project_id, tenant_id, name, mode, status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, project_id, tenant_id, name, mode, status, lifecycle_status, plan_file, config_json, created_at, updated_at, next_run_at, paused_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     workflowId,
     projectId,
@@ -898,6 +963,7 @@ export function provisionProject(input: {
     `${input.name} initial build`,
     "auto-continue",
     "draft",
+    null,
     effectivePlanFile,
     JSON.stringify(workflowConfig),
     now,

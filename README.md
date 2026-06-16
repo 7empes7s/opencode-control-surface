@@ -43,9 +43,34 @@ bun run dev            # dev server on :5173
 ### Production
 
 ```bash
+bun install
 bun run build
 PORT=3000 OPERATOR_TOKEN=your-token OPENCODE_SERVER_URL=http://localhost:4096 \
-  DASHBOARD_DB=1 bun run server/index.ts
+  DASHBOARD_DB=1 bun run start
+```
+
+`bun run start` sets `NODE_ENV=production` plus `BUILD_COMMIT`, `BUILD_HASH`, and
+`BUILD_TIME` from the current git checkout. After boot, `GET /api/version` should
+show `nodeEnv: "production"` and a real commit/hash instead of `"dev"`.
+
+Verify the production metadata:
+
+```bash
+curl -s http://127.0.0.1:3000/api/version
+```
+
+Expected fields include `nodeEnv: "production"`, a full `commit`, a short
+`buildHash`, and an ISO `buildTime`. Binary or release deploys that do not run
+from a git checkout should provide `BUILD_COMMIT`, `BUILD_HASH`, and
+`BUILD_TIME` in `/etc/control-surface/config.env`.
+
+For a showcase database only, add `DEMO_SEED=1` on first boot to populate one
+clean demo tenant with free-first cost savings, audit-chain proof, reasoner
+incidents, agent-team jobs, and spend anomalies:
+
+```bash
+PORT=3000 OPERATOR_TOKEN=your-token OPENCODE_SERVER_URL=http://localhost:4096 \
+  DASHBOARD_DB=1 DEMO_SEED=1 bun run start
 ```
 
 Or use the included installer:
@@ -149,6 +174,8 @@ DASHBOARD_DB=1 bun test server/db/ server/api/ server/tenancy/ \
 ```
 
 Test baseline: **260 pass / 0 fail** (2026-05-17).
+
+> **Memory:** Type-checking and production builds require ~4GB heap. The `typecheck` and `check` scripts set `NODE_OPTIONS=--max-old-space-size=4096` automatically. If you encounter OOM, increase via `NODE_OPTIONS=--max-old-space-size=8192 bun run check`.
 
 ---
 

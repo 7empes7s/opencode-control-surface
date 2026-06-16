@@ -29,6 +29,7 @@ import { createOrchestratorInstance, getOrchestratorInstance, findInstanceByRunI
 import { createApprovalRequest, getApprovalRequest } from "../governance/approvals.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import type { StepResult } from "../orchestrator/types.ts";
+import { isNonGatewayCliLane, recordRunnerUsage } from "./runnerAccounting.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
@@ -2118,6 +2119,18 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       failureClass,
     });
 
+    if (isNonGatewayCliLane(passAgent)) {
+      try {
+        recordRunnerUsage({
+          agentKind: passAgent,
+          sessionOrRunId: runId,
+          detail: `passSeq=${passSeq} exitCode=${exitCode ?? "null"} status=${passStatus} failureClass=${failureClass ?? "none"}`,
+        });
+      } catch (e) {
+        console.error("[builder] recordRunnerUsage failed:", e);
+      }
+    }
+
     if (passId) {
       try {
         extractPassAnalytics(run.tenantId, projectId, runId, passId, passSeq, run.startedAt ?? null, ts);
@@ -3002,6 +3015,34 @@ export type FailureDiagnosis = {
   lastActivity: string;
   likelyCause: string;
   suggestedActions: Array<"retry-narrow" | "retry-higher-timeout" | "retry-continue" | "edit-plan" | "view-stdout" | "pause-workflow">;
+  evidence: string[];
+  confidence: "high" | "medium" | "low";
+};
+
+export type StopReason =
+  | "operator"
+  | "timeout"
+  | "stall"
+  | "validation-failed"
+  | "budget"
+  | "error"
+  | "plan-complete"
+  | "blocked"
+  | "codex-exhausted"
+  | "agent-oom"
+  | "agent-killed"
+  | "unknown";
+
+export type CostModelTraceEntry = {
+  passId: string;
+  passSequence: number;
+  agent: string | null;
+  model: string | null;
+  provider: string | null;
+  estimatedCostUsd: number | null;
+  latencyMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
 };
 
 export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string): FailureDiagnosis {
@@ -3010,16 +3051,18 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
 
   if (fc === "agent-stalled") {
     const exploring = /let me look|understand|exploring|checking/i.test(lastLines);
-    return {
-      failureClass: fc,
-      title: "Agent Stalled",
-      whatHappened: "No output for the stall timeout duration. Pass was killed.",
-      lastActivity: lastLines.slice(-300),
-      likelyCause: exploring
-        ? "Agent began broad file exploration — model inference stalled or context filled"
-        : "Model inference timeout or network issue",
-      suggestedActions: ["retry-narrow", "retry-higher-timeout", "edit-plan"],
-    };
+  return {
+    failureClass: fc,
+    title: "Agent Stalled",
+    whatHappened: "No output for the stall timeout duration. Pass was killed.",
+    lastActivity: lastLines.slice(-300),
+    likelyCause: exploring
+      ? "Agent began broad file exploration — model inference stalled or context filled"
+      : "Model inference timeout or network issue",
+    suggestedActions: ["retry-narrow", "retry-higher-timeout", "edit-plan"],
+    evidence: [lastLines.slice(-500)],
+    confidence: "medium" as const,
+  };
   }
   if (fc === "pass-timeout") {
     return {
@@ -3029,6 +3072,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Plan has more work than fits in one pass — this is normal for large plans",
       suggestedActions: ["retry-continue", "retry-higher-timeout"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   if (fc === "validation-failed") {
@@ -3039,6 +3084,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "TypeScript errors, failing tests, or Playwright failures introduced by the agent",
       suggestedActions: ["retry-narrow", "view-stdout", "edit-plan"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   if (fc === "blocked") {
@@ -3049,6 +3096,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Missing context, ambiguous instruction, or a dependency not in scope",
       suggestedActions: ["edit-plan", "retry-narrow"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   if (fc === "agent-oom") {
@@ -3059,6 +3108,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Model context too large, memory leak in agent, or VPS memory exhausted",
       suggestedActions: ["retry-narrow", "retry-higher-timeout", "edit-plan"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   if (fc === "agent-killed") {
@@ -3069,6 +3120,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Manual kill, Docker healthcheck, or host-level process management",
       suggestedActions: ["retry-continue", "view-stdout"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "medium" as const,
     };
   }
   if (fc === "no-result-file") {
@@ -3079,6 +3132,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Agent crash, OOM, or manual termination before result serialization",
       suggestedActions: ["retry-continue", "view-stdout", "retry-higher-timeout"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "medium" as const,
     };
   }
   if (fc === "plan-incomplete") {
@@ -3089,6 +3144,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Agent ran out of context window, hit token limits, or the plan item was too large for one pass",
       suggestedActions: ["retry-continue", "edit-plan"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "medium" as const,
     };
   }
   if (fc === "plan-complete") {
@@ -3099,6 +3156,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Normal completion — no action needed.",
       suggestedActions: ["view-stdout"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   if (fc === "codex-exhausted") {
@@ -3109,6 +3168,8 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
       lastActivity: lastLines.slice(-300),
       likelyCause: "Codex rate limit or quota exhausted — retry after limit resets",
       suggestedActions: ["retry-continue", "pause-workflow"],
+      evidence: [lastLines.slice(-500)],
+      confidence: "high" as const,
     };
   }
   return {
@@ -3118,5 +3179,31 @@ export function classifyFailureDiagnosis(pass: BuilderPass, stdoutTail: string):
     lastActivity: lastLines.slice(-300),
     likelyCause: "Check stdout for details",
     suggestedActions: ["view-stdout", "retry-narrow"],
+    evidence: [lastLines.slice(-500)],
+    confidence: "low" as const,
   };
+}
+
+export function classifyStopReason(run: BuilderRun): StopReason {
+  if (!run.finishedAt) return "unknown";
+  if (run.status === "canceled") return "operator";
+  if (run.error?.includes("timeout")) return "timeout";
+  if (run.error?.includes("stall")) return "stall";
+
+  const passes = readBuilderPasses(run.id).sort((a, b) => a.sequence - b.sequence);
+  const failedPasses = passes.filter(p => p.status === "failed");
+  if (failedPasses.length > 0) {
+    const lastPass = failedPasses[failedPasses.length - 1];
+    if (lastPass?.failureClass === "validation-failed") return "validation-failed";
+    if (lastPass?.failureClass === "agent-oom") return "agent-oom";
+    if (lastPass?.failureClass === "agent-killed") return "agent-killed";
+    if (lastPass?.failureClass === "blocked") return "blocked";
+    if (lastPass?.failureClass === "codex-exhausted") return "codex-exhausted";
+  }
+  if (run.status === "success") {
+    const allPassesSucceeded = passes.every(p => p.status === "success");
+    if (allPassesSucceeded && passes.length > 0) return "plan-complete";
+  }
+  if (run.error) return "error";
+  return "unknown";
 }

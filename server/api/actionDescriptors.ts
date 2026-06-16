@@ -399,8 +399,31 @@ function addVastAndGpuActions(actions: ActionDescriptor[], input: CatalogInputs)
   }));
 }
 
+function addGatewayActions(actions: ActionDescriptor[]): void {
+  actions.push(descriptor({
+    label: "Route to healthiest model",
+    kind: "start-job",
+    targetType: "gateway",
+    targetId: "route-healthiest",
+    risk: "medium",
+    confirm: true,
+    reasonRequired: true,
+    evidenceRefs: [
+      apiEvidence("Gateway status", "/api/gateway/status"),
+      apiEvidence("Gateway ledger", "/api/gateway/ledger"),
+    ],
+    impactPreview: "Route new gateway traffic to the healthiest free or low-cost model for a limited window.",
+    rollbackHint: "Wait for the route override to expire or apply a new route override from the Gateway page.",
+    expectedDurationMs: 1_000,
+    jobKind: "gateway-route-healthiest",
+    sourceRoute: "/gateway",
+    requiresOnline: true,
+  }));
+}
+
 export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   const actions: ActionDescriptor[] = [];
+  addGatewayActions(actions);
   addServiceActions(actions, input.services);
   addTimerActions(actions, input.timers);
   addQueueActions(actions, input.queue);

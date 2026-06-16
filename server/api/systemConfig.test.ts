@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleApi } from "./router.ts";
+
+const TEST_OPERATOR_TOKEN = "system-config-test-token";
+let previousOperatorToken: string | undefined;
 
 function resetRateLimitMap(): void {
   (globalThis as unknown as { __rateLimitMap?: Record<string, number> }).__rateLimitMap = {};
@@ -37,6 +40,13 @@ describe("GET /api/system-config/current", () => {
 describe("POST /api/system-config/update", () => {
   beforeEach(() => {
     resetRateLimitMap();
+    previousOperatorToken = process.env.OPERATOR_TOKEN;
+    process.env.OPERATOR_TOKEN = TEST_OPERATOR_TOKEN;
+  });
+
+  afterEach(() => {
+    if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+    else process.env.OPERATOR_TOKEN = previousOperatorToken;
   });
 
   test("returns 200 when updating system config", async () => {
@@ -51,7 +61,7 @@ describe("POST /api/system-config/update", () => {
             }
           }
         }),
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-operator-token": TEST_OPERATOR_TOKEN },
       }),
       new URL("http://127.0.0.1:3000/api/system-config"),
     );

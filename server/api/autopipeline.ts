@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getPipelineState } from "../adapters/pipeline.ts";
 import { ok, type ApiEnvelope, type AutopipelineDetail } from "./types.ts";
@@ -65,7 +65,21 @@ export async function autopipelineHandler(): Promise<Response> {
       if (tsMatch) {
         const unixSec = Math.floor(Number(tsMatch[1]) / 1000);
         const d = new Date(unixSec * 1000);
-        dossierDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const candidate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        if (existsSync(join(DOSSIERS_ROOT, candidate, item.slug))) {
+          dossierDate = candidate;
+        } else {
+          // Dossier was created on a different date (e.g. old story re-queued) — scan all date dirs
+          try {
+            const dateDirs = readdirSync(DOSSIERS_ROOT).sort().reverse();
+            for (const dir of dateDirs) {
+              if (existsSync(join(DOSSIERS_ROOT, dir, item.slug))) {
+                dossierDate = dir;
+                break;
+              }
+            }
+          } catch {}
+        }
       }
     }
     return {

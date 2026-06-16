@@ -6,10 +6,11 @@ export class LiteLLMAdapter implements ProviderAdapter {
   async complete(req: CompletionRequest, timeoutMs = 120_000): Promise<CompletionResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const key = process.env.LITELLM_API_KEY;
     try {
       const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
         body: JSON.stringify(req),
         signal: controller.signal,
       });
@@ -24,8 +25,12 @@ export class LiteLLMAdapter implements ProviderAdapter {
   }
 
   async models(): Promise<ModelInfo[]> {
+    const key = process.env.LITELLM_API_KEY;
     try {
-      const res = await fetch(`${this.baseUrl}/v1/models`, { signal: AbortSignal.timeout(10_000) });
+      const res = await fetch(`${this.baseUrl}/v1/models`, {
+        headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+        signal: AbortSignal.timeout(10_000),
+      });
       if (!res.ok) return [];
       const body = await res.json() as { data?: ModelInfo[] };
       return body.data ?? [];

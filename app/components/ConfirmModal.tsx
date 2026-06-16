@@ -6,6 +6,7 @@ interface Props {
   message?: string;
   inputLabel?: string;
   inputPlaceholder?: string;
+  inputType?: string;
   confirmLabel?: string;
   danger?: boolean;
   loading?: boolean;
@@ -15,7 +16,7 @@ interface Props {
 }
 
 export function ConfirmModal({
-  title, message, inputLabel, inputPlaceholder,
+  title, message, inputLabel, inputPlaceholder, inputType = "text",
   confirmLabel = "Confirm", danger = false,
   loading = false, error,
   onConfirm, onCancel,
@@ -51,6 +52,8 @@ export function ConfirmModal({
             <input
               ref={inputRef}
               className="modal-input"
+              type={inputType}
+              autoComplete={inputType === "password" ? "current-password" : undefined}
               placeholder={inputPlaceholder}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}

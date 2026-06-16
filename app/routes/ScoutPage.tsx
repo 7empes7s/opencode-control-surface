@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Radar, Settings } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Radar, Settings, RefreshCw, Play, Loader2, AlertCircle, Clock } from 'lucide-react';
 import { TableControls } from '../components/TableControls';
 import { useTableControls } from '../hooks/useTableControls';
 import { authFetch } from '../lib/authFetch';
@@ -44,12 +44,22 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
 
 export type TopicsSortKey = "finalScore" | "vertical" | "source" | "recencyScore" | "noveltyScore";
 
+const POLL_INTERVAL_MS = 30_000; // 30 seconds
+
 const ScoutPage: React.FC = () => {
   const [scoutRuns, setScoutRuns] = useState<ScoutRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<ScoutRun | null>(null);
   const [scoutConfig, setScoutConfig] = useState<ScoutConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isRunningScout, setIsRunningScout] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [runSuccess, setRunSuccess] = useState<string | null>(null);
+  
+  const pollIntervalRef = useRef<number | null>(null);
+  const isMountedRef = useRef(true);
 
   const topicsCtrl = useTableControls<ScoutTopic, TopicsSortKey>({
     rows: selectedRun?.topics ?? [],
@@ -68,23 +78,23 @@ const ScoutPage: React.FC = () => {
     defaultSort: { key: "finalScore", dir: "desc" },
   });
 
-  // Load scout runs and config
-  useEffect(() => {
-    loadScoutData();
-  }, []);
-
-  const loadScoutData = async () => {
+  const loadScoutData = useCallback(async (showLoading = true) => {
+    if (!isMountedRef.current) return;
+    
     try {
-      setIsLoading(true);
+      if (showLoading) setIsLoading(true);
+      setLoadError(null);
       
       // Load scout runs
       const runsResponse = await authFetch('/api/scout/runs');
       if (runsResponse.ok) {
         const runsData = await runsResponse.json();
         const runs = runsData.data?.runs ?? runsData.runs ?? [];
-        setScoutRuns(runs);
-        if (runs.length > 0) {
-          setSelectedRun(runs[0]);
+        if (isMountedRef.current) {
+          setScoutRuns(runs);
+          if (runs.length > 0 && !selectedRun) {
+            setSelectedRun(runs[0]);
+          }
         }
       }
 
@@ -92,19 +102,74 @@ const ScoutPage: React.FC = () => {
       const configResponse = await authFetch('/api/scout/config');
       if (configResponse.ok) {
         const configData = await configResponse.json();
-        setScoutConfig(configData.data ?? configData);
+        if (isMountedRef.current) {
+          setScoutConfig(configData.data ?? configData);
+        }
+      }
+      
+      if (isMountedRef.current) {
+        setLastLoadedAt(Date.now());
       }
     } catch (error) {
-      console.error('Error loading scout data:', error);
+      if (isMountedRef.current) {
+        setLoadError(error instanceof Error ? error.message : 'Failed to load scout data');
+      }
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
     }
+  }, [selectedRun]);
+
+  // Polling effect
+  useEffect(() => {
+    isMountedRef.current = true;
+    loadScoutData(true);
+
+    // Set up polling
+    pollIntervalRef.current = window.setInterval(() => {
+      loadScoutData(false);
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      isMountedRef.current = false;
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [loadScoutData]);
+
+  const handleRefresh = () => {
+    loadScoutData(true);
   };
 
   const handleRunScout = async () => {
-    // This would typically trigger a scout run via the API
-    console.log('Running manual scout...');
-    // In a real implementation: await fetch('/api/autopipeline/command', { method: 'POST', body: JSON.stringify({cmd: 'run_scout'}) })
+    setIsRunningScout(true);
+    setRunError(null);
+    setRunSuccess(null);
+    
+    try {
+      const response = await authFetch('/api/scout/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'Manual trigger from dashboard' })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.data?.success) {
+        setRunSuccess('Scout run triggered successfully');
+        // Refresh data after a short delay to allow the run to start
+        setTimeout(() => loadScoutData(false), 2000);
+      } else {
+        setRunError(data.data?.message || 'Failed to trigger scout run');
+      }
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : 'Failed to trigger scout run');
+    } finally {
+      setIsRunningScout(false);
+    }
   };
 
   const handleSaveConfig = async () => {
@@ -132,6 +197,14 @@ const ScoutPage: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
+  const formatRelativeTime = (timestamp: number) => {
+    const diff = Date.now() - timestamp;
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return new Date(timestamp).toLocaleDateString();
+  };
+
   const getScoreStyle = (score: number): React.CSSProperties => {
     if (score >= 0.8) return { color: "var(--color-green, #4ade80)" };
     if (score >= 0.6) return { color: "var(--color-amber, #fbbf24)" };
@@ -149,7 +222,32 @@ const ScoutPage: React.FC = () => {
       </div>
 
       <div className="dash-section">
-        <div className="dash-section-title">Statistics</div>
+        <div className="dash-section-title flex items-center justify-between">
+          <span>Statistics</span>
+          {lastLoadedAt && (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <Clock className="h-3 w-3" />
+              <span>Last updated: {formatRelativeTime(lastLoadedAt)}</span>
+              <button
+                className="btn-ghost p-1 hover:bg-gray-100"
+                onClick={handleRefresh}
+                disabled={isLoading}
+                title="Refresh now"
+              >
+                <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          )}
+        </div>
+        {loadError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-3 mb-4">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            <span>Failed to load: {loadError}</span>
+            <button className="btn-ghost p-1 ml-2" onClick={handleRefresh}>
+              <RefreshCw className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <WCard>
             <div className="w-row">
@@ -187,10 +285,39 @@ const ScoutPage: React.FC = () => {
       <div className="dash-section">
         <div className="flex justify-between items-center">
           <div className="dash-section-title">Scout Run History</div>
-          <button className="btn-secondary" onClick={handleRunScout}>
-            Run Now
+          <button 
+            className="btn-primary" 
+            onClick={handleRunScout}
+            disabled={isRunningScout}
+          >
+            {isRunningScout ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Running...
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4 mr-2" />
+                Run Now
+              </>
+            )}
           </button>
         </div>
+        
+        {runError && (
+          <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-3 mb-4">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            <span>{runError}</span>
+          </div>
+        )}
+        
+        {runSuccess && (
+          <div className="flex items-center gap-2 text-sm text-green-600 bg-green-50 border border-green-200 rounded p-3 mb-4">
+            <span className="h-4 w-4 flex-shrink-0">✓</span>
+            <span>{runSuccess}</span>
+          </div>
+        )}
+        
         <div className="w-card">
           {isLoading ? (
             <div className="loading-dim">loading…</div>

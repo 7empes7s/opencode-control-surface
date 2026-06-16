@@ -1,0 +1,269 @@
+import { useMemo, useState } from "react";
+import { Link } from "wouter";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, RefreshCw, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import { useApi } from "../hooks/useApi";
+import { authFetch } from "../lib/authFetch";
+import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
+import type { Insight, InsightStatus } from "../../server/insights/types";
+
+type InsightsPayload = {
+  insights: Insight[];
+  openCount: number;
+};
+
+type StatusFilter = "open" | "applied" | "dismissed" | "resolved" | "all";
+
+const STATUS_LABEL: Record<StatusFilter, string> = {
+  open: "Open",
+  applied: "Applied",
+  dismissed: "Dismissed",
+  resolved: "Resolved itself — verified by the scanner",
+  all: "All",
+};
+
+const DOMAIN_LABEL: Record<Insight["domain"], string> = {
+  cost: "Cost",
+  security: "Security",
+  build: "Build",
+  data: "Data",
+};
+
+const SEVERITY_RANK: Record<Insight["severity"], number> = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+};
+
+function severityClass(severity: Insight["severity"]): string {
+  if (severity === "critical" || severity === "high") return "red";
+  if (severity === "medium") return "amber";
+  if (severity === "low") return "blue";
+  return "gray";
+}
+
+function confidenceLabel(confidence: number): string {
+  if (confidence >= 0.8) return "high confidence";
+  if (confidence >= 0.6) return "medium confidence";
+  return "needs review";
+}
+
+function EvidenceDrawer({ evidenceRefs }: { evidenceRefs: EvidenceRef[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="insight-evidence">
+      <button type="button" className="insight-evidence-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        Evidence
+      </button>
+      {open && (
+        <div className="insight-evidence-list">
+          {evidenceRefs.length === 0 ? (
+            <div className="w-caption">No evidence reference was attached.</div>
+          ) : evidenceRefs.map((ref, idx) => (
+            <div key={`${ref.kind}-${ref.ref}-${idx}`} className="insight-evidence-row">
+              <span className="pill gray">{ref.kind}</span>
+              <span>{ref.label}</span>
+              <span className="dim">{ref.redacted ? "redacted" : ref.ref}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function InsightsPage() {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
+  const { data, loading, error, refresh } = useApi<InsightsPayload>(`/api/insights?status=${statusFilter}`, 30_000);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<string | null>(null);
+
+  const grouped = useMemo(() => {
+    const groups: Record<Insight["domain"], Insight[]> = { cost: [], security: [], build: [], data: [] };
+    for (const insight of data?.insights ?? []) {
+      groups[insight.domain].push(insight);
+    }
+    for (const domain of Object.keys(groups) as Insight["domain"][]) {
+      groups[domain].sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || b.createdAt - a.createdAt);
+    }
+    return groups;
+  }, [data]);
+
+  async function post(path: string, body: Record<string, unknown>) {
+    const res = await authFetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({ error: "The request did not return a readable response." })) as ApiEnvelope<unknown> & { error?: string; data?: { message?: string } };
+    if (!res.ok) throw new Error(json.error || json.data?.message || "The request could not be completed.");
+    return json;
+  }
+
+  async function applyInsight(insight: Insight) {
+    setBusyId(insight.id);
+    setMessage(null);
+    try {
+      const reason = (reasons[insight.id] ?? "").trim();
+      const result = await post(`/api/insights/${encodeURIComponent(insight.id)}/apply`, {
+        confirmed: true,
+        reason,
+      });
+      setMessage(result.data?.message ?? "The insight was applied and recorded.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "The insight could not be applied.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function dismissInsight(insight: Insight) {
+    setBusyId(insight.id);
+    setMessage(null);
+    try {
+      const reason = (reasons[insight.id] ?? "").trim();
+      const result = await post(`/api/insights/${encodeURIComponent(insight.id)}/dismiss`, { reason });
+      setMessage(result.data?.message ?? "The insight was dismissed.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "The insight could not be dismissed.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function scanNow() {
+    setBusyId("scan");
+    setMessage(null);
+    try {
+      await post("/api/insights/scan", {});
+      setMessage("The inbox was refreshed from cost, security, build, and data signals.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "The scan could not be started.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const openCount = data?.openCount ?? data?.insights.length ?? 0;
+
+  return (
+    <div className="dash-page insights-page">
+      <section className="insights-hero">
+        <div>
+          <div className="dash-section-title">insights inbox</div>
+          <h1>AI recommendations ready for review</h1>
+          <p>
+            Review plain-English findings, apply safe actions through the audited action engine, or open the manual page when a human should configure it.
+          </p>
+        </div>
+        <div className="insights-hero-actions">
+          <div className="insights-count">
+            <Sparkles size={18} />
+            <span>{openCount}</span>
+            <small>open</small>
+          </div>
+          <select
+            className="select"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label="Filter insights by status"
+          >
+            <option value="open">Open</option>
+            <option value="resolved">Resolved itself — verified by the scanner</option>
+            <option value="applied">Applied</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="all">All</option>
+          </select>
+          <button type="button" className="btn" onClick={scanNow} disabled={busyId === "scan"}>
+            <RefreshCw size={14} />
+            Scan now
+          </button>
+        </div>
+      </section>
+
+      {message && <div className="insights-message"><CheckCircle2 size={15} />{message}</div>}
+      {loading && !data && <div className="loading-panel">Loading insights from the inbox.</div>}
+      {error && !data && <div className="loading-panel error">The insights inbox did not load. Try refreshing the page.</div>}
+
+      {!loading && data && data.insights.length === 0 && (
+        <div className="dash-section">
+          <div className="empty-state">
+            <ShieldCheck size={24} />
+            <strong>{statusFilter === "open" ? "No open insights right now." : `No ${STATUS_LABEL[statusFilter].toLowerCase()} insights.`}</strong>
+            {statusFilter === "open" && <span>Run a scan to refresh cost, security, build, and data checks.</span>}
+          </div>
+        </div>
+      )}
+
+      {(Object.keys(grouped) as Insight["domain"][]).map((domain) => {
+        const insights = grouped[domain];
+        if (insights.length === 0) return null;
+        return (
+          <section className="dash-section" key={domain}>
+            <div className="insight-group-title">
+              <span>{DOMAIN_LABEL[domain]}</span>
+              <span className="pill gray">{insights.length}</span>
+            </div>
+            <div className="insight-card-list">
+              {insights.map((insight) => (
+                <article key={insight.id} className={`insight-card severity-${insight.severity}`}>
+                  <div className="insight-card-head">
+                    <div>
+                      <div className="insight-title-row">
+                        <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
+                        <span className="pill blue">{confidenceLabel(insight.confidence)}</span>
+                        {insight.status === "resolved" && (
+                          <span className="pill green">Resolved itself — verified by the scanner</span>
+                        )}
+                        {insight.status === "applied" && <span className="pill green">Applied</span>}
+                        {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
+                      </div>
+                      <h2>{insight.title}</h2>
+                    </div>
+                    {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
+                  </div>
+                  <p>{insight.plainSummary}</p>
+                  <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
+                  <div className="insight-reason-row">
+                    <input
+                      value={reasons[insight.id] ?? ""}
+                      onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
+                      placeholder="Reason for applying or dismissing"
+                      aria-label={`Reason for ${insight.title}`}
+                    />
+                  </div>
+                  <div className="insight-actions">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!insight.actionDescriptorId || busyId === insight.id}
+                      onClick={() => applyInsight(insight)}
+                      title={insight.actionDescriptorId ? "Apply this audited action" : "Open the manual page for this insight"}
+                    >
+                      <CheckCircle2 size={14} />
+                      Apply
+                    </button>
+                    <Link href={insight.manualPageHref} className="btn btn-ghost">
+                      <ExternalLink size={14} />
+                      Configure manually
+                    </Link>
+                    <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
+                      <XCircle size={14} />
+                      Dismiss
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}

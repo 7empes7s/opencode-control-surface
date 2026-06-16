@@ -1,8 +1,9 @@
-import { loadGatewayConfig, resolveModel } from "./config.ts";
+import { loadGatewayConfig, resolveModel, type ModelEntry, type ModelTier } from "./config.ts";
 import { LiteLLMAdapter } from "./adapters/litellm.ts";
 import { writeLedgerEntry } from "./ledger.ts";
 import type { CompletionRequest, CompletionResponse, ModelInfo } from "./adapters/base.ts";
 import { checkBudget } from "../governance/budgets.ts";
+import { writeActionAudit } from "../db/writer.ts";
 
 // ── Circuit breaker state (in-process, reset on restart) ──────────────────────
 
@@ -15,6 +16,18 @@ type CircuitEntry = {
 };
 
 const circuits = new Map<string, CircuitEntry>();
+
+type GatewayRouteOverride = {
+  targetModel: string;
+  resolvedModel: string;
+  tier: ModelTier;
+  reason?: string;
+  setAt: string;
+  setBy: string;
+  expiresAt: string;
+};
+
+let routeOverride: GatewayRouteOverride | null = null;
 
 function getCircuit(model: string): CircuitEntry {
   if (!circuits.has(model)) circuits.set(model, { state: "closed", failures: 0, openedAt: null });
@@ -62,6 +75,88 @@ export function getCircuitStates(): Record<string, { state: CircuitState; failur
   return result;
 }
 
+export function setCircuitStateForGatewayAdmin(model: string, state: CircuitState): CircuitEntry {
+  const c = getCircuit(model);
+  c.state = state;
+  if (state === "closed") {
+    c.failures = 0;
+    c.openedAt = null;
+  } else if (state === "half-open") {
+    c.openedAt = null;
+  } else {
+    c.failures = Math.max(1, c.failures);
+    c.openedAt = c.openedAt ?? Date.now();
+  }
+  return { ...c };
+}
+
+function activeRouteOverride(): GatewayRouteOverride | null {
+  if (!routeOverride) return null;
+  if (Date.parse(routeOverride.expiresAt) <= Date.now()) {
+    routeOverride = null;
+    return null;
+  }
+  return { ...routeOverride };
+}
+
+function inferTier(model: string): ModelTier {
+  const lower = model.toLowerCase();
+  if (lower.includes(":free") || lower.includes("-free") || lower.includes("/free") || lower.endsWith("free")) {
+    return "cloud-free";
+  }
+  if (
+    lower.includes("openrouter")
+    || lower.includes("opencode/")
+    || lower.includes("gemini")
+    || lower.includes("nvidia/")
+    || lower.includes("groq/")
+    || lower.includes("cerebras/")
+  ) {
+    return "cloud-paid";
+  }
+  return "local";
+}
+
+function resolveGatewayEntry(modelName: string): ModelEntry {
+  return resolveModel(modelName) ?? {
+    backend: "litellm",
+    model: modelName,
+    tier: inferTier(modelName),
+    fallbackChain: [],
+  };
+}
+
+export function setGatewayRouteOverrideForGatewayAdmin(input: {
+  targetModel: string;
+  resolvedModel?: string;
+  tier?: ModelTier;
+  reason?: string;
+  setBy?: string;
+  ttlMs?: number;
+}): GatewayRouteOverride {
+  const now = Date.now();
+  const ttlMs = Math.max(60_000, Math.min(input.ttlMs ?? 15 * 60_000, 60 * 60_000));
+  const resolvedModel = input.resolvedModel ?? resolveModel(input.targetModel)?.model ?? input.targetModel;
+  routeOverride = {
+    targetModel: input.targetModel,
+    resolvedModel,
+    tier: input.tier ?? resolveModel(input.targetModel)?.tier ?? inferTier(input.targetModel),
+    reason: input.reason,
+    setAt: new Date(now).toISOString(),
+    setBy: input.setBy ?? "operator",
+    expiresAt: new Date(now + ttlMs).toISOString(),
+  };
+  return { ...routeOverride };
+}
+
+export function getGatewayRouteOverrideForGatewayAdmin(): GatewayRouteOverride | null {
+  return activeRouteOverride();
+}
+
+export function clearGatewayRouteOverrideForGatewayAdmin(): void {
+  routeOverride = null;
+}
+
 // ── Adapter cache ──────────────────────────────────────────────────────────────
 
 const adapterCache = new Map<string, LiteLLMAdapter>();
@@ -91,6 +186,20 @@ export async function gatewayComplete(
 
   const budgetCheck = checkBudget("global");
   if (!budgetCheck.allowed) {
+    try {
+      writeActionAudit({
+        actor: opts.caller ?? "gateway",
+        actionKind: "gateway.budget-stop",
+        targetType: "budget",
+        targetId: "global",
+        risk: "low",
+        resultStatus: "blocked",
+        request: { logicalModel },
+        error: budgetCheck.reason,
+      });
+    } catch {
+      /* audit is best-effort; never let it break the 429 path */
+    }
     return Response.json(
       { error: { message: budgetCheck.reason ?? "BudgetExceeded", type: "budget_exceeded", cap: budgetCheck.cap, spent: budgetCheck.spent, period: budgetCheck.period } },
       { status: 429, headers: { "Content-Type": "application/json" } },
@@ -100,8 +209,7 @@ export async function gatewayComplete(
   let lastError: Error | null = null;
 
   for (const modelName of chain) {
-    const entry = resolveModel(modelName);
-    if (!entry) continue;
+    const entry = resolveGatewayEntry(modelName);
     if (!isAvailable(modelName)) {
       console.log(`[gateway] skipping ${modelName} (circuit open)`);
       continue;
@@ -169,8 +277,14 @@ export async function gatewayComplete(
 
 function buildChain(logicalModel: string): string[] {
   const entry = resolveModel(logicalModel);
-  if (!entry) return [logicalModel]; // passthrough — maybe LiteLLM knows it
-  return [logicalModel, ...entry.fallbackChain];
+  const chain = entry ? [logicalModel, ...entry.fallbackChain] : [logicalModel];
+  const override = activeRouteOverride();
+  if (override) chain.unshift(override.targetModel);
+  return Array.from(new Set(chain)); // passthrough — maybe LiteLLM knows it
+}
+
+export function getGatewayRoutePlanForGatewayAdmin(logicalModel: string): string[] {
+  return buildChain(logicalModel);
 }
 
 function classifyError(e: Error): string {

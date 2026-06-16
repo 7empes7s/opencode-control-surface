@@ -13,6 +13,7 @@ import { CodexPage } from "./routes/CodexPage";
 import { ClaudePage } from "./routes/ClaudePage";
 import { JobsPage } from "./routes/JobsPage";
 import { AuditPage } from "./routes/AuditPage";
+import { AgentTeamPage } from "./routes/AgentTeamPage";
 import { TodayPage } from "./routes/TodayPage";
 import { SettingsPage } from "./routes/SettingsPage";
 import { BuilderPage } from "./routes/BuilderPage";
@@ -20,7 +21,6 @@ import { GeminiPage } from "./routes/GeminiPage";
 import { TracePage } from "./routes/TracePage";
 import { GatewayPage } from "./routes/GatewayPage";
 import { LiteLLMPage } from "./routes/LiteLLMPage";
-import { PaperclipPage } from "./routes/PaperclipPage";
 import { GovernancePage } from "./routes/GovernancePage";
 import { WorkflowsPage } from "./routes/WorkflowsPage";
 import { ProjectsPage } from "./routes/ProjectsPage";
@@ -31,8 +31,15 @@ import { CompliancePage } from "./routes/CompliancePage";
 import { FinanceIntelPage } from "./routes/FinanceIntelPage";
 import { DossierInspectorPage } from "./routes/DossierInspectorPage";
 import { ChannelsPage } from "./routes/ChannelsPage";
+import { ContentHealthPage } from "./routes/ContentHealthPage";
+import { ReportsPage } from "./routes/ReportsPage";
 import ScoutPage from "./routes/ScoutPage";
+import BrainstormPage from "./routes/BrainstormPage";
 import { CostPage } from "./routes/CostPage";
+import { InsightsPage } from "./routes/InsightsPage";
+import { SecurityPage } from "./routes/SecurityPage";
+import { AgentRegistryPage } from "./routes/AgentRegistryPage";
+import { StatusPage } from "./routes/StatusPage";
 import { AuthPrompt } from "./components/AuthPrompt";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
@@ -60,11 +67,20 @@ function DashLayoutBare({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Public layout: no sidebar, no header. Used for the public status page
+// (and anything else intended to be reachable without auth, from anywhere).
+function PublicLayout({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
 export function App() {
   return (
     <Router>
       <AuthPrompt />
       <Switch>
+        <Route path="/status">
+          <PublicLayout><StatusPage /></PublicLayout>
+        </Route>
         <Route path="/opencode">
           <DashLayoutBare><OpenCodeRoute /></DashLayoutBare>
         </Route>
@@ -84,6 +100,15 @@ export function App() {
         <Route path="/autopipeline">
           <DashLayout><AutopipelinePage /></DashLayout>
         </Route>
+        <Route path="/insights">
+          <DashLayout><InsightsPage /></DashLayout>
+        </Route>
+        <Route path="/security">
+          <DashLayout><SecurityPage /></DashLayout>
+        </Route>
+        <Route path="/agents">
+          <DashLayout><AgentRegistryPage /></DashLayout>
+        </Route>
         <Route path="/autopipeline/dossier/:date/:slug">
           <DashLayout><DossierInspectorPage /></DashLayout>
         </Route>
@@ -99,9 +124,6 @@ export function App() {
         <Route path="/litellm">
           <DashLayout><LiteLLMPage /></DashLayout>
         </Route>
-        <Route path="/paperclip">
-          <DashLayout><PaperclipPage /></DashLayout>
-        </Route>
         <Route path="/newsbites">
           <DashLayout><NewsBitesPage /></DashLayout>
         </Route>
@@ -114,6 +136,9 @@ export function App() {
         <Route path="/jobs">
           <DashLayout><JobsPage /></DashLayout>
         </Route>
+        <Route path="/agent-team">
+          <DashLayout><AgentTeamPage /></DashLayout>
+        </Route>
         <Route path="/audit">
           <DashLayout><AuditPage /></DashLayout>
         </Route>
@@ -125,6 +150,9 @@ export function App() {
         </Route>
         <Route path="/builder">
           <DashLayout><BuilderPage /></DashLayout>
+        </Route>
+        <Route path="/brainstorm">
+          <DashLayout><BrainstormPage /></DashLayout>
         </Route>
         <Route path="/governance">
           <DashLayout><GovernancePage /></DashLayout>
@@ -158,6 +186,12 @@ export function App() {
         </Route>
         <Route path="/channels">
           <DashLayout><ChannelsPage /></DashLayout>
+        </Route>
+        <Route path="/content-health">
+          <DashLayout><ContentHealthPage /></DashLayout>
+        </Route>
+        <Route path="/reports">
+          <DashLayout><ReportsPage /></DashLayout>
         </Route>
         <Route path="/compliance">
           <DashLayout><CompliancePage /></DashLayout>

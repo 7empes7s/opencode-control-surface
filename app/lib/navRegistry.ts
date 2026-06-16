@@ -14,8 +14,12 @@ export interface RouteEntry {
  */
 export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/": { status: "core" },
+  "/insights": { status: "core" },
+  "/security": { status: "core" },
+  "/agents": { status: "core" },
   "/today": { status: "core" },
   "/autopipeline": { status: "core" },
+  "/agent-team": { status: "core" },
   "/doctor": { status: "core" },
   "/models": { status: "core" },
   "/newsbites": { status: "core" },
@@ -24,6 +28,7 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/jobs": { status: "core" },
   "/audit": { status: "core" },
   "/builder": { status: "core" },
+  "/brainstorm": { status: "core" },
   "/settings": { status: "core" },
   "/opencode": { status: "core" },
   "/codex": { status: "core" },
@@ -31,7 +36,7 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/gemini": { status: "core" },
   "/workflows": { status: "advanced", experimental: true },
   "/marketplace": { status: "labs", experimental: true },
-  "/traces": { status: "labs", experimental: true },
+  "/traces": { status: "advanced" },
   "/gateway": { status: "advanced", experimental: true },
   "/governance": { status: "labs", experimental: true },
   "/compliance": { status: "labs", experimental: true },
@@ -40,9 +45,11 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/install": { status: "labs", experimental: true },
   "/finance-intel": { status: "advanced", experimental: true },
   "/litellm": { status: "advanced", experimental: true },
-  "/paperclip": { status: "advanced", experimental: true },
   "/scout": { status: "advanced", experimental: true },
   "/channels": { status: "advanced", experimental: true },
+  "/content-health": { status: "advanced", experimental: true },
+  "/reports": { status: "advanced", experimental: true },
+  "/status": { status: "hidden" },
 };
 
 export function getRouteStatus(href: string): RouteStatus {

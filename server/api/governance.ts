@@ -1,5 +1,5 @@
 import { loadPolicyDocument, evaluatePolicy } from "../governance/policy.ts";
-import { resolveRole, checkPermission, getAllowedActions } from "../governance/rbac.ts";
+import { getAllowedActions, getRoleForRequest, requirePermission } from "../governance/rbac.ts";
 import { getDashboardDb } from "../db/dashboard.ts";
 import { randomUUID } from "node:crypto";
 import { writeSecret, readSecretPlaintext, listSecrets, deleteSecret } from "../governance/secrets.ts";
@@ -16,46 +16,13 @@ export async function loadPolicies() {
   if (doc) loadedPolicies.push(doc);
 }
 
-import { createHmac } from "node:crypto";
-import { checkToken } from "./actions.ts";
-
-function expectedSessionValue(token: string): string {
-  return createHmac("sha256", token)
-    .update("opencode-control-surface.operator-session.v1")
-    .digest("base64url");
-}
-
-function parseCookies(req: Request): Record<string, string> {
-  const cookieHeader = req.headers.get("cookie") || "";
-  return cookieHeader.split(";").reduce((acc, cookie) => {
-    const [name, ...rest] = cookie.split("=");
-    if (name) acc[name.trim()] = rest.join("=").trim();
-    return acc;
-  }, {} as Record<string, string>);
-}
-
 export function getGovernanceRole(req: Request): string {
-  if (checkToken(req)) return "owner";
-  const cookies = parseCookies(req);
-  const sessionCookie = cookies["operator_session"] || cookies["auth_token"] || "";
-  if (!sessionCookie) return "viewer";
-  const token = process.env.OPERATOR_TOKEN;
-  if (!token) return "viewer";
-  const expected = expectedSessionValue(token);
-  if (sessionCookie === expected) return "owner";
-  return "viewer";
+  return getRoleForRequest(req);
 }
 
 export function requireRole(action: string) {
   return (req: Request) => {
-    const role = getGovernanceRole(req);
-    if (!checkPermission(role as "owner" | "operator" | "auditor" | "viewer", action)) {
-      return new Response(JSON.stringify({ error: "Forbidden", role, required: action }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    return null;
+    return requirePermission(req, action);
   };
 }
 
@@ -267,7 +234,7 @@ export async function governanceAuditHandler(req: Request): Promise<Response> {
   const whereClause = whereParts.length > 0 ? "WHERE " + whereParts.join(" AND ") : "";
 
   const rows = db.query(
-    `SELECT id, ts, tenant_id, actor, actor_source, action_kind, action, action_id,
+    `SELECT id, ts, tenant_id, user_id, actor, actor_source, action_kind, action, action_id,
             reason, target_type, target_id, risk, result_status, prev_hash, row_hash, event_id
      FROM action_audit ${whereClause}
      ORDER BY ts DESC LIMIT ? OFFSET ?`

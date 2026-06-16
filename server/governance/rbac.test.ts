@@ -1,15 +1,84 @@
-import { describe, test, expect } from "bun:test";
-import { checkPermission, resolveRole, getAllowedActions, type RbacRole } from "./rbac.ts";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { tenantStore } from "../tenancy/middleware.ts";
+import { testTenantContext } from "../tenancy/context.ts";
+import { checkPermission, resolveRole, getAllowedActions, getRoleForRequest, type RbacRole } from "./rbac.ts";
+import { issueOperatorSessionCookie } from "../auth/session.ts";
+
+let tempDir: string;
+let prevDb: string | undefined;
+let prevDbPath: string | undefined;
+let prevToken: string | undefined;
+let prevNodeEnv: string | undefined;
+
+beforeEach(() => {
+  closeDashboardDb();
+  tempDir = mkdtempSync(join(tmpdir(), "rbac-test-"));
+  prevDb = process.env.DASHBOARD_DB;
+  prevDbPath = process.env.DASHBOARD_DB_PATH;
+  prevToken = process.env.OPERATOR_TOKEN;
+  prevNodeEnv = process.env.NODE_ENV;
+  process.env.DASHBOARD_DB = "1";
+  process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  process.env.OPERATOR_TOKEN = "test-token";
+  process.env.NODE_ENV = "development";
+  initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
+});
+
+afterEach(() => {
+  closeDashboardDb();
+  if (prevDb === undefined) delete process.env.DASHBOARD_DB;
+  else process.env.DASHBOARD_DB = prevDb;
+  if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
+  else process.env.DASHBOARD_DB_PATH = prevDbPath;
+  if (prevToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = prevToken;
+  if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = prevNodeEnv;
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+function seedUser(userId: string, role?: RbacRole, tenantId = "mimule"): void {
+  const db = getDashboardDb()!;
+  db.query(
+    `INSERT INTO users (id, email, name, auth_method, created_at, tenant_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(userId, `${userId}@example.test`, userId, "local", Date.now(), tenantId);
+  if (role) {
+    db.query(
+      `INSERT INTO governance_role_bindings (id, user_id, role, tenant_id, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(`binding-${userId}`, userId, role, tenantId, Date.now());
+  }
+}
+
+function sessionReq(userId: string, tenantId = "mimule"): Request {
+  return new Request("http://localhost/api/governance/rbac/me", {
+    headers: { cookie: issueOperatorSessionCookie(userId, tenantId) },
+  });
+}
 
 describe("resolveRole", () => {
-  test("correct operator token maps to owner", () => {
-    const role = resolveRole("correct-token");
-    expect(role).toBe("viewer"); // token doesn't match OPERATOR_TOKEN in test env
+  test("looks up the authenticated user's binding", () => {
+    seedUser("u-owner", "owner");
+    const role = tenantStore.run(testTenantContext({ tenantId: "mimule" }), () => getRoleForRequest(sessionReq("u-owner")));
+    expect(role).toBe("owner");
   });
 
-  test("missing token maps to viewer", () => {
-    expect(resolveRole("")).toBe("viewer");
+  test("missing binding maps to viewer", () => {
+    seedUser("u-unbound");
+    const role = tenantStore.run(testTenantContext({ tenantId: "mimule" }), () => getRoleForRequest(sessionReq("u-unbound")));
+    expect(role).toBe("viewer");
   });
+
+  test("local operator token remains bootstrap owner", () => {
+    const role = resolveRole("test-token");
+    expect(role).toBe("owner");
+  });
+
 });
 
 describe("checkPermission", () => {

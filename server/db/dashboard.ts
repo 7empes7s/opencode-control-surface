@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
-export const DASHBOARD_SCHEMA_VERSION = 3;
+export const DASHBOARD_SCHEMA_VERSION = 10;
 
 type InitDashboardDbOptions = {
   enabled?: boolean;
@@ -148,6 +148,7 @@ function migrateDashboardDb(db: Database): void {
     CREATE TABLE IF NOT EXISTS action_audit (
       id INTEGER PRIMARY KEY,
       ts INTEGER NOT NULL,
+      user_id TEXT,
       actor TEXT,
       actor_source TEXT,
       action_kind TEXT NOT NULL,
@@ -171,6 +172,24 @@ function migrateDashboardDb(db: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_action_audit_ts ON action_audit (ts);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_kind ON action_audit (action_kind);
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT,
+      auth_method TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_tenant_email
+      ON users (tenant_id, email);
+
+    CREATE TABLE IF NOT EXISTS local_account_credentials (
+      user_id TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
 
     CREATE TABLE IF NOT EXISTS operator_state (
       key TEXT PRIMARY KEY,
@@ -306,7 +325,12 @@ function migrateDashboardDb(db: Database): void {
       stop_requested_at INTEGER,
       stop_requested_by TEXT,
       result_json TEXT,
-      error TEXT
+      error TEXT,
+      github_issue_url TEXT,
+      github_branch_name TEXT,
+      github_commit_hash TEXT,
+      github_pull_request_url TEXT,
+      github_pull_request_status TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_builder_runs_workflow
       ON builder_runs (workflow_id, started_at);
@@ -409,6 +433,62 @@ function migrateDashboardDb(db: Database): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS brainstorm_sessions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
+      description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+      specs TEXT CHECK (length(specs) <= 1000),
+      status TEXT NOT NULL DEFAULT 'intake'
+          CHECK(status IN ('intake', 'configuring', 'ready', 'running', 'paused', 'done', 'failed', 'interrupted', 'canceled')),
+      model_tier TEXT NOT NULL DEFAULT 'free' CHECK(model_tier IN ('free', 'pro')),
+      recommended_passes INT CHECK (recommended_passes BETWEEN 3 AND 8),
+      target_passes INT NOT NULL DEFAULT 6 CHECK (target_passes BETWEEN 3 AND 8),
+      completed_passes INT NOT NULL DEFAULT 0 CHECK (completed_passes >= 0),
+      plan_v1_path TEXT,
+      plan_v2_path TEXT,
+      summary_path TEXT,
+      workflow_id TEXT,
+      complexity_score REAL CHECK (complexity_score >= 0.0 AND complexity_score <= 1.0),
+      cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+      tenant_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+      updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER))
+    );
+    CREATE INDEX IF NOT EXISTS idx_brainstorm_sessions_tenant_id ON brainstorm_sessions(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_brainstorm_sessions_status ON brainstorm_sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_brainstorm_sessions_workflow_id ON brainstorm_sessions(workflow_id);
+
+    CREATE TABLE IF NOT EXISTS brainstorm_pass_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      pass_number INT NOT NULL CHECK (pass_number >= 1),
+      role TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      response TEXT NOT NULL,
+      model_used TEXT NOT NULL,
+      input_tokens INT,
+      output_tokens INT,
+      cost REAL,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+      FOREIGN KEY (session_id) REFERENCES brainstorm_sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_brainstorm_pass_logs_session_id ON brainstorm_pass_logs(session_id);
+  `);
+
+  const brainstormAlters = [
+    `ALTER TABLE brainstorm_sessions ADD COLUMN project_mode TEXT DEFAULT 'new'`,
+    `ALTER TABLE brainstorm_sessions ADD COLUMN codebase_path TEXT`,
+    `ALTER TABLE brainstorm_sessions ADD COLUMN codebase_context TEXT`,
+    `ALTER TABLE brainstorm_sessions ADD COLUMN research_context TEXT`,
+    `ALTER TABLE brainstorm_sessions ADD COLUMN research_sources TEXT`,
+  ];
+  for (const stmt of brainstormAlters) {
+    try { db.prepare(stmt).run(); } catch {}
+  }
+
+  ensureColumn(db, "brainstorm_sessions", "tenant_id", "TEXT");
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS sso_configs (
       id TEXT PRIMARY KEY,
       tenant_id TEXT UNIQUE,
@@ -441,6 +521,7 @@ function migrateDashboardDb(db: Database): void {
   `);
 
   ensureColumn(db, "action_audit", "actor_source", "TEXT");
+  ensureColumn(db, "action_audit", "user_id", "TEXT");
   ensureColumn(db, "action_audit", "action", "TEXT");
   ensureColumn(db, "action_audit", "action_id", "TEXT");
   ensureColumn(db, "action_audit", "reason", "TEXT");
@@ -478,9 +559,36 @@ function migrateDashboardDb(db: Database): void {
   ensureColumn(db, "builder_passes", "completion_percent", "INTEGER");
   ensureColumn(db, "builder_passes", "trace_id", "TEXT");
    ensureColumn(db, "builder_runs", "trace_id", "TEXT");
-    ensureColumn(db, "builder_runs", "orchestrator_instance_id", "TEXT");
-    ensureColumn(db, "action_audit", "prev_hash", "TEXT");
+     ensureColumn(db, "builder_runs", "orchestrator_instance_id", "TEXT");
+  ensureColumn(db, "builder_runs", "github_issue_url", "TEXT");
+  ensureColumn(db, "builder_runs", "github_branch_name", "TEXT");
+  ensureColumn(db, "builder_runs", "github_commit_hash", "TEXT");
+  ensureColumn(db, "builder_runs", "github_pull_request_url", "TEXT");
+  ensureColumn(db, "builder_runs", "github_pull_request_status", "TEXT");
+  ensureColumn(db, "builder_workflows", "lifecycle_status", "TEXT");
+     ensureColumn(db, "action_audit", "prev_hash", "TEXT");
   ensureColumn(db, "action_audit", "row_hash", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT,
+      auth_method TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_tenant_email
+      ON users (tenant_id, email);
+
+    CREATE TABLE IF NOT EXISTS local_account_credentials (
+      user_id TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `);
+  ensureColumn(db, "users", "tenant_id", "TEXT");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS governance_policies (
@@ -842,18 +950,133 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     );
     CREATE INDEX IF NOT EXISTS idx_spend_anomalies_ts_status ON spend_anomalies (ts, status);
     CREATE INDEX IF NOT EXISTS idx_spend_anomalies_tenant_ts ON spend_anomalies (tenant_id, ts);
+
+    CREATE TABLE IF NOT EXISTS insights (
+      id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data')),
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      plain_summary TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence_refs_json TEXT NOT NULL,
+      action_descriptor_id TEXT,
+      manual_page_href TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'applied', 'dismissed', 'resolved')),
+      tenant_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      source_key TEXT,
+      resolved_at INTEGER,
+      resolution TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_insights_tenant_created
+      ON insights (tenant_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_insights_tenant_status_severity
+      ON insights (tenant_id, status, severity);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
+      ON insights (tenant_id, source_key)
+      WHERE source_key IS NOT NULL;
   `);
 
   // Add columns to tables created above (must run after CREATE TABLE)
   ensureColumn(db, "orchestrator_instances", "parent_instance_id", "TEXT");
+
+  // ── Phase 8: Agent registry (D1) ───────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('runner','service','pipeline','workflow')),
+      owner TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      risk_tier TEXT NOT NULL CHECK (risk_tier IN ('low','medium','high')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','retired')),
+      model_access TEXT NOT NULL DEFAULT '',
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agents_tenant_status
+      ON agents (tenant_id, status);
+  `);
+
+  // ── Phase 8: Gateway keys (GW1) — identified, budgeted, allowlisted /v1 traffic ──
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gateway_keys (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      model_allowlist TEXT NOT NULL DEFAULT '',
+      daily_cap_usd REAL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_keys_tenant_status
+      ON gateway_keys (tenant_id, status);
+    CREATE INDEX IF NOT EXISTS idx_gateway_keys_agent
+      ON gateway_keys (agent_id);
+  `);
+
+  // ── Phase F: prompt registry (F3) ────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prompts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      tenant_id TEXT,
+      UNIQUE(name, version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_prompts_name_version
+      ON prompts (name, version DESC);
+    CREATE INDEX IF NOT EXISTS idx_prompts_tenant_name
+      ON prompts (tenant_id, name);
+  `);
+
+  // ── Phase G: public webhooks (G2) — outbound subscription registry ────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+      created_at INTEGER NOT NULL,
+      last_delivery_at INTEGER,
+      last_status TEXT,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhooks_tenant_status
+      ON webhooks (tenant_id, status);
+
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id TEXT PRIMARY KEY,
+      webhook_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      ts INTEGER NOT NULL,
+      tenant_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_ts
+      ON webhook_deliveries (webhook_id, ts DESC);
+  `);
 
   // ── Phase 2: tenant_id columns ──────────────────────────────────────────
   // Core telemetry / ops tables
   ensureColumn(db, "metric_samples", "tenant_id", "TEXT");
   ensureColumn(db, "events", "tenant_id", "TEXT");
   ensureColumn(db, "action_audit", "tenant_id", "TEXT");
+  ensureColumn(db, "action_audit", "user_id", "TEXT");
   ensureColumn(db, "jobs", "tenant_id", "TEXT");
   ensureColumn(db, "operator_state", "tenant_id", "TEXT");
+  ensureColumn(db, "content_health_findings", "tenant_id", "TEXT");
 
   // Builder tables
   ensureColumn(db, "builder_projects", "tenant_id", "TEXT");
@@ -908,6 +1131,10 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
   // Gateway
   ensureColumn(db, "gateway_calls", "tenant_id", "TEXT");
 
+  // Insights
+  ensureColumn(db, "insights", "tenant_id", "TEXT");
+  ensureColumn(db, "insights", "source_key", "TEXT");
+
   // Reasoner tables
   ensureColumn(db, "reasoner_jobs", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_diagnoses", "tenant_id", "TEXT");
@@ -925,19 +1152,38 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
   // ── Phase 2: backfill null tenant_id to "mimule" ────────────────────────
   const TENANT_BACKFILL_TABLES = [
     "metric_samples", "events", "action_audit", "jobs", "operator_state",
+    "users",
+    "content_health_findings",
     "builder_projects", "builder_workflows", "builder_runs", "builder_passes",
     "builder_artifacts", "builder_validations", "builder_locks", "builder_doctor_reports",
     "governance_policies", "governance_policy_decisions", "governance_role_bindings",
     "governance_secrets", "governance_approvals", "governance_budgets",
     "gateway_calls",
-    "cost_events", "provider_price_catalog", "spend_anomalies",
+    "cost_events", "provider_price_catalog", "spend_anomalies", "insights",
     "reasoner_jobs", "reasoner_diagnoses", "reasoner_incidents",
     "reasoner_incident_members", "reasoner_playbooks", "reasoner_playbook_runs",
     "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
+    "agents",
+    "gateway_keys",
+    "webhooks",
+    "webhook_deliveries",
   ];
   for (const tbl of TENANT_BACKFILL_TABLES) {
     db.run(`UPDATE ${tbl} SET tenant_id = 'mimule' WHERE tenant_id IS NULL`);
   }
+
+  db.exec(`
+    DELETE FROM governance_role_bindings
+    WHERE rowid NOT IN (
+      SELECT MAX(rowid)
+      FROM governance_role_bindings
+      GROUP BY user_id, tenant_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_role_bindings_user_tenant
+      ON governance_role_bindings (user_id, tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_action_audit_user_tenant_ts
+      ON action_audit (user_id, tenant_id, ts);
+  `);
 
   // ── Phase 2: tenant-leading indexes ─────────────────────────────────────
   // Telemetry / audit / job tables: (tenant_id, ts)
@@ -950,6 +1196,8 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON action_audit (tenant_id, ts);
     CREATE INDEX IF NOT EXISTS idx_jobs_tenant_ts
       ON jobs (tenant_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_content_health_findings_tenant_ts
+      ON content_health_findings (tenant_id, ts);
   `);
 
   // Builder: (tenant_id, project_id) on workflows
@@ -988,6 +1236,15 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON reasoner_jobs (tenant_id, status);
     CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_tenant_status
       ON reasoner_incidents (tenant_id, status);
+    CREATE INDEX IF NOT EXISTS idx_insights_tenant_created
+      ON insights (tenant_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_insights_tenant_status_severity
+      ON insights (tenant_id, status, severity);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
+      ON insights (tenant_id, source_key)
+      WHERE source_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_agents_tenant_status
+      ON agents (tenant_id, status);
   `);
 
   // Seed default tenant
@@ -1000,6 +1257,78 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
 
   db.query("INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)")
     .run(DASHBOARD_SCHEMA_VERSION, appliedAt);
+
+  // Migration from v5 to v6: rebuild insights table with resolved status and new columns
+  const currentVersionRow = db.query("SELECT version FROM schema_version WHERE version = ?").get(5) as { version: number } | null;
+  if (currentVersionRow) {
+    const hasResolvedAt = db.query(`PRAGMA table_info(insights)`).all().some((c: { name: string }) => c.name === "resolved_at");
+    if (!hasResolvedAt) {
+      db.exec(`
+        CREATE TABLE insights_new (
+          id TEXT PRIMARY KEY,
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data')),
+          severity TEXT NOT NULL,
+          title TEXT NOT NULL,
+          plain_summary TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          evidence_refs_json TEXT NOT NULL,
+          action_descriptor_id TEXT,
+          manual_page_href TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'applied', 'dismissed', 'resolved')),
+          tenant_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          source_key TEXT,
+          resolved_at INTEGER,
+          resolution TEXT
+        );
+      `);
+      db.exec(`
+        INSERT INTO insights_new (id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, resolved_at, resolution)
+        SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, NULL, NULL
+        FROM insights;
+      `);
+      db.exec(`DROP TABLE insights;`);
+      db.exec(`ALTER TABLE insights_new RENAME TO insights;`);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_created
+          ON insights (tenant_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_status_severity
+          ON insights (tenant_id, status, severity);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
+          ON insights (tenant_id, source_key)
+          WHERE source_key IS NOT NULL;
+      `);
+    }
+    db.query("DELETE FROM schema_version WHERE version = ?").run(5);
+    db.query("DELETE FROM schema_version WHERE version = ?").run(6);
+    db.query("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)")
+      .run(DASHBOARD_SCHEMA_VERSION, appliedAt);
+  }
+
+  // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
+  // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
+  // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to
+  // ~1970 and vanish to the bottom of the Builder list. Idempotent: real ms
+  // values (~1.7e12) are far above the guard, so a second run is a no-op.
+  try {
+    const SECONDS_GUARD = 100000000000; // ms timestamps for any year >= ~1973 exceed this
+    const tsFixes: Array<[string, string[]]> = [
+      ["builder_workflows", ["created_at", "updated_at"]],
+      ["brainstorm_sessions", ["created_at", "updated_at"]],
+      ["brainstorm_pass_logs", ["created_at"]],
+    ];
+    for (const [table, cols] of tsFixes) {
+      for (const col of cols) {
+        try {
+          db.exec(`UPDATE ${table} SET ${col} = ${col} * 1000 WHERE ${col} > 0 AND ${col} < ${SECONDS_GUARD}`);
+        } catch { /* table/column may not exist on a fresh DB — nothing to migrate */ }
+      }
+    }
+  } catch (err) {
+    console.error("[control-surface] timestamp ms-normalization migration failed", err);
+  }
 }
 
 function ensureColumn(db: Database, table: string, column: string, definition: string): void {

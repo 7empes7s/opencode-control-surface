@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from "node:fs";
 
-const CONFIG_PATH = process.env.GATEWAY_CONFIG ?? "/etc/tib-builder/gateway.yaml";
+function resolveConfigPath(): string {
+  return process.env.GATEWAY_CONFIG ?? "/etc/tib-builder/gateway.yaml";
+}
 
 export type ModelTier = "local" | "cloud-free" | "cloud-paid";
 
@@ -81,12 +83,13 @@ export function loadGatewayConfig(): GatewayConfig {
   const now = Date.now();
   if (cached && now - cachedAt < CACHE_TTL) return cached;
 
-  if (!existsSync(CONFIG_PATH)) {
+  const configPath = resolveConfigPath();
+  if (!existsSync(configPath)) {
     return defaultConfig();
   }
 
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf8");
+    const raw = readFileSync(configPath, "utf8");
     const parsed = parseYaml(raw) as Record<string, unknown>;
 
     const modelsRaw = (parsed.models ?? {}) as Record<string, Record<string, unknown>>;
@@ -143,4 +146,9 @@ function defaultConfig(): GatewayConfig {
 export function resolveModel(logicalName: string): ModelEntry | null {
   const cfg = loadGatewayConfig();
   return cfg.models[logicalName] ?? null;
+}
+
+export function _resetGatewayConfigCacheForTests(): void {
+  cached = null;
+  cachedAt = 0;
 }
