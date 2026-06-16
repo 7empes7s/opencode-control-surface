@@ -318,6 +318,39 @@ export function builderWorkflowHandler(id: string): Response {
   }, { builder: "ok" }));
 }
 
+// Serves a workflow's plan markdown plus the configured live-preview URL so the
+// operator can review the plan AND the built app directly in the builder page.
+export function builderWorkflowPlanHandler(id: string): Response {
+  const reason = dbUnavailable();
+  if (reason) return apiError(reason, 503);
+  const workflow = readBuilderWorkflow(id);
+  if (!workflow) return apiError("not found", 404);
+
+  const { readFileSync, existsSync } = require("node:fs") as typeof import("node:fs");
+  let content = "";
+  let exists = false;
+  if (workflow.planFile && existsSync(workflow.planFile)) {
+    exists = true;
+    try { content = readFileSync(workflow.planFile, "utf8").slice(0, 200_000); } catch { /* unreadable */ }
+  }
+  // Count checklist progress so the preview can show "X of Y items done".
+  const totalItems = (content.match(/^\s*- \[[ xX]\]/gm) ?? []).length;
+  const doneItems = (content.match(/^\s*- \[[xX]\]/gm) ?? []).length;
+
+  const vp = workflow.config.validationProfile ?? ({} as Record<string, unknown>);
+  const previewUrl = (vp.publicUrl as string) || (vp.internalUrl as string) || null;
+
+  return json(ok({
+    planFile: workflow.planFile,
+    exists,
+    content,
+    previewUrl,
+    projectRoot: workflow.projectRoot,
+    status: workflow.status,
+    checklist: { total: totalItems, done: doneItems },
+  }, { builder: "ok" }));
+}
+
 export async function builderCreateWorkflowHandler(req: Request): Promise<Response> {
   try {
     const input = await parseWorkflowInput(req);

@@ -55,6 +55,7 @@ import {
   builderModelsHandler,
   builderWorkflowsHandler,
   builderWorkflowHandler,
+  builderWorkflowPlanHandler,
   builderCreateWorkflowHandler,
   builderUpdateWorkflowHandler,
   builderDeleteWorkflowHandler,
@@ -684,6 +685,10 @@ if (method === "GET" && pathname === "/api/stream") {
   const builderWorkflowPlanProgressMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/plan-progress$/);
   if (method === "GET" && builderWorkflowPlanProgressMatch) {
     return builderWorkflowPlanProgressHandler(builderWorkflowPlanProgressMatch[1]);
+  }
+  const builderWorkflowPlanMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/plan$/);
+  if (method === "GET" && builderWorkflowPlanMatch) {
+    return builderWorkflowPlanHandler(builderWorkflowPlanMatch[1]);
   }
   const builderPassLiveMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/pass-live$/);
   if (method === "GET" && builderPassLiveMatch) {

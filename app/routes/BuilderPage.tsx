@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, GripVertical, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Eye, GripVertical, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
@@ -934,11 +934,13 @@ function WorkflowActions({
   onMutated,
   onEdit,
   onDoctorReview,
+  onPreview,
 }: {
   workflow: { id: string; status: string };
   onMutated: () => void;
   onEdit: () => void;
   onDoctorReview: () => void;
+  onPreview: () => void;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -1009,6 +1011,9 @@ function WorkflowActions({
           <Play size={12} />
         </button>
       )}
+      <button className="btn btn-xs btn-ghost" onClick={onPreview} disabled={loading} title="live review (preview app + plan)">
+        <Eye size={12} />
+      </button>
       <button className="btn btn-xs btn-ghost" onClick={onDoctorReview} disabled={loading} title="run doctor review" style={{ marginLeft: 4 }}>
         <RefreshCw size={12} />
       </button>
@@ -2032,6 +2037,125 @@ function ProvisionModal({
   );
 }
 
+type WorkflowPlanPreview = {
+  planFile: string;
+  exists: boolean;
+  content: string;
+  previewUrl: string | null;
+  projectRoot: string;
+  status: string;
+  checklist: { total: number; done: number };
+};
+
+// Live review of a finished/in-progress build: the generated plan (with
+// checklist progress) plus an embedded live preview of the built app.
+function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow; onClose: () => void }) {
+  const [data, setData] = useState<WorkflowPlanPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"app" | "plan">("app");
+  const [iframeKey, setIframeKey] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await authFetch(`/api/builder/workflows/${workflow.id}/plan`);
+        if (!res.ok) throw new Error(`The plan couldn't be loaded (${res.status}).`);
+        const body = await res.json();
+        if (alive) {
+          const payload = (body.data ?? body) as WorkflowPlanPreview;
+          setData(payload);
+          // Default to the plan tab when there's no live app to show.
+          setTab(payload.previewUrl ? "app" : "plan");
+        }
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { alive = false; };
+  }, [workflow.id]);
+
+  const pct = data && data.checklist.total > 0
+    ? Math.round((data.checklist.done / data.checklist.total) * 100)
+    : null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box builder-preview-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Live review — {workflow.name}</div>
+          <button className="btn btn-xs btn-ghost" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="builder-preview-tabs">
+          <button
+            className={`builder-btn-group-item${tab === "app" ? " active" : ""}`}
+            onClick={() => setTab("app")}
+          >
+            App preview
+          </button>
+          <button
+            className={`builder-btn-group-item${tab === "plan" ? " active" : ""}`}
+            onClick={() => setTab("plan")}
+          >
+            Plan{pct != null ? ` · ${pct}%` : ""}
+          </button>
+          {data?.previewUrl && (
+            <>
+              <a className="btn btn-xs btn-ghost" href={data.previewUrl} target="_blank" rel="noreferrer">open in new tab ↗</a>
+              <button className="btn btn-xs btn-ghost" onClick={() => setIframeKey((k) => k + 1)}>reload</button>
+            </>
+          )}
+        </div>
+
+        <div className="modal-body builder-preview-body">
+          {error && <div className="loading-dim">{error}</div>}
+          {!error && !data && <div className="loading-dim">loading…</div>}
+
+          {data && tab === "app" && (
+            data.previewUrl ? (
+              <iframe
+                key={iframeKey}
+                className="builder-preview-iframe"
+                src={data.previewUrl}
+                title="app preview"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            ) : (
+              <div className="builder-preview-empty">
+                <p>No live preview URL is configured for this workflow yet.</p>
+                <p className="dim">
+                  Set an internal or public URL in the workflow's validation profile
+                  (e.g. <span className="mono">http://127.0.0.1:5173</span> for a running dev server)
+                  to embed the built app here. The plan is available in the Plan tab.
+                </p>
+              </div>
+            )
+          )}
+
+          {data && tab === "plan" && (
+            data.exists ? (
+              <div className="builder-preview-plan">
+                {pct != null && (
+                  <div className="builder-preview-progress">
+                    <div className="builder-preview-progress-bar" style={{ width: `${pct}%` }} />
+                    <span className="builder-preview-progress-label">
+                      {data.checklist.done} / {data.checklist.total} checklist items done
+                    </span>
+                  </div>
+                )}
+                <pre className="builder-preview-plan-text">{data.content}</pre>
+              </div>
+            ) : (
+              <div className="builder-preview-empty"><p>No plan file found at <span className="mono">{data.planFile || "(unset)"}</span>.</p></div>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DoctorReportModal({
   report,
   onClose,
@@ -2354,6 +2478,7 @@ export function BuilderPage() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [viewingRunDetail, setViewingRunDetail] = useState(false);
   const [selectedDoctorReport, setSelectedDoctorReport] = useState<BuilderDoctorReport | null>(null);
+  const [previewWorkflow, setPreviewWorkflow] = useState<BuilderWorkflow | null>(null);
   const projectsApi = useAuthenticatedApi<BuilderProjectsResponse>("/api/builder/projects", 60_000);
   const discoverApi = useAuthenticatedApi<BuilderDiscovery>(
     `/api/builder/discover?root=${encodeURIComponent(selectedRoot)}`,
@@ -2639,6 +2764,7 @@ export function BuilderPage() {
                               onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
                               onEdit={() => setEditingWorkflow(workflow)}
                               onDoctorReview={() => triggerDoctorReview(workflow.id)}
+                              onPreview={() => setPreviewWorkflow(workflow)}
                             />
                           </td>
                         </tr>
@@ -2833,6 +2959,13 @@ export function BuilderPage() {
             setSelectedDoctorReport(null);
             doctorReportsApi.refresh();
           }}
+        />
+      )}
+
+      {previewWorkflow && (
+        <WorkflowPreviewModal
+          workflow={previewWorkflow}
+          onClose={() => setPreviewWorkflow(null)}
         />
       )}
     </div>
