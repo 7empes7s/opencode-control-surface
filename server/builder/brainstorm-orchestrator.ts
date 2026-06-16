@@ -2,6 +2,7 @@ import { getDashboardDb } from '../db/dashboard.ts';
 import { broadcastBrainstormEvent } from '../api/brainstorm-stream.ts';
 import { mkdirSync } from 'node:fs';
 import { DEFAULT_WORKFLOW_CONFIG } from './store.ts';
+import { complete as gatewayComplete } from '../gateway/client.ts';
 
 export const BRAINSTORM_PLAN_ROOT = "/var/lib/control-surface/brainstorm-plans";
 
@@ -339,29 +340,20 @@ Output:
 }
 
 async function callLiteLLM(prompt: string, model: string, maxTokens: number): Promise<any> {
-  const litellmUrl = process.env.LITELLM_URL || "http://127.0.0.1:4000";
-  const masterKey = process.env.LITELLM_MASTER_KEY;
-
-  const res = await fetch(`${litellmUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(masterKey ? { "Authorization": `Bearer ${masterKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    }),
+  // Route every planner / web-research call through the in-process gateway so it is
+  // logged + audited (ledger entry with caller, tokens, cost, latency) and gets the
+  // gateway's fallback-chain + circuit-breaker resilience. Nothing in the planner
+  // talks to LiteLLM directly anymore.
+  const res = await gatewayComplete(model, [{ role: "user", content: prompt }], {
+    maxTokens,
+    temperature: 0.7,
+    timeoutMs: 120_000,
+    caller: "brainstorm-planner",
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`LiteLLM error ${res.status}: ${err}`);
+  if (!res || !Array.isArray((res as any).choices)) {
+    throw new Error(`gateway returned no completion for model ${model}`);
   }
-
-  return res.json();
+  return res;
 }
 
 async function runConsolidation(sessionId: string, context: string[], tenantId: string): Promise<void> {
