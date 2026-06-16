@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { createBrainstormSession, runBrainstormLoop } from "../builder/brainstorm-orchestrator.ts";
 import {
   discoverBuilderProject,
   getBuilderModelsInventory,
@@ -349,6 +350,49 @@ export function builderWorkflowPlanHandler(id: string): Response {
     status: workflow.status,
     checklist: { total: totalItems, done: doneItems },
   }, { builder: "ok" }));
+}
+
+// "Add features / iterate" — starts a NEW planner run that builds on top of the
+// existing built application. Creates a brainstorm session in 'existing' mode
+// pointed at the workflow's project root (so the planner runs a codebase-analyst
+// pre-pass and preserves current conventions), then kicks off the planner loop.
+// Returns the new sessionId so the UI can deep-link to the brainstorm session.
+export async function builderWorkflowIterateHandler(id: string, req: Request): Promise<Response> {
+  const reason = dbUnavailable();
+  if (reason) return apiError(reason, 503);
+  const workflow = readBuilderWorkflow(id);
+  if (!workflow) return apiError("not found", 404);
+
+  let body: { message?: unknown } = {};
+  try { body = await req.json(); } catch { /* tolerate empty body */ }
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message) return apiError("message is required");
+  if (!workflow.projectRoot) return apiError("workflow has no project root to iterate on");
+
+  const db = getDashboardDb();
+  if (!db) return apiError("database unavailable", 503);
+
+  const sessionId = crypto.randomUUID().replace(/-/g, "");
+  const tenantId = workflow.tenantId || "mimule";
+  try {
+    await createBrainstormSession({
+      id: sessionId,
+      name: `${workflow.name} — add features`,
+      description: message,
+      specs: `Iterate on the EXISTING application at ${workflow.projectRoot}. Add the requested feature(s) on top of the current codebase, preserving existing conventions and not breaking current functionality.`,
+      tenantId,
+      project_mode: "existing",
+      codebase_path: workflow.projectRoot,
+    });
+    // Move straight to running and launch the planner loop in the background.
+    db.prepare("UPDATE brainstorm_sessions SET status = 'running', updated_at = ? WHERE id = ?")
+      .run(Date.now(), sessionId);
+    void runBrainstormLoop(sessionId).catch((e) => console.error("[builder.iterate] planner loop failed", e));
+  } catch (e) {
+    return apiError(`couldn't start iteration: ${e instanceof Error ? e.message : String(e)}`, 500);
+  }
+
+  return json(ok({ sessionId, tenantId }, { builder: "ok" }));
 }
 
 export async function builderCreateWorkflowHandler(req: Request): Promise<Response> {

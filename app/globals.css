@@ -2785,6 +2785,10 @@ body {
   .builder-preview-modal { width: 100vw; height: 100vh; max-width: none; border-radius: 0; }
 }
 
+.builder-iterate-modal { width: min(560px, 94vw); }
+.builder-iterate-done { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.builder-iterate-done .dim { font-size: 12.5px; }
+
 /* ── Rich Model Select (Builder workflow modal) ─────────────────────────── */
 
 .builder-model-select-trigger {

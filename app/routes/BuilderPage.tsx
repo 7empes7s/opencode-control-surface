@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Eye, GripVertical, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Eye, GripVertical, MessageSquarePlus, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
@@ -935,12 +935,14 @@ function WorkflowActions({
   onEdit,
   onDoctorReview,
   onPreview,
+  onIterate,
 }: {
   workflow: { id: string; status: string };
   onMutated: () => void;
   onEdit: () => void;
   onDoctorReview: () => void;
   onPreview: () => void;
+  onIterate: () => void;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -1013,6 +1015,9 @@ function WorkflowActions({
       )}
       <button className="btn btn-xs btn-ghost" onClick={onPreview} disabled={loading} title="live review (preview app + plan)">
         <Eye size={12} />
+      </button>
+      <button className="btn btn-xs btn-ghost" onClick={onIterate} disabled={loading} title="add features / iterate on this app">
+        <MessageSquarePlus size={12} />
       </button>
       <button className="btn btn-xs btn-ghost" onClick={onDoctorReview} disabled={loading} title="run doctor review" style={{ marginLeft: 4 }}>
         <RefreshCw size={12} />
@@ -2156,6 +2161,77 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
   );
 }
 
+// "Add features / iterate" — kicks off a new planner run that builds on top of
+// the existing app, then deep-links to the planner where the operator can chat.
+function IterateModal({ workflow, onClose }: { workflow: BuilderWorkflow; onClose: () => void }) {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ sessionId: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!message.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/builder/workflows/${workflow.id}/iterate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: message.trim() }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `The request couldn't be completed (${res.status}).`);
+      const body = await res.json();
+      setResult((body.data ?? body) as { sessionId: string });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+      <div className="modal-box builder-iterate-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Add features — {workflow.name}</div>
+          <button className="btn btn-xs btn-ghost" onClick={onClose} disabled={busy}>✕</button>
+        </div>
+        <div className="modal-body">
+          {result ? (
+            <div className="builder-iterate-done">
+              <p>A new planner run has started on top of the existing app.</p>
+              <p className="dim">It analyzes the current code, then produces an updated build plan. You can chat with it on the planner page.</p>
+              <a className="btn btn-sm btn-primary" href="/brainstorm">Open planner ↗</a>
+            </div>
+          ) : (
+            <>
+              <p className="dim" style={{ marginBottom: 8 }}>
+                Describe the feature(s) to add. A new planner run analyzes the existing code at{" "}
+                <span className="mono">{workflow.projectRoot || "(no project root)"}</span> and produces an updated build plan on top of it.
+              </p>
+              <textarea
+                className="modal-input builder-textarea"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="e.g. Add a live leaderboard with weekly prizes and push notifications"
+                rows={5}
+                autoFocus
+              />
+              {error && <div className="loading-dim" style={{ color: "var(--danger, #f87171)" }}>{error}</div>}
+              <div className="modal-actions">
+                <button className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+                <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy || !message.trim() || !workflow.projectRoot}>
+                  {busy ? "starting…" : "Start planner"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DoctorReportModal({
   report,
   onClose,
@@ -2479,6 +2555,7 @@ export function BuilderPage() {
   const [viewingRunDetail, setViewingRunDetail] = useState(false);
   const [selectedDoctorReport, setSelectedDoctorReport] = useState<BuilderDoctorReport | null>(null);
   const [previewWorkflow, setPreviewWorkflow] = useState<BuilderWorkflow | null>(null);
+  const [iteratingWorkflow, setIteratingWorkflow] = useState<BuilderWorkflow | null>(null);
   const projectsApi = useAuthenticatedApi<BuilderProjectsResponse>("/api/builder/projects", 60_000);
   const discoverApi = useAuthenticatedApi<BuilderDiscovery>(
     `/api/builder/discover?root=${encodeURIComponent(selectedRoot)}`,
@@ -2765,6 +2842,7 @@ export function BuilderPage() {
                               onEdit={() => setEditingWorkflow(workflow)}
                               onDoctorReview={() => triggerDoctorReview(workflow.id)}
                               onPreview={() => setPreviewWorkflow(workflow)}
+                              onIterate={() => setIteratingWorkflow(workflow)}
                             />
                           </td>
                         </tr>
@@ -2966,6 +3044,13 @@ export function BuilderPage() {
         <WorkflowPreviewModal
           workflow={previewWorkflow}
           onClose={() => setPreviewWorkflow(null)}
+        />
+      )}
+
+      {iteratingWorkflow && (
+        <IterateModal
+          workflow={iteratingWorkflow}
+          onClose={() => setIteratingWorkflow(null)}
         />
       )}
     </div>

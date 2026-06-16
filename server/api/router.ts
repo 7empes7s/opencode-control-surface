@@ -56,6 +56,7 @@ import {
   builderWorkflowsHandler,
   builderWorkflowHandler,
   builderWorkflowPlanHandler,
+  builderWorkflowIterateHandler,
   builderCreateWorkflowHandler,
   builderUpdateWorkflowHandler,
   builderDeleteWorkflowHandler,
@@ -689,6 +690,12 @@ if (method === "GET" && pathname === "/api/stream") {
   const builderWorkflowPlanMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/plan$/);
   if (method === "GET" && builderWorkflowPlanMatch) {
     return builderWorkflowPlanHandler(builderWorkflowPlanMatch[1]);
+  }
+  const builderWorkflowIterateMatch = pathname.match(/^\/api\/builder\/workflows\/([^/]+)\/iterate$/);
+  if (method === "POST" && builderWorkflowIterateMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return builderWorkflowIterateHandler(builderWorkflowIterateMatch[1], req);
   }
   const builderPassLiveMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/pass-live$/);
   if (method === "GET" && builderPassLiveMatch) {
