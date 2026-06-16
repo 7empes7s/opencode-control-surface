@@ -397,7 +397,7 @@ export async function builderWorkflowIterateHandler(id: string, req: Request): P
 }
 
 // ── Live preview: launch the built app's dev server + public tunnel ──────────
-const PREVIEW_TARGETS: PreviewTarget[] = ["web", "mobile-web", "mobile-device"];
+const PREVIEW_TARGETS: PreviewTarget[] = ["web", "mobile-web", "mobile-device", "fullstack"];
 
 export async function builderWorkflowPreviewStartHandler(id: string, req: Request): Promise<Response> {
   const reason = dbUnavailable();

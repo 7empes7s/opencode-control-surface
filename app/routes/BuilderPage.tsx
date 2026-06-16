@@ -2056,10 +2056,11 @@ type WorkflowPlanPreview = {
 // checklist progress) plus an embedded live preview of the built app.
 type PreviewRecord = {
   workflowId: string;
-  target: "web" | "mobile-web" | "mobile-device";
+  target: "web" | "mobile-web" | "mobile-device" | "fullstack";
   status: "starting" | "ready" | "error" | "stopped";
   port: number | null;
   publicUrl: string | null;
+  apiUrl: string | null;
   expUrl: string | null;
   error: string | null;
   workspaceDir: string | null;
@@ -2071,7 +2072,7 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
   const [tab, setTab] = useState<"app" | "plan">("app");
   const [iframeKey, setIframeKey] = useState(0);
 
-  const [target, setTarget] = useState<PreviewRecord["target"]>("web");
+  const [target, setTarget] = useState<PreviewRecord["target"]>("fullstack");
   const [preview, setPreview] = useState<PreviewRecord | null>(null);
   const [previewLog, setPreviewLog] = useState("");
   const [launching, setLaunching] = useState(false);
@@ -2181,10 +2182,12 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
         {tab === "app" && (
           <div className="builder-preview-launchbar">
             <select className="audit-select" value={target} onChange={(e) => setTarget(e.target.value as PreviewRecord["target"])} disabled={preview?.status === "starting"}>
-              <option value="web">Web app</option>
+              <option value="fullstack">Full stack (DB + API + web)</option>
+              <option value="web">Web app only</option>
               <option value="mobile-web">Mobile (Expo web)</option>
               <option value="mobile-device">Mobile device (QR)</option>
             </select>
+            {preview?.apiUrl && <a className="btn btn-xs btn-ghost" href={preview.apiUrl} target="_blank" rel="noreferrer">API ↗</a>}
             {preview && preview.status !== "stopped" ? (
               <button className="btn btn-xs btn-danger" onClick={stopPreview}>stop preview</button>
             ) : (
