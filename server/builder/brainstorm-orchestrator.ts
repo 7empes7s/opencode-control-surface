@@ -478,9 +478,33 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
     // 'existing' sessions carry codebase_path; 'new' apps leave this for the
     // operator to set via the workflow form's project picker before launch.
     projectRoot: session.codebase_path || DEFAULT_WORKFLOW_CONFIG.projectRoot,
-    // Default to a free, verified OpenCode model; editable in the workflow form.
-    agentOrder: ['opencode:opencode/nemotron-3-ultra-free'],
-    riskPolicy: { ...DEFAULT_WORKFLOW_CONFIG.riskPolicy, maxPasses: 30 },
+    // Resilient multi-backend rotation. The runner round-robins agentOrder per
+    // pass (runner.ts:763) and falls back to modelPolicy.fallbackTargets on a
+    // recoverable timeout (runner.ts:2258). A single hardcoded model with no
+    // fallback was the root cause of stalled builds: when one provider degraded
+    // (e.g. OpenCode Zen free), every pass burned the full timeout for nothing.
+    // Free-first is preferred, but the free Zen tier is currently flaky, so the
+    // rotation leads with verified-healthy backends and keeps free as fallback.
+    // Editable per-workflow in the form. Revisit free ordering when Zen recovers.
+    agentOrder: [
+      'opencode:opencode-go/qwen3.7-plus',
+      'opencode:opencode-go/minimax-m2.7',
+      'opencode:alibaba/qwen-max',
+    ],
+    modelPolicy: {
+      ...DEFAULT_WORKFLOW_CONFIG.modelPolicy,
+      fallbackTargets: ['opencode-go/minimax-m2.7', 'alibaba/qwen-max', 'opencode/nemotron-3-ultra-free'],
+    },
+    // maxPasses generous (build runs to plan-complete, not a pass budget).
+    // stallTimeoutSeconds kept above passTimeoutSeconds so the `timeout` wrapper
+    // (exit 124 = continuation-eligible) always fires before the run-killing
+    // stall monitor (runner.ts:1987 fails the whole run).
+    riskPolicy: {
+      ...DEFAULT_WORKFLOW_CONFIG.riskPolicy,
+      maxPasses: 120,
+      passTimeoutSeconds: 1500,
+      stallTimeoutSeconds: 2700,
+    },
     gitPolicy: { commit: 'manual' as const, push: 'never' as const },
     backupPolicy: { enabled: true, beforeRun: true },
     description: session.description,

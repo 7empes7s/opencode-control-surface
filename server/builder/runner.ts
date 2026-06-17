@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync, statSync, appendFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync, statSync, appendFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
@@ -33,6 +33,10 @@ import { isNonGatewayCliLane, recordRunnerUsage } from "./runnerAccounting.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
+// Isolated XDG_CONFIG_HOME for builder opencode runs: a config without the scoped
+// filesystem MCP servers (vault/newsbites/editorial) that make agentic models falsely
+// believe they are sandboxed, and without the MIMULE infra CLAUDE.md instructions.
+const BUILDER_OPENCODE_CONFIG_HOME = "/var/lib/control-surface/opencode-builder";
 
 function ensureRunsDir(): void {
   if (!existsSync(BUILDER_RUNS_DIR)) {
@@ -1274,6 +1278,12 @@ RULES:
 - If typecheck fails after an edit: fix it before moving to the next item
 - Do not accumulate more than 3 typecheck errors before fixing
 - Run targeted tests (bun test path/to/relevant.test.ts) not the full suite
+- A PRODUCTION BUILD runs automatically after your pass and GATES completion —
+  typecheck passing is NOT enough. Run the build yourself before finishing
+  (e.g. npx nx run-many -t build, or npm run build) and fix any build errors.
+- Next.js App Router: any component using hooks (useState/useEffect/useContext),
+  context, browser events (onClick/onChange), or a class component MUST start with
+  a "use client" directive on line 1. tsc won't catch this — the build will. Add it proactively.
 
 ── BLOCKER PROTOCOL ─────────────────────────────────────────────────────────
 - If a service is down and your task requires it: write PASS_RESULT.json with status="blocked"
@@ -1310,18 +1320,31 @@ STATUS GUIDE:
 - "incomplete": you ran out of time or context — next pass will continue
 - "complete": all unchecked plan items are now checked [x]
 - "failed": something broke and you couldn't fix it
-- "blocked": the task can't proceed without operator input
+- "blocked": ONLY when a hard EXTERNAL dependency is missing — a required secret/credential,
+  or an external service that is down. NEVER use "blocked" for design questions, missing
+  scaffolding, "I need clarification", or "no existing code to extend". Those are YOUR job:
+  make a conventional decision and build it.
 
 PLAN IS INCOMPLETE RULE:
 If you reach context limit or timeout is imminent, set status="incomplete",
 fill itemsRemaining with what's left, and write a precise nextInstruction.
 Do NOT set status="complete" unless all checklist items are marked [x].
 
-── SCOPE DISCIPLINE (Minimal Diff) ─────────────────────────────────────────
-- Only edit files required by your plan items
-- Do not "clean up" or refactor passing code you didn't need to touch
-- If you find a bug in adjacent code: log it in passNote but don't fix it
-- Keep diffs minimal — reviewability matters
+── GREENFIELD AUTONOMY (build from scratch) ────────────────────────────────
+- This app is being BUILT, not maintained. MOST plan items require you to CREATE new
+  files: controllers, services, DTOs, Prisma models/migrations, React components, screens,
+  routes, tests. CREATE them. Do not wait for "existing scaffolding" to appear.
+- You have FULL authority to make architectural and naming decisions. Make conventional,
+  sensible choices (e.g. NestJS module under apps/api/src/<feature>/, Redis key
+  "leaderboard:{leagueId}", Jest+Supertest for tests) and proceed.
+- NEVER ask the operator to "confirm structure", "clarify expectations", or "provide
+  guidance". There is no operator in the loop. Decide and build.
+- "no existing code to extend" is NOT a blocker — it means you create the first version.
+── SCOPE DISCIPLINE ─────────────────────────────────────────────────────────
+- Create whatever the plan items need, but do not touch UNRELATED, passing code.
+- Do not refactor code you weren't asked to change. "Minimal diff" applies to UNRELATED
+  files — it never means "avoid creating the files this feature requires".
+- If you find a bug in adjacent code: log it in passNote but don't fix it.
 =============================================================================`;
   let base = `Continue developing the project according to the plan at ${planFile}. Project root: ${projectRoot}. Use relevant skills. Run validation commands after changes. Report changed files, test results, and next steps.${orchestrationRules}`;
   if (workflow.mode === "plan") {
@@ -1367,7 +1390,10 @@ function writePassScript(
     command = `claude --print --output-format stream-json --verbose --permission-mode dontAsk -d "$BUILDER_PROJECT_ROOT" "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "opencode") {
     const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
-    command = `opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions${modelFlag} "$(cat "$BUILDER_PROMPT_FILE")"`;
+    // Use an isolated opencode config (no scoped filesystem MCP servers, no MIMULE infra
+    // instructions) so the agentic model doesn't hallucinate a sandbox and refuse to touch
+    // the project. Auth lives in XDG_DATA_HOME so credentials are unaffected.
+    command = `XDG_CONFIG_HOME=${BUILDER_OPENCODE_CONFIG_HOME} opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions${modelFlag} "$(cat "$BUILDER_PROMPT_FILE")"`;
   } else if (agent === "gemini") {
     const modelFlag = model ? ` --model ${shellQuote(model)}` : "";
     const approvalMode = (workflow.config as { geminiApprovalMode?: string }).geminiApprovalMode ?? "auto_edit";
@@ -1430,7 +1456,7 @@ function writePassScript(
       '  local task',
       '  task="$(cat "$BUILDER_CHILD_DIR/task.txt")"',
       '  if [ "$BUILDER_CHILD_AGENT" = "opencode" ]; then',
-      '    opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions --model "$BUILDER_CHILD_MODEL" "$task"',
+      `    XDG_CONFIG_HOME=${BUILDER_OPENCODE_CONFIG_HOME} opencode run --dir "$BUILDER_PROJECT_ROOT" --dangerously-skip-permissions --model "$BUILDER_CHILD_MODEL" "$task"`,
       '  elif [ "$BUILDER_CHILD_AGENT" = "codex" ]; then',
       '    codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --color never --model "$BUILDER_CHILD_MODEL" -o "$BUILDER_CHILD_DIR/output.txt" -C "$BUILDER_PROJECT_ROOT" "$task"',
       '  elif [ "$BUILDER_CHILD_AGENT" = "claude" ]; then',
@@ -1841,6 +1867,32 @@ export async function cancelRun(runId: string, actor = "operator"): Promise<void
 // Scanned against STDERR ONLY (the agent's own error channel): stdout carries the plan
 // transcript and generated app code, which for some domains legitimately contains phrases
 // like "insufficient balance" (e.g. a wallet feature) and must not trigger a false failure.
+// An agent (esp. a flaky free model) sometimes hallucinates a sandbox / permission block and
+// exits 0 without doing any work, asking to "add the directory to the allowed list" or "move the
+// project". Counting these as success is what poisoned the continuation context (each refusal got
+// echoed forward, training the model to keep refusing). Detect them so the pass FAILS instead.
+function detectAgentRefusal(stdout: string): string | null {
+  const patterns: Array<[RegExp, string]> = [
+    [/not (within|in) the (list of )?(paths|allowed[- ]?director)/i, "agent refusal: false allowed-dir claim"],
+    [/isn.?t (in|within|among) the (list of )?(paths|allowed)/i, "agent refusal: false allowed-dir claim"],
+    [/add .{0,40}? to the allowed[- ]?director/i, "agent refusal: asked to add allowed dir"],
+    [/access restrictions prevent/i, "agent refusal: claimed access restrictions"],
+    [/(cannot|can.?t|unable to) (read or modify|access|inspect) .{0,40}?(project|files|director|codebase)/i, "agent refusal: claimed cannot access project"],
+    [/move .{0,30}?project .{0,40}?(permitted|allowed) location/i, "agent refusal: asked to move project"],
+    [/only .{0,30}?\/opt\/ai-vault.{0,20}?(is )?(allowed|permitted)/i, "agent refusal: false ai-vault-only claim"],
+    // Conservative "ask the operator instead of building" refusals on a greenfield app.
+    [/confirm (the )?intended structure/i, "agent refusal: asked operator to confirm structure"],
+    [/clarify .{0,30}?(testing )?expectations/i, "agent refusal: asked operator to clarify"],
+    [/provide guidance on where/i, "agent refusal: asked operator for guidance"],
+    [/cannot safely (add|implement|proceed|create)/i, "agent refusal: 'cannot safely' build"],
+    [/without .{0,40}?(scaffolding|starting point|existing code|guidance).{0,60}?(cannot|can.?t|unable)/i, "agent refusal: 'no scaffolding so cannot build'"],
+  ];
+  for (const [re, label] of patterns) {
+    if (re.test(stdout)) return label;
+  }
+  return null;
+}
+
 function detectAgentFatalError(stderr: string): string | null {
   const patterns: Array<[RegExp, string]> = [
     [/insufficient balance/i, "provider billing: insufficient balance"],
@@ -2082,7 +2134,9 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
 
   // A clean exit (0) is not proof of success: some CLIs print a fatal provider error
   // (billing/auth/quota) and still return 0. Treat those as failures.
-  const agentFatalError = exitCode === 0 ? detectAgentFatalError(stderr) : null;
+  const agentFatalError = exitCode === 0
+    ? (detectAgentFatalError(stderr) ?? detectAgentFatalError(stdout) ?? detectAgentRefusal(stdout))
+    : null;
 
   if (passId) {
     const passStatus = exitCode === 0 && !agentFatalError ? "success" : "failed";
@@ -2180,10 +2234,16 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       (profile.public?.length ?? 0) > 0 ||
       (profile.commands?.length ?? 0) > 0
     )
-  );
+  ) || (workflow ? detectBuildCommand(workflow.projectRoot) !== null : false);
   const allValidationsPassed = validationIds.length > 0 && validationIds.every((vid) => {
     const vs = readBuilderValidations(runId).find((v) => v.id === vid);
     return vs && vs.status === "success";
+  });
+  // A failing production build must never count as "done" — it should drive another pass
+  // to fix the build break (the failure is surfaced to the next pass via continuation).
+  const buildFailed = validationIds.some((vid) => {
+    const vs = readBuilderValidations(runId).find((v) => v.id === vid);
+    return vs ? vs.kind === "build" && vs.status !== "success" : false;
   });
 
   // Set when the plan file has 0 unchecked items — work is done, stop continuation
@@ -2293,6 +2353,8 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   if (passResultStatus === "complete") {
     planComplete = true;
   }
+  // A broken production build is never "done" — keep iterating to fix it.
+  if (buildFailed) planComplete = false;
 
   // "once" mode runs all agentOrder passes exactly once; auto-continue/scheduled/permanent
   // keep going until maxPasses is reached or a pass fails.
@@ -2307,7 +2369,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     workflow &&
     !planComplete &&
     !stopAfterPass &&
-    (runStatus === "success" || canContinueAfterTimeout || canContinueFromResult) &&
+    (runStatus === "success" || canContinueAfterTimeout || canContinueFromResult || buildFailed) &&
     (
       (AUTO_CONTINUE_MODES.has(workflow.mode) && passSeq < workflow.config.riskPolicy.maxPasses) ||
       (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
@@ -2548,6 +2610,100 @@ function createValidationRow(input: {
   return id;
 }
 
+// A real production build catches errors that `tsc --noEmit` misses — e.g. Next.js
+// App-Router "use client" violations, bundler/import resolution, framework config. We
+// auto-detect and run it as a gating validation so the builder fixes build-breakers
+// itself instead of shipping an app that typechecks but won't build/serve.
+// Find the dir of the deployable web app by its framework config file. Building it directly
+// is far more robust than `nx serve/build`, which crashes on the skewed @nx/* plugin versions
+// generated apps tend to have.
+function findFrameworkAppDir(projectRoot: string, configNames: string[]): string | null {
+  const scan = (dir: string, depth: number): string | null => {
+    if (depth > 3) return null;
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { return null; }
+    if (configNames.some((c) => entries.includes(c))) return dir;
+    for (const e of entries) {
+      if (e === "node_modules" || e.startsWith(".")) continue;
+      try { if (readdirSync(join(dir, e)).length) { const f = scan(join(dir, e), depth + 1); if (f) return f; } } catch { /* not a dir */ }
+    }
+    return null;
+  };
+  for (const base of ["apps", "packages", "."]) {
+    const b = join(projectRoot, base);
+    if (existsSync(b)) { const f = scan(b, 0); if (f) return f; }
+  }
+  return null;
+}
+
+export function detectBuildCommand(projectRoot: string): string | null {
+  try {
+    // Prefer a direct production build of the web app — catches the same class of errors
+    // (use-client, override modifiers, bundler/import resolution) without nx plugin fragility.
+    const nextDir = findFrameworkAppDir(projectRoot, ["next.config.js", "next.config.mjs", "next.config.ts"]);
+    if (nextDir) return `cd ${shellQuote(nextDir)} && npx next build 2>&1`;
+    const viteDir = findFrameworkAppDir(projectRoot, ["vite.config.ts", "vite.config.js", "vite.config.mjs"]);
+    if (viteDir) return `cd ${shellQuote(viteDir)} && npx vite build 2>&1`;
+    if (existsSync(join(projectRoot, "nx.json"))) {
+      // No detectable direct web app — let nx build everything (best-effort).
+      return "npx nx run-many --target=build --exclude='*-e2e' --skip-nx-cache=false 2>&1";
+    }
+    const pkgPath = join(projectRoot, "package.json");
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
+      if (pkg.scripts?.build) return "npm run build 2>&1";
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function runBuildValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+): Promise<string[]> {
+  const command = detectBuildCommand(projectRoot);
+  if (!command) return [];
+  const vStarted = Date.now();
+  let outputTail = "";
+  let error: string | null = null;
+  let status = "failed";
+  try {
+    const workDir = existsSync(projectRoot) ? projectRoot : "/tmp";
+    const result = spawnSync("/bin/bash", ["-c", command], {
+      encoding: "utf8",
+      timeout: 420_000, // production builds routinely exceed the 120s internal limit
+      cwd: workDir,
+      env: { ...process.env, BUILDER_RUN_ID: run.id, CI: "1" },
+      maxBuffer: 24 * 1024 * 1024,
+    });
+    outputTail = (result.stdout ?? "").slice(-6000);
+    if (result.stderr) outputTail += "\n" + result.stderr.slice(-3000);
+    if (result.status === 0) status = "success";
+    else if (result.status === null) { error = "build timed out after 420s"; status = "timeout"; }
+    else { error = `build failed (exit ${result.status})`; status = "failed"; }
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+    status = "error";
+  }
+  const vid = createValidationRow({
+    workflowId: workflow.id,
+    runId: run.id,
+    passId,
+    kind: "build",
+    status,
+    command,
+    url: null,
+    startedAt: vStarted,
+    finishedAt: Date.now(),
+    outputTail: outputTail || null,
+    artifactId: null,
+    error,
+  });
+  return [vid];
+}
+
 async function runValidationCommands(
   workflow: BuilderWorkflow,
   run: BuilderRun,
@@ -2566,6 +2722,10 @@ async function runValidationCommands(
 
   const phase3 = await runPublicValidation(workflow, run, passId, projectRoot, profile.public, profile.publicUrl, profile.playwright);
   validationIds.push(...phase3);
+
+  // Phase 4: production build — auto-detected, gates "done" so build-breakers can't ship.
+  const phase4 = await runBuildValidation(workflow, run, passId, projectRoot);
+  validationIds.push(...phase4);
 
   return validationIds;
 }

@@ -112,7 +112,69 @@ function candidateDirs(projectRoot: string): string[] {
   return [...new Set(dirs)];
 }
 
+// --- nx workspace support ---------------------------------------------------
+// nx monorepos usually have no per-app package.json and are run via `nx serve <app>`.
+// We read each project.json under apps/packages/libs and classify by its serve executor.
+type NxProject = { name: string; dir: string; targets: Record<string, { executor?: string }> };
+function readNxProjects(projectRoot: string): NxProject[] {
+  if (!existsSync(join(projectRoot, "nx.json"))) return [];
+  const found: NxProject[] = [];
+  const scan = (dir: string, depth: number) => {
+    if (depth > 3) return;
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { return; }
+    if (entries.includes("project.json")) {
+      try {
+        const p = JSON.parse(readFileSync(join(dir, "project.json"), "utf8")) as { name?: string; targets?: Record<string, { executor?: string }> };
+        found.push({ name: p.name ?? dir.split("/").pop() ?? dir, dir, targets: p.targets ?? {} });
+      } catch { /* skip */ }
+    }
+    for (const e of entries) {
+      if (e === "node_modules" || e.startsWith(".") || e === "project.json") continue;
+      try { if (readdirSync(join(dir, e)).length) scan(join(dir, e), depth + 1); } catch { /* not a dir */ }
+    }
+  };
+  for (const base of ["apps", "packages", "libs", "services"]) {
+    const b = join(projectRoot, base);
+    if (existsSync(b)) scan(b, 0);
+  }
+  return found;
+}
+const NX_WEB_EXECUTOR = /@nx\/(next|remix|vite|web|webpack|react|angular):.*(serve|dev|server)/i;
+const NX_NODE_EXECUTOR = /@nx\/(js|node|nest):.*(node|serve)/i;
+function detectNxWeb(projectRoot: string): { dir: string; cmd: string; args: string[] } | null {
+  for (const p of readNxProjects(projectRoot)) {
+    const serve = p.targets.serve ?? p.targets.dev;
+    const ex = serve?.executor ?? "";
+    if (!serve || !NX_WEB_EXECUTOR.test(ex)) continue;
+    // Prefer running the framework DIRECTLY in the project dir: generated nx apps frequently
+    // have skewed @nx/* plugin versions and `nx serve` crashes, but `next dev`/`vite` work.
+    const hasNextCfg = ["next.config.js", "next.config.mjs", "next.config.ts"].some((f) => existsSync(join(p.dir, f)));
+    if (/@nx\/next/i.test(ex) && hasNextCfg) {
+      return { dir: p.dir, cmd: "npx", args: ["next", "dev", "-p", "__PORT__"] };
+    }
+    if (/@nx\/(vite|react)/i.test(ex)) {
+      return { dir: p.dir, cmd: "npx", args: ["vite", "--port", "__PORT__", "--host", "127.0.0.1"] };
+    }
+    // Fallback: let nx drive it (works when plugin versions are aligned).
+    return { dir: projectRoot, cmd: "npx", args: ["nx", "serve", p.name, "--port", "__PORT__"] };
+  }
+  return null;
+}
+function detectNxBackend(projectRoot: string): { dir: string; cmd: string; args: string[] } | null {
+  for (const p of readNxProjects(projectRoot)) {
+    const serve = p.targets.serve;
+    if (serve && NX_NODE_EXECUTOR.test(serve.executor ?? "")) {
+      // @nx/js:node runs the built app, which reads process.env.PORT (set by the caller).
+      return { dir: projectRoot, cmd: "npx", args: ["nx", "serve", p.name] };
+    }
+  }
+  return null;
+}
+
 function detectWebWorkspace(projectRoot: string): { dir: string; cmd: string; args: string[] } | null {
+  const nx = detectNxWeb(projectRoot);
+  if (nx) return nx;
   for (const dir of candidateDirs(projectRoot)) {
     const pkg = readPkg(dir);
     if (!pkg) continue;
@@ -135,6 +197,8 @@ function detectExpoWorkspace(projectRoot: string): { dir: string } | null {
 }
 
 function detectBackendWorkspace(projectRoot: string): { dir: string; cmd: string; args: string[] } | null {
+  const nx = detectNxBackend(projectRoot);
+  if (nx) return nx;
   for (const dir of candidateDirs(projectRoot)) {
     const pkg = readPkg(dir);
     if (!pkg) continue;

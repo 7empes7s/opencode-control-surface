@@ -20,12 +20,28 @@ export type BuilderAgentEntry = {
   effort?: string;
 };
 
+// Effort keywords that may appear as a trailing `:effort` segment (e.g.
+// `codex:gpt-5:high`). Anything else after the agent is treated as part of the
+// model id so colon-tagged ids survive (e.g. `openrouter/openai/gpt-oss-120b:free`).
+const AGENT_EFFORTS = new Set(["low", "medium", "high", "minimal", "none", "max"]);
+
 export function parseAgentEntry(entry: string): BuilderAgentEntry {
-  const parts = entry.split(":");
-  const agent = parts[0]?.trim() ?? entry;
-  const model = parts[1]?.trim() || undefined;
-  const effort = parts[2]?.trim() || undefined;
-  return { raw: entry, agent, model, effort };
+  const firstColon = entry.indexOf(":");
+  if (firstColon === -1) {
+    return { raw: entry, agent: entry.trim(), model: undefined, effort: undefined };
+  }
+  const agent = entry.slice(0, firstColon).trim();
+  let rest = entry.slice(firstColon + 1).trim();
+  let effort: string | undefined;
+  const lastColon = rest.lastIndexOf(":");
+  if (lastColon !== -1) {
+    const tail = rest.slice(lastColon + 1).trim();
+    if (AGENT_EFFORTS.has(tail.toLowerCase())) {
+      effort = tail;
+      rest = rest.slice(0, lastColon).trim();
+    }
+  }
+  return { raw: entry, agent, model: rest || undefined, effort };
 }
 
 export type BuilderWorkflowConfig = {

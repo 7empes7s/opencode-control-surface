@@ -2683,6 +2683,15 @@ export function BuilderPage() {
     ? workflows
     : workflows.filter((w) => w.lifecycle === lifecycleFilter);
   const runs = runsApi.data?.runs ?? [];
+  // Global table rule: show at most 10 rows, most-recent first (full set still reachable
+  // via the lifecycle filter / detail views).
+  const TABLE_LIMIT = 10;
+  const visibleWorkflows = [...filteredWorkflows]
+    .sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
+    .slice(0, TABLE_LIMIT);
+  const visibleRuns = [...runs]
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+    .slice(0, TABLE_LIMIT);
   const doctorReports = doctorReportsApi.data?.reports ?? [];
 
   async function triggerDoctorReview(workflowId: string) {
@@ -2891,7 +2900,7 @@ export function BuilderPage() {
                     </button>
                   ))}
                 </div>
-                <span className="mono dim">{filteredWorkflows.length}/{workflows.length}</span>
+                <span className="mono dim">{visibleWorkflows.length} of {filteredWorkflows.length}{filteredWorkflows.length !== workflows.length ? ` (${workflows.length} total)` : ""}</span>
               </div>
             }
           >
@@ -2908,7 +2917,7 @@ export function BuilderPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredWorkflows.map((workflow) => {
+                    {visibleWorkflows.map((workflow) => {
                       const hasDoctor = hasDoctorReportsForWorkflow(workflow.id);
                       const latestReport = getLatestDoctorReport(workflow.id);
                       return (
@@ -2964,7 +2973,7 @@ export function BuilderPage() {
           <SectionCard
             title="runs"
             defaultOpen={true}
-            right={<span className="mono dim">{runs.length} total</span>}
+            right={<span className="mono dim">{visibleRuns.length === runs.length ? `${runs.length} total` : `showing ${visibleRuns.length} of ${runs.length}`}</span>}
           >
             <div className="section-card-body table-wrap">
               {runsApi.data?.degraded ? (
@@ -2979,7 +2988,7 @@ export function BuilderPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.map((run: BuilderRun) => (
+                    {visibleRuns.map((run: BuilderRun) => (
                       <tr key={run.id} className="clickable-row" onClick={() => setSelectedRunId(run.id)}>
                         <td><Pill color={statusColor(run.status)}>{run.status}</Pill></td>
                         <td><Pill>{run.trigger}</Pill></td>
