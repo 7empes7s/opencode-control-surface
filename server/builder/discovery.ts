@@ -577,6 +577,18 @@ function capabilityForModel(name: string): string {
   return "medium";
 }
 
+// Models PROVEN to drive agentic tool-calling by scripts/probe-agentic-models.ts (a real
+// file-write probe). Name-matching is unreliable — ~95% of catalog models answer chat but
+// can't run an agent loop — so the builder picks its group from this verified roster.
+const AGENTIC_ROSTER_PATH = "/var/lib/control-surface/agentic-models.json";
+export function getVerifiedAgenticGroup(group = "agentic-heavy"): string[] {
+  try {
+    const roster = JSON.parse(readFileSync(AGENTIC_ROSTER_PATH, "utf8")) as { groups?: Record<string, string[]> };
+    const list = roster.groups?.[group] ?? roster.groups?.["agentic-all"] ?? [];
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+  } catch { return []; }
+}
+
 export function getBuilderModelsInventory(): BuilderModelsInventory {
   const detail = getModelsDetail();
   const categorized = getCategorizedModels();

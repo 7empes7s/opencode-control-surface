@@ -478,22 +478,18 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
     // 'existing' sessions carry codebase_path; 'new' apps leave this for the
     // operator to set via the workflow form's project picker before launch.
     projectRoot: session.codebase_path || DEFAULT_WORKFLOW_CONFIG.projectRoot,
-    // Resilient multi-backend rotation. The runner round-robins agentOrder per
-    // pass (runner.ts:763) and falls back to modelPolicy.fallbackTargets on a
-    // recoverable timeout (runner.ts:2258). A single hardcoded model with no
-    // fallback was the root cause of stalled builds: when one provider degraded
-    // (e.g. OpenCode Zen free), every pass burned the full timeout for nothing.
-    // Free-first is preferred, but the free Zen tier is currently flaky, so the
-    // rotation leads with verified-healthy backends and keeps free as fallback.
-    // Editable per-workflow in the form. Revisit free ordering when Zen recovers.
-    agentOrder: [
-      'opencode:opencode-go/qwen3.7-plus',
-      'opencode:opencode-go/minimax-m2.7',
-      'opencode:alibaba/qwen-max',
-    ],
+    // Pick a GROUP of models, not one hardcoded id. `group:agentic-heavy` is expanded at
+    // run start (runner.ts expandModelGroupsInPlace) into the verified roster written by
+    // scripts/probe-agentic-models.ts — models PROVEN to drive agentic tool-calling, not
+    // name-matched (most catalog models exit 0 without writing anything). The runner
+    // round-robins the group per pass and cascades through it (fallbackTargets, also filled
+    // from the roster) before erroring. A single hardcoded model with no fallback was the
+    // root cause of stalled builds. To pin a specific model, replace the token with e.g.
+    // 'opencode:openrouter/openai/gpt-oss-120b:free'.
+    agentOrder: ['opencode:group:agentic-heavy'],
     modelPolicy: {
       ...DEFAULT_WORKFLOW_CONFIG.modelPolicy,
-      fallbackTargets: ['opencode-go/minimax-m2.7', 'alibaba/qwen-max', 'opencode/nemotron-3-ultra-free'],
+      fallbackTargets: [], // populated from the verified roster at run start
     },
     // maxPasses generous (build runs to plan-complete, not a pass budget).
     // stallTimeoutSeconds kept above passTimeoutSeconds so the `timeout` wrapper

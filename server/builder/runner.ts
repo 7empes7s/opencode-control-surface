@@ -22,6 +22,7 @@ import {
   type BuilderPass,
 } from "./store.ts";
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
+import { getVerifiedAgenticGroup } from "./discovery.ts";
 import { runDoctorReview, writeDoctorReport } from "./doctor.ts";
 import { getNextRunTime, isDue, getBackoffMs } from "./scheduler.ts";
 import { readSecretPlaintext } from "../governance/secrets.ts";
@@ -759,11 +760,41 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
   return lines.join("\n");
 }
 
+// Expand "group:<name>" tokens in agentOrder into the verified agentic model roster, so the
+// builder picks a GROUP of proven models (round-robined per pass) instead of one hardcoded id.
+// Explicit single/multi model configs (no group token) are respected as-is. Idempotent —
+// safe to call on every pass. Empty roster falls back to the one model proven to work.
+function expandModelGroupsInPlace(config: BuilderWorkflow["config"]): void {
+  const order = config.agentOrder ?? [];
+  const hasGroup = order.some((e) => /^group:/i.test(parseAgentEntry(e).model ?? ""));
+  if (!hasGroup) return;
+  let groupName = "agentic-heavy";
+  const expanded: string[] = [];
+  for (const raw of order) {
+    const parsed = parseAgentEntry(raw);
+    const gm = (parsed.model ?? "").match(/^group:([a-z0-9_-]+)$/i);
+    if (gm) {
+      groupName = gm[1];
+      const agent = parsed.agent || "opencode";
+      for (const model of getVerifiedAgenticGroup(groupName)) expanded.push(`${agent}:${model}`);
+    } else {
+      expanded.push(raw);
+    }
+  }
+  if (expanded.length === 0) expanded.push("opencode:openrouter/openai/gpt-oss-120b:free");
+  config.agentOrder = expanded;
+  const group = getVerifiedAgenticGroup(groupName);
+  if (group.length) {
+    config.modelPolicy.fallbackTargets = [...new Set([...(config.modelPolicy.fallbackTargets ?? []), ...group])];
+  }
+}
+
 async function startNextPass(
   workflow: BuilderWorkflow,
   run: BuilderRun,
   nextSequence: number,
 ): Promise<void> {
+  expandModelGroupsInPlace(workflow.config);
   const entry = parseAgentEntry(workflow.config.agentOrder[(nextSequence - 1) % workflow.config.agentOrder.length] ?? "codex");
   const agent = entry.agent;
   const isCliAgent = ["codex", "claude", "gemini", "opencode"].includes(agent);
@@ -1643,6 +1674,8 @@ export async function startWorkflowRun(
     throw new Error(`workflow cannot be started from status ${workflow.status}`);
   }
 
+  // Expand any "group:<name>" token into the verified agentic roster before model selection.
+  expandModelGroupsInPlace(workflow.config);
   // Determine agent/model from first agent order entry
   const entry = parseAgentEntry(workflow.config.agentOrder[0] ?? "codex");
   const agent = entry.agent;
