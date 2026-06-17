@@ -1,10 +1,10 @@
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
 import { writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 
@@ -189,16 +189,7 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       return { ok: false, error: "invalid mutate-policy suffix", code: "BAD_REQUEST" };
     }
     try {
-      const path = "/var/lib/mimule/model-quality.json";
-      let quality: Record<string, { status: string; recentFailures: number; consecutiveGarbage: number }> = {};
-      try { quality = JSON.parse(readFileSync(path, "utf8")); } catch {}
-      const existing = quality[targetId] ?? { recentFailures: 0, consecutiveGarbage: 0 };
-      if (suffix === "block") {
-        quality[targetId] = { ...existing, status: "blocked" };
-      } else {
-        quality[targetId] = { ...existing, status: "healthy", recentFailures: 0, consecutiveGarbage: 0 };
-      }
-      writeFileSync(path, JSON.stringify(quality, null, 2));
+      setModelQualityStatus(targetId, suffix === "block" ? "blocked" : "healthy", modelQualityPath());
       return { ok: true, action: "mutate-policy", message: targetId + " → " + suffix };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };

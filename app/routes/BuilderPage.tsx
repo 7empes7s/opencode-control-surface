@@ -2064,6 +2064,9 @@ type PreviewRecord = {
   expUrl: string | null;
   error: string | null;
   workspaceDir: string | null;
+  qrUrl: string | null;
+  qrLabel: string | null;
+  diagnostics: string[];
 };
 
 function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow; onClose: () => void }) {
@@ -2149,6 +2152,8 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
 
   // The live URL to embed: a launched tunnel preview wins; else a statically-configured URL.
   const liveUrl = (preview?.status === "ready" && preview.publicUrl) || data?.previewUrl || null;
+  const phoneQrUrl = preview?.status === "ready" ? (preview.qrUrl || liveUrl) : null;
+  const phoneQrLabel = preview?.qrLabel || "Scan to open this preview on your phone";
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -2212,13 +2217,28 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
               </div>
             ) : preview?.status === "ready" && preview.target === "mobile-device" && preview.expUrl ? (
               <div className="builder-preview-empty">
-                <p>Scan with the <strong>Expo Go</strong> app to open it on your iOS/Android device:</p>
+                <p>{phoneQrLabel}:</p>
                 <img
                   className="builder-preview-qr"
-                  alt="Expo QR"
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(preview.expUrl)}`}
+                  alt="Mobile preview QR"
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(phoneQrUrl || preview.expUrl)}`}
                 />
-                <p className="mono dim" style={{ wordBreak: "break-all" }}>{preview.expUrl}</p>
+                <p className="mono dim" style={{ wordBreak: "break-all" }}>{phoneQrUrl || preview.expUrl}</p>
+              </div>
+            ) : preview?.status === "ready" && preview.target === "mobile-device" && phoneQrUrl ? (
+              <div className="builder-preview-empty">
+                <p>{phoneQrLabel}:</p>
+                <img
+                  className="builder-preview-qr"
+                  alt="Mobile preview QR"
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(phoneQrUrl)}`}
+                />
+                <p className="mono dim" style={{ wordBreak: "break-all" }}>{phoneQrUrl}</p>
+                {preview.diagnostics?.length > 0 && (
+                  <div className="builder-preview-diagnostics">
+                    {preview.diagnostics.map((item, idx) => <div key={idx}>{item}</div>)}
+                  </div>
+                )}
               </div>
             ) : preview?.status === "starting" ? (
               <div className="builder-preview-empty">
@@ -2226,13 +2246,35 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
                 {previewLog && <pre className="builder-preview-plan-text" style={{ textAlign: "left", maxHeight: 240 }}>{previewLog}</pre>}
               </div>
             ) : liveUrl ? (
-              <iframe
-                key={iframeKey}
-                className="builder-preview-iframe"
-                src={liveUrl}
-                title="app preview"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-              />
+              <div className="builder-preview-live">
+                <iframe
+                  key={iframeKey}
+                  className="builder-preview-iframe"
+                  src={liveUrl}
+                  title="app preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                />
+                {(phoneQrUrl || preview?.diagnostics?.length > 0) && (
+                  <aside className="builder-preview-sideqr">
+                    {phoneQrUrl && (
+                      <>
+                        <div className="dash-section-title">{phoneQrLabel}</div>
+                        <img
+                          className="builder-preview-qr"
+                          alt="Mobile preview QR"
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(phoneQrUrl)}`}
+                        />
+                        <a className="btn btn-xs btn-ghost" href={phoneQrUrl} target="_blank" rel="noreferrer">open phone URL</a>
+                      </>
+                    )}
+                    {preview?.diagnostics?.length > 0 && (
+                      <div className="builder-preview-diagnostics">
+                        {preview.diagnostics.map((item, idx) => <div key={idx}>{item}</div>)}
+                      </div>
+                    )}
+                  </aside>
+                )}
+              </div>
             ) : (
               <div className="builder-preview-empty">
                 <p>No app is being previewed yet.</p>

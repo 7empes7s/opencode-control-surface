@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
 import { getObservabilityDb, listLiteLLMRoutingLogs, listSystemConfigs, upsertSystemConfig, insertConfigChange } from '../db/observability.ts';
+import { getModelQualityEntry, readModelQuality } from './modelQuality.ts';
 
 function detectProviderType(modelName: string, provider: string): "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "nvidia" | "cloudflare" | "opencode" | "alibaba" | "other" {
   const n = modelName.toLowerCase();
@@ -27,8 +28,11 @@ function detectIsOpenCode(modelName: string): boolean {
   return n.includes("opencode") || n.startsWith("oc-") || n.startsWith("alibaba/");
 }
 
+function modelHealthPath(): string {
+  return process.env.DASHBOARD_MODEL_HEALTH_PATH || '/var/lib/mimule/model-health.json';
+}
+
 function computeQualityStatus(available: boolean, hasError: boolean): "healthy" | "probation" | "degraded" | "blocked" | "unknown" {
-  if (!available && hasError) return "blocked";
   if (!available) return "degraded";
   if (hasError) return "probation";
   return "healthy";
@@ -36,10 +40,12 @@ function computeQualityStatus(available: boolean, hasError: boolean): "healthy" 
 
 export function modelsHandler(): Response {
   try {
-    const raw = readFileSync('/var/lib/mimule/model-health.json', 'utf8');
+    const raw = readFileSync(modelHealthPath(), 'utf8');
     const health = JSON.parse(raw);
+    const quality = readModelQuality();
 
     const models = health.models.map((m: any) => {
+      const qualityEntry = getModelQualityEntry(quality, m.logicalName, m.modelId);
       const providerType = detectProviderType(m.logicalName, m.provider);
       const hasExplicitFree = m.modelId?.includes('free') || m.logicalName?.includes('free');
       const isFree = hasExplicitFree || m.provider === 'openrouter' || m.provider === 'groq' || m.provider === 'cerebras';
@@ -52,8 +58,13 @@ export function modelsHandler(): Response {
       const available = m.available ?? false;
       const contextWindow = m.contextWindow || (m.params >= 200 ? 131072 : m.params >= 70 ? 32768 : 8192);
 
-      const qualityStatus = m.qualityStatus ?? computeQualityStatus(available, hasError);
+      const qualityStatus = m.qualityStatus ?? qualityEntry?.status ?? computeQualityStatus(available, hasError);
       const pricingTier = m.pricingTier ?? (isFree ? 'free-rate-limited' : isPaid ? 'api-paid' : 'subscription');
+      const recentFailures = Array.isArray(qualityEntry?.recentFailures)
+        ? qualityEntry.recentFailures.length
+        : typeof qualityEntry?.recentFailures === "number"
+          ? qualityEntry.recentFailures
+          : hasError ? 1 : 0;
 
       return {
         logicalName: m.logicalName,
@@ -64,8 +75,8 @@ export function modelsHandler(): Response {
         jsonOk: m.jsonOk ?? (available && !hasError),
         checkedAt: m.checkedAt ?? 0,
         qualityStatus,
-        recentFailures: hasError ? 1 : 0,
-        consecutiveGarbage: 0,
+        recentFailures,
+        consecutiveGarbage: Number(qualityEntry?.consecutiveGarbage ?? 0),
         isFree,
         isPaid,
         isOpenCode,
@@ -85,13 +96,19 @@ export function modelsHandler(): Response {
         latencyMs: m.latency ?? 0,
       };
     });
+    const qualitySummary = models.reduce((acc: { blocked: number; degraded: number; probation: number }, model: any) => {
+      if (model.qualityStatus === "blocked") acc.blocked += 1;
+      if (model.qualityStatus === "degraded") acc.degraded += 1;
+      if (model.qualityStatus === "probation") acc.probation += 1;
+      return acc;
+    }, { blocked: 0, degraded: 0, probation: 0 });
 
     const summary = {
       bestCloudHeavy: health.bestCloudHeavy ?? null,
       bestCloudFast: health.bestCloudFast ?? null,
       bestLocal: health.bestLocal ?? null,
       availableByCapability: health.availableByCapability ?? { heavy: 0, medium: 0, light: 0 },
-      qualitySummary: health.qualitySummary ?? { blocked: 0, degraded: 0, probation: 0 },
+      qualitySummary,
       lastFullCheckAgo: Date.now() - (health.lastFullCheckAt ?? 0),
       lastQuickCheckAgo: Date.now() - (health.lastQuickCheckAt ?? 0),
       newModelsAdded: health.newModelsAdded ?? [],

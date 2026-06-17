@@ -1,6 +1,8 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
+import { runContentHealthScan } from "../db/sampler.ts";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
 import {
   constantEqual,
@@ -162,16 +164,8 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
   if (action === "block" || action === "unblock" || action === "probation-clear") {
     if (!model) return json({ error: "model required" }, 400);
     try {
-      const path = "/var/lib/mimule/model-quality.json";
-      let quality: Record<string, { status: string; recentFailures: number; consecutiveGarbage: number }> = {};
-      try { quality = JSON.parse(readFileSync(path, "utf8")); } catch {}
-      const existing = quality[model] ?? { recentFailures: 0, consecutiveGarbage: 0 };
-      if (action === "block") {
-        quality[model] = { ...existing, status: "blocked" };
-      } else {
-        quality[model] = { ...existing, status: "healthy", recentFailures: 0, consecutiveGarbage: 0 };
-      }
-      writeFileSync(path, JSON.stringify(quality, null, 2));
+      const path = modelQualityPath();
+      setModelQualityStatus(model, action === "block" ? "blocked" : "healthy", path);
       audit({
         actionKind: "models.policy",
         actionId: `mutate-policy:model:${model}:${action}`,
@@ -272,6 +266,50 @@ interface DeployJob {
 }
 const deployJobs = new Map<string, DeployJob>();
 
+function findingLabel(count: number): string {
+  return count === 1 ? "finding" : "findings";
+}
+
+export async function runNewsBitesDeployContentHealthScan(
+  jobId: string,
+  currentOutput: string,
+  updateMemoryOutput?: (output: string) => void,
+): Promise<void> {
+  try {
+    const generatedFindings = await runContentHealthScan({ probeExternalLinks: true });
+    const nextOutput = `${currentOutput}\n[content-health] post-deploy scan generated ${generatedFindings} ${findingLabel(generatedFindings)}\n`;
+    updateMemoryOutput?.(nextOutput);
+    updateJobOutput(jobId, nextOutput);
+    audit({
+      actionKind: "content-health.post-deploy-scan",
+      actionId: "scan:content-health:newsbites-deploy",
+      targetType: "content-health",
+      targetId: "newsbites",
+      risk: "low",
+      request: { sourceJobId: jobId, probeExternalLinks: true },
+      result: `generated ${generatedFindings} ${findingLabel(generatedFindings)}`,
+      resultStatus: "success",
+      jobId,
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    const nextOutput = `${currentOutput}\n[content-health] post-deploy scan failed: ${message}\n`;
+    updateMemoryOutput?.(nextOutput);
+    updateJobOutput(jobId, nextOutput);
+    audit({
+      actionKind: "content-health.post-deploy-scan",
+      actionId: "scan:content-health:newsbites-deploy",
+      targetType: "content-health",
+      targetId: "newsbites",
+      risk: "low",
+      request: { sourceJobId: jobId, probeExternalLinks: true },
+      resultStatus: "failed",
+      error: message,
+      jobId,
+    });
+  }
+}
+
 // POST /api/newsbites/deploy
 export function newsBitesDeployHandler(req: Request): Response {
   const denied = requireMutation(req);
@@ -338,6 +376,12 @@ export function newsBitesDeployHandler(req: Request): Response {
       jobId,
       error: code === 0 ? undefined : `deploy exited with ${code}`,
     });
+    if (code === 0) {
+      void runNewsBitesDeployContentHealthScan(jobId, out, (nextOutput) => {
+        out = nextOutput;
+        job.output = nextOutput;
+      });
+    }
     // Evict after 10 minutes
     setTimeout(() => deployJobs.delete(jobId), 600_000);
   });

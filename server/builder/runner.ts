@@ -638,6 +638,24 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
   const projectRoot = workflow.projectRoot;
   const prevPasses = readBuilderPasses(run.id).filter((p) => p.sequence < nextSequence);
 
+  // If the most recent pass left the production build broken, the next pass MUST repair the build
+  // baseline before touching any plan item — otherwise the run "advances roadmap items after a
+  // failed validation" and digs the hole deeper (the exact failure pattern Codex flagged). We pull
+  // the failing command + error tail from the latest pass's build validation and force focus on it.
+  let buildBreak: { command: string; outputTail: string } | null = null;
+  const latestPass = [...prevPasses].sort((a, b) => b.sequence - a.sequence)[0];
+  if (latestPass) {
+    const lastBuildVal = readBuilderValidations(run.id)
+      .filter((v) => v.passId === latestPass.id && v.kind === "build" && v.status !== "success")
+      .pop();
+    if (lastBuildVal) {
+      buildBreak = {
+        command: lastBuildVal.command ?? "(build command)",
+        outputTail: (lastBuildVal.outputTail ?? lastBuildVal.error ?? "").slice(-3000),
+      };
+    }
+  }
+
   const lines: string[] = [
     `=== Builder Pipeline: Pass ${nextSequence} Continuation Context ===`,
     `Workflow: ${workflow.name}`,
@@ -751,11 +769,36 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
 
   lines.push("");
   lines.push("=== Instructions for this pass ===");
-  lines.push("1. Read ONLY the next 2-3 unchecked items from the plan (use grep, not full cat).");
-  lines.push("2. Implement those items, then mark them [x] in the plan file.");
-  lines.push("3. Run validation commands after changes (see contract above).");
-  lines.push("4. End with a concise summary: what changed, what failed, what the next item is.");
-  lines.push("Do NOT try to complete the whole plan in one pass.");
+  if (buildBreak) {
+    // Build is broken — repair-only pass. Do not advance the roadmap.
+    lines.push("⛔ THE PRODUCTION BUILD IS BROKEN. This pass is a BUILD-REPAIR pass ONLY.");
+    lines.push(`Failing command: ${buildBreak.command}`);
+    lines.push("Build error (tail):");
+    lines.push("```");
+    lines.push(buildBreak.outputTail || "(no captured output — re-run the command to see the error)");
+    lines.push("```");
+    lines.push("1. Re-run the failing command above and read the FIRST error (fix root cause, not symptoms).");
+    lines.push("2. Fix ONLY what is needed to make that command exit 0 (missing deps, imports, types, 'use client', config).");
+    lines.push("3. Re-run the command until it passes. Do NOT pick up new plan items. Do NOT mark plan items [x].");
+    lines.push("4. Do NOT add features, screens, monetization, or anything requiring external services/credentials.");
+    lines.push("5. End with a concise summary: the error, the fix, and whether the build now passes.");
+  } else {
+    lines.push("1. Read ONLY the next 2-3 unchecked items from the plan (use grep, not full cat).");
+    lines.push("2. Implement those items, then mark them [x] in the plan file.");
+    lines.push("3. Run validation commands after changes (see contract above).");
+    lines.push("4. End with a concise summary: what changed, what failed, what the next item is.");
+    lines.push("Do NOT try to complete the whole plan in one pass.");
+  }
+
+  // Surface the broken-build banner at the very TOP too, so it is the first thing the agent reads.
+  if (buildBreak) {
+    lines.unshift(
+      "",
+      `   Failing command: ${buildBreak.command}`,
+      "█ BUILD BASELINE IS BROKEN — fix the build before anything else (details + error below). █",
+      "",
+    );
+  }
 
   return lines.join("\n");
 }
@@ -2338,6 +2381,17 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     updateBuilderPass(passId, { error: runError ?? null });
   }
 
+  // Correct the pass status to reflect validation, not just the exit code. The pass row was
+  // marked "success" earlier when the agent merely exited 0, but a failing production-build
+  // validation means the pass did NOT succeed — leaving it green misleads the operator and the
+  // run-risk tiles. Downgrade to "failed" so status, error, and validations agree.
+  if (passId && exitCode === 0 && runStatus === "failed") {
+    updateBuilderPass(passId, {
+      status: "failed",
+      failureClass: buildFailed ? "build-failed" : "validation-failed",
+    });
+  }
+
   // Determine continuation before writing final run state
   const AUTO_CONTINUE_MODES = new Set(["auto-continue", "scheduled", "permanent"]);
 
@@ -2398,7 +2452,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     run.result &&
     (run.result as Record<string, unknown>).stopAfterPass === true,
   );
-  const shouldContinue = Boolean(
+  let shouldContinue = Boolean(
     workflow &&
     !planComplete &&
     !stopAfterPass &&
@@ -2408,6 +2462,51 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       (workflow.mode === "once" && passSeq < workflow.config.agentOrder.length)
     ),
   );
+
+  // Pause guard: stop the run from digging deeper. If the recent tail of passes has made no real
+  // progress — either repeated no-output timeouts, or the production build never recovering across
+  // many passes — pause the workflow with a precise reason instead of churning to maxPasses.
+  // A reasoner/operator can then diagnose, rather than burning the whole pass budget on a hang.
+  let pauseReason: string | null = null;
+  if (shouldContinue && workflow) {
+    const CONSECUTIVE_TIMEOUT_LIMIT = 3; // N back-to-back no-output timeouts → pause
+    const NO_BUILD_PROGRESS_LIMIT = 6;   // N passes where the build never went green → pause
+    const tail = readBuilderPasses(runId)
+      .filter((p) => p.sequence <= passSeq)
+      .sort((a, b) => b.sequence - a.sequence);
+    let timeoutStreak = 0;
+    for (const p of tail) {
+      if (p.failureClass === "pass-timeout" || p.error === "Agent exited with code 124") timeoutStreak++;
+      else break;
+    }
+    if (timeoutStreak >= CONSECUTIVE_TIMEOUT_LIMIT) {
+      pauseReason = `${timeoutStreak} consecutive agent timeouts with no output — needs a reasoner/operator diagnosis before continuing.`;
+    } else if (buildFailed) {
+      // Count trailing passes that never produced a green build (a "productive" pass is one whose
+      // build validation passed, or that had no build validation at all).
+      let brokenStreak = 0;
+      for (const p of tail) {
+        const vals = readBuilderValidations(runId).filter((v) => v.passId === p.id && v.kind === "build");
+        const buildGreen = vals.length > 0 && vals.every((v) => v.status === "success");
+        if (buildGreen) break;
+        brokenStreak++;
+      }
+      if (brokenStreak >= NO_BUILD_PROGRESS_LIMIT) {
+        pauseReason = `Production build has not recovered in ${brokenStreak} passes — pausing for diagnosis instead of advancing the roadmap on a broken baseline.`;
+      }
+    }
+  }
+  if (pauseReason && workflow && passId) {
+    shouldContinue = false;
+    updateBuilderPass(passId, { status: "blocked", failureClass: "paused-no-progress", error: pauseReason });
+    updateBuilderRun(runId, { status: "blocked", finishedAt: ts, currentPassId: null, error: pauseReason });
+    updateBuilderWorkflowStatus(workflow.id, "blocked");
+    releaseProjectLock(workflow.projectRoot, workflow.tenantId);
+    finishJobByRun(runId, "failed", { error: pauseReason });
+    logToVault(workflow, run, passId, passSeq, "blocked");
+    console.log(`[builder] run ${runId} PAUSED: ${pauseReason}`);
+    return readBuilderRun(runId);
+  }
 
   // Handle blocked status from PASS_RESULT.json
   if (passResultStatus === "blocked" && workflow) {
