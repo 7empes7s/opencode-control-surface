@@ -771,11 +771,11 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
   lines.push("=== Instructions for this pass ===");
   if (buildBreak) {
     // Build is broken — repair-only pass. Do not advance the roadmap.
-    lines.push("⛔ THE PRODUCTION BUILD IS BROKEN. This pass is a BUILD-REPAIR pass ONLY.");
+    lines.push("THE PRODUCTION BUILD IS BROKEN. This pass is a BUILD-REPAIR pass ONLY.");
     lines.push(`Failing command: ${buildBreak.command}`);
     lines.push("Build error (tail):");
     lines.push("```");
-    lines.push(buildBreak.outputTail || "(no captured output — re-run the command to see the error)");
+    lines.push(buildBreak.outputTail || "(no captured output - re-run the command to see the error)");
     lines.push("```");
     lines.push("1. Re-run the failing command above and read the FIRST error (fix root cause, not symptoms).");
     lines.push("2. Fix ONLY what is needed to make that command exit 0 (missing deps, imports, types, 'use client', config).");
@@ -795,7 +795,7 @@ function buildContinuationContext(workflow: BuilderWorkflow, run: BuilderRun, ne
     lines.unshift(
       "",
       `   Failing command: ${buildBreak.command}`,
-      "█ BUILD BASELINE IS BROKEN — fix the build before anything else (details + error below). █",
+      "BUILD BASELINE IS BROKEN - fix the build before anything else (details + error below).",
       "",
     );
   }
@@ -2369,7 +2369,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     runError = `Agent exited with code ${exitCode}`;
   } else if (runStatus === "failed" && !allValidationsPassed && validationIds.length > 0) {
     const failedVal = readBuilderValidations(runId).find(
-      (v) => v.status !== "success",
+      (v) => validationIds.includes(v.id) && v.status !== "success",
     );
     runError = failedVal
       ? `Validation failed: ${failedVal.command ?? "unknown command"}`
@@ -2482,8 +2482,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
     if (timeoutStreak >= CONSECUTIVE_TIMEOUT_LIMIT) {
       pauseReason = `${timeoutStreak} consecutive agent timeouts with no output — needs a reasoner/operator diagnosis before continuing.`;
     } else if (buildFailed) {
-      // Count trailing passes that never produced a green build (a "productive" pass is one whose
-      // build validation passed, or that had no build validation at all).
+      // Count trailing passes that never produced a green build.
       let brokenStreak = 0;
       for (const p of tail) {
         const vals = readBuilderValidations(runId).filter((v) => v.passId === p.id && v.kind === "build");

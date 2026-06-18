@@ -24,6 +24,9 @@ import { createConnection } from "node:net";
 
 export type PreviewTarget = "web" | "mobile-web" | "mobile-device" | "fullstack";
 export type PreviewStatus = "starting" | "ready" | "error" | "stopped";
+// Per-part health for fullstack previews so a dead backend can't masquerade as a
+// fully-"ready" preview. null = not yet known, "skipped" = nothing to start.
+export type PreviewPartStatus = "ok" | "error" | "skipped" | null;
 
 export type PreviewRecord = {
   workflowId: string;
@@ -32,6 +35,8 @@ export type PreviewRecord = {
   port: number | null; // primary (web) port
   publicUrl: string | null; // trycloudflare https URL for the web UI
   apiUrl: string | null; // trycloudflare https URL for the backend API (fullstack)
+  apiStatus: PreviewPartStatus; // fullstack: did the backend/API come up + tunnel?
+  webStatus: PreviewPartStatus; // did the web app come up?
   expUrl: string | null; // exp:// URL for device QR (mobile-device)
   error: string | null;
   startedAt: number;
@@ -397,7 +402,8 @@ export async function startPreview(workflowId: string, projectRoot: string, targ
   const stamp = Date.now();
   const logFile = join(PREVIEW_LOG_DIR, `${workflowId}-${target}-${stamp}.log`);
   const record: PreviewRecord = {
-    workflowId, target, status: "starting", port: null, publicUrl: null, apiUrl: null, expUrl: null,
+    workflowId, target, status: "starting", port: null, publicUrl: null, apiUrl: null,
+    apiStatus: null, webStatus: null, expUrl: null,
     error: null, startedAt: stamp, logFile, workspaceDir: null, qrUrl: null, qrLabel: null, diagnostics: [],
   };
   const proc: LiveProc = { record, children: [], ports: [], idleTimer: null };
@@ -485,13 +491,31 @@ export async function startPreview(workflowId: string, projectRoot: string, targ
       void (async () => {
         let apiUrl: string | null = null;
         if (backend) {
+          // Backend gets its own log so a backend failure can be surfaced specifically
+          // (the shared web log would otherwise bury it).
+          const apiLog = `${logFile}.api.log`;
+          const backendCmd = `${backend.cmd} ${backend.args.join(" ")}`.trim();
           const apiPort = await pickFreePort(new Set());
           proc.ports.push(apiPort);
-          proc.children.push(spawnLogged(backend.cmd, backend.args, backend.dir, { PORT: String(apiPort), API_PORT: String(apiPort) }, logFile));
+          proc.children.push(spawnLogged(backend.cmd, backend.args, backend.dir, { PORT: String(apiPort), API_PORT: String(apiPort) }, apiLog));
           if (await waitForPort(apiPort, READY_TIMEOUT_MS)) {
-            apiUrl = await openTunnel(apiPort, backend.dir, logFile, proc);
+            apiUrl = await openTunnel(apiPort, backend.dir, apiLog, proc);
             record.apiUrl = apiUrl;
+            record.apiStatus = apiUrl ? "ok" : "error";
+            if (!apiUrl) {
+              record.diagnostics.push(`Backend started but its public tunnel didn't come up — API calls will fail. Backend command: ${backendCmd}`);
+            }
+          } else {
+            // Detected a backend but it never bound its port: do NOT pretend the preview
+            // is fully ready. Surface the command + the tail of the backend log.
+            record.apiStatus = "error";
+            record.diagnostics.push(`Backend/API failed to start within ${READY_TIMEOUT_MS / 1000}s — preview is WEB-ONLY and API calls will fail. Backend command: ${backendCmd}`);
+            const tail = tailLog(apiLog, 1600).split("\n").filter((l) => l.trim()).slice(-20).join("\n");
+            if (tail) record.diagnostics.push(`Backend log (last lines):\n${tail}`);
           }
+        } else {
+          record.apiStatus = "skipped";
+          record.diagnostics.push("No backend/API workspace was detected; previewing the web app only.");
         }
         if (!PREVIEWS.has(workflowId)) return;
         const webPort = await pickFreePort(new Set(proc.ports));
@@ -502,15 +526,18 @@ export async function startPreview(workflowId: string, projectRoot: string, targ
           : {};
         const webArgs = web.args.map((a) => (a === "__PORT__" ? String(webPort) : a));
         proc.children.push(spawnLogged(web.cmd, webArgs, web.dir, { PORT: String(webPort), ...apiEnv }, logFile));
-        if (!(await waitForPort(webPort, READY_TIMEOUT_MS))) return fail(`web didn't start within ${READY_TIMEOUT_MS / 1000}s`);
+        if (!(await waitForPort(webPort, READY_TIMEOUT_MS))) { record.webStatus = "error"; return fail(`web didn't start within ${READY_TIMEOUT_MS / 1000}s`); }
         if (!PREVIEWS.has(workflowId)) return;
+        record.webStatus = "ok";
         record.diagnostics.push(...await inspectWebPreview(webPort));
         const url = await openTunnel(webPort, web.dir, logFile, proc);
         if (url) {
           record.publicUrl = url;
           setPhoneQr(record, url, "Scan to open the full-stack web preview on your phone");
+          // Web is genuinely up (iframe is useful), but keep the API failure unmissable
+          // via apiStatus + diagnostics rather than a falsely-clean "ready".
           record.status = "ready";
-        } else await fail("web tunnel didn't come up");
+        } else { record.webStatus = "error"; await fail("web tunnel didn't come up"); }
       })();
       return { ...record };
     }

@@ -16,11 +16,15 @@ import { join } from "node:path";
 
 const BUILDER_XDG = "/var/lib/control-surface/opencode-builder";
 const OUT = "/var/lib/control-surface/agentic-models.json";
-const PROBE_TIMEOUT_S = Number(process.argv.find((a, i) => process.argv[i - 1] === "--timeout") ?? 45);
+const PROBE_TIMEOUT_S = Number(process.argv.find((a, i) => process.argv[i - 1] === "--timeout") ?? 55);
 const LIMIT = Number(process.argv.find((a, i) => process.argv[i - 1] === "--limit") ?? 0) || Infinity;
 
-// Models worth probing for agentic CODE building (auto-discovered from the live catalog).
-const CANDIDATE = /gpt-oss|qwen.*(coder|next|plus|max|235b|32b)|minimax|nemotron|deepseek-v4|glm-5|kimi-k2|codestral|mistral-large|llama-(3\.3|4)|command-?r/i;
+// Models worth probing for agentic CODE building (auto-discovered from the live catalog). Broad on
+// purpose: provider balances change (alibaba/opencode go overdue, opencode-go gets topped up), so we
+// probe every strong coder across EVERY provider each run rather than trusting a name. Includes the
+// top closed coders (claude/gemini/grok via subscription routes) so they're picked up the moment
+// their provider is authed.
+const CANDIDATE = /gpt-oss|qwen.*(coder|next|plus|max|235b|122b|397b|32b|80b)|minimax|mimo|nemotron|deepseek|glm-5|glm-4|kimi|codestral|devstral|mistral-large|llama-(3\.3|4)|command-?r|claude-(opus|sonnet)|gemini-3|grok-3/i;
 // Tiers by capability for building a full app.
 function tierFor(id: string): "heavy" | "medium" {
   return /120b|235b|480b|max|coder|next-80b|pro|large|kimi-k2|glm-5|deepseek-v4-pro|minimax-m[23]/i.test(id) ? "heavy" : "medium";

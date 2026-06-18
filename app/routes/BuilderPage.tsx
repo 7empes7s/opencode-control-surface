@@ -2061,6 +2061,8 @@ type PreviewRecord = {
   port: number | null;
   publicUrl: string | null;
   apiUrl: string | null;
+  apiStatus: "ok" | "error" | "skipped" | null;
+  webStatus: "ok" | "error" | "skipped" | null;
   expUrl: string | null;
   error: string | null;
   workspaceDir: string | null;
@@ -2201,7 +2203,22 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
               </button>
             )}
             {preview?.status === "starting" && <span className="mono dim">starting… first launch compiles, ~1 min</span>}
-            {preview?.status === "ready" && <span className="mono" style={{ color: "var(--accent)" }}>● live</span>}
+            {preview?.status === "ready" && preview.apiStatus === "error" && (
+              <span className="mono" style={{ color: "var(--text-red, #c0392b)" }}>● web live · API down</span>
+            )}
+            {preview?.status === "ready" && preview.apiStatus !== "error" && (
+              <span className="mono" style={{ color: "var(--accent)" }}>● live</span>
+            )}
+          </div>
+        )}
+        {tab === "app" && preview?.status === "ready" && preview.apiStatus === "error" && (
+          <div className="builder-preview-apidown" style={{
+            margin: "0 16px 8px", padding: "8px 12px", borderRadius: 8,
+            background: "var(--surface-red, rgba(192,57,43,0.08))",
+            border: "1px solid var(--text-red, #c0392b)", color: "var(--text-red, #c0392b)", fontSize: 13,
+          }}>
+            ⚠ Backend/API did not start — this preview is <strong>web-only</strong>. Any data fetches in the
+            app will fail. See diagnostics below for the backend command and log tail.
           </div>
         )}
 

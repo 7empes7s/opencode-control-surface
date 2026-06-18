@@ -1,6 +1,5 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
 import { modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
