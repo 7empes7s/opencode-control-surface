@@ -2858,7 +2858,66 @@ async function runValidationCommands(
   const phase4 = await runBuildValidation(workflow, run, passId, projectRoot);
   validationIds.push(...phase4);
 
+  // Phase 5: substance gate — a build can pass on hollow placeholder stubs. Reject those so
+  // an agent can't mark a plan item [x] with "will be displayed here" / a near-empty view.
+  const phase5 = runSubstanceValidation(workflow, run, passId, projectRoot);
+  validationIds.push(...phase5);
+
   return validationIds;
+}
+
+// Placeholder phrases agents leave when they stub instead of build.
+const HOLLOW_MARKERS =
+  /(placeholder for now|will be (displayed|shown|added|implemented) here|content goes here|coming soon|todo:?\s*implement|not implemented( yet)?|lorem ipsum|replace (this|the elements)|your .{0,20} here)/i;
+
+function runSubstanceValidation(
+  workflow: BuilderWorkflow,
+  run: BuilderRun,
+  passId: string,
+  projectRoot: string,
+): string[] {
+  const startedAt = Date.now();
+  let changed: string[] = [];
+  try {
+    const tracked = spawnSync("git", ["diff", "--name-only"], { cwd: projectRoot, encoding: "utf8", timeout: 15_000 }).stdout ?? "";
+    const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectRoot, encoding: "utf8", timeout: 15_000 }).stdout ?? "";
+    changed = [...tracked.split("\n"), ...untracked.split("\n")].map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+  const SRC = /\.(tsx?|jsx?|vue|svelte)$/;
+  const hollow: string[] = [];
+  for (const rel of changed) {
+    if (!SRC.test(rel) || /\.(spec|test|d)\.[tj]sx?$/.test(rel)) continue;
+    let body = "";
+    try {
+      body = readFileSync(join(projectRoot, rel), "utf8");
+    } catch {
+      continue;
+    }
+    const code = body.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, "").trim();
+    const isView = /(^|\/)(page|screen|view)\.[tj]sx?$/.test(rel) || /\/(pages|screens|views|app)\//.test(rel);
+    if (HOLLOW_MARKERS.test(body)) hollow.push(`${rel} — contains placeholder text`);
+    else if (isView && code.length < 160) hollow.push(`${rel} — near-empty view (${code.length} chars of code)`);
+  }
+  if (hollow.length === 0) return [];
+  const id = createValidationRow({
+    workflowId: workflow.id,
+    runId: run.id,
+    passId,
+    kind: "substance",
+    status: "error",
+    command: null,
+    url: null,
+    startedAt,
+    finishedAt: Date.now(),
+    outputTail:
+      "Deliverables are placeholders/stubs — implement REAL content; do NOT mark these items [x]:\n" +
+      hollow.join("\n"),
+    artifactId: null,
+    error: `Substance gate: ${hollow.length} placeholder/stub file(s)`,
+  });
+  return [id];
 }
 
 async function runInternalValidation(
