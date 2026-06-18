@@ -2843,15 +2843,28 @@ body {
   line-height: 1.45;
   text-align: left;
 }
-@media (max-width: 900px) {
-  .builder-preview-live { flex-direction: column; }
-  .builder-preview-sideqr {
-    flex: 0 0 auto;
-    border-left: 0;
-    border-top: 1px solid var(--border);
-    max-height: 260px;
-  }
+/* QR is now a popup (not a side rail) so the preview area is the web page only. */
+.builder-qr-overlay {
+  position: absolute; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: oklch(0% 0 0 / 55%); backdrop-filter: blur(2px);
 }
+.builder-qr-popup {
+  background: var(--bg-panel); border: 1px solid var(--border-bright);
+  border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  align-items: center; box-shadow: 0 16px 50px oklch(0% 0 0 / 60%); max-width: 90%;
+}
+.builder-qr-popup-head { display: flex; align-items: center; gap: 12px; width: 100%; justify-content: space-between; font-weight: 600; }
+.builder-qr-popup img { width: 260px; height: 260px; max-width: 70vw; max-height: 70vw; border-radius: 8px; background: #fff; padding: 8px; }
+.builder-qr-popup a { font-size: 11px; word-break: break-all; text-align: center; color: var(--accent); }
+.builder-preview-diagstrip {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+  max-height: 40%; overflow: auto; padding: 12px 36px 12px 14px;
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.builder-preview-diagclose { position: absolute; top: 6px; right: 8px; }
+.builder-preview-live { position: relative; }
 
 .builder-iterate-modal { width: min(560px, 94vw); }
 .builder-iterate-done { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }

@@ -2080,6 +2080,8 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
   const [target, setTarget] = useState<PreviewRecord["target"]>("fullstack");
   const [preview, setPreview] = useState<PreviewRecord | null>(null);
   const [previewLog, setPreviewLog] = useState("");
+  const [showQr, setShowQr] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
   const [launching, setLaunching] = useState(false);
 
   useEffect(() => {
@@ -2195,6 +2197,12 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
               <option value="mobile-device">Mobile device (QR)</option>
             </select>
             {preview?.apiUrl && <a className="btn btn-xs btn-ghost" href={preview.apiUrl} target="_blank" rel="noreferrer">API ↗</a>}
+            {preview?.status === "ready" && phoneQrUrl && (
+              <button className="btn btn-xs btn-ghost" onClick={() => setShowQr(true)} title="Show QR to open on your phone">📱 QR</button>
+            )}
+            {preview?.status === "ready" && (preview?.diagnostics?.length ?? 0) > 0 && (
+              <button className="btn btn-xs btn-ghost" onClick={() => setShowDiag((v) => !v)} title="Preview diagnostics">ⓘ info</button>
+            )}
             {preview && preview.status !== "stopped" ? (
               <button className="btn btn-xs btn-danger" onClick={stopPreview}>stop preview</button>
             ) : (
@@ -2264,6 +2272,8 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
               </div>
             ) : liveUrl ? (
               <div className="builder-preview-live">
+                {/* The preview area is ONLY the web page — full bleed on desktop and mobile.
+                    QR + diagnostics live behind the launchbar buttons (popups), not a side rail. */}
                 <iframe
                   key={iframeKey}
                   className="builder-preview-iframe"
@@ -2271,25 +2281,11 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
                   title="app preview"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                 />
-                {(phoneQrUrl || preview?.diagnostics?.length > 0) && (
-                  <aside className="builder-preview-sideqr">
-                    {phoneQrUrl && (
-                      <>
-                        <div className="dash-section-title">{phoneQrLabel}</div>
-                        <img
-                          className="builder-preview-qr"
-                          alt="Mobile preview QR"
-                          src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(phoneQrUrl)}`}
-                        />
-                        <a className="btn btn-xs btn-ghost" href={phoneQrUrl} target="_blank" rel="noreferrer">open phone URL</a>
-                      </>
-                    )}
-                    {preview?.diagnostics?.length > 0 && (
-                      <div className="builder-preview-diagnostics">
-                        {preview.diagnostics.map((item, idx) => <div key={idx}>{item}</div>)}
-                      </div>
-                    )}
-                  </aside>
+                {showDiag && (preview?.diagnostics?.length ?? 0) > 0 && (
+                  <div className="builder-preview-diagstrip">
+                    <button className="builder-preview-diagclose" onClick={() => setShowDiag(false)} aria-label="close">✕</button>
+                    {preview!.diagnostics.map((item, idx) => <div key={idx}>{item}</div>)}
+                  </div>
                 )}
               </div>
             ) : (
@@ -2322,6 +2318,22 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
             )
           )}
         </div>
+
+        {showQr && phoneQrUrl && (
+          <div className="builder-qr-overlay" onClick={() => setShowQr(false)}>
+            <div className="builder-qr-popup" onClick={(e) => e.stopPropagation()}>
+              <div className="builder-qr-popup-head">
+                <span>{phoneQrLabel}</span>
+                <button className="btn btn-xs btn-ghost" onClick={() => setShowQr(false)}>✕</button>
+              </div>
+              <img
+                alt="Preview QR"
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(phoneQrUrl)}`}
+              />
+              <a className="mono" href={phoneQrUrl} target="_blank" rel="noreferrer">{phoneQrUrl}</a>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -351,11 +351,18 @@ async function openTunnel(port: number, cwd: string, logFile: string, proc: Live
   return null;
 }
 
+// Bring up ONLY the data services (db/cache) a generated app needs — never app/proxy
+// services, which bind host ports (e.g. nginx:80) and collide with the live VPS.
+const DATA_SERVICE_RE = /(postgres|postgresql|pgvector|mysql|mariadb|mongo|redis|valkey|rabbit|kafka|cache|database|clickhouse|cassandra|elastic|meilisearch)/i;
 function composeUp(projectRoot: string, logFile: string): void {
   const hasCompose = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"].some((f) => existsSync(join(projectRoot, f)));
   if (!hasCompose) return;
   try {
-    execSync(`docker compose up -d >> ${JSON.stringify(logFile)} 2>&1 || docker-compose up -d >> ${JSON.stringify(logFile)} 2>&1 || true`, { cwd: projectRoot, timeout: 90_000 });
+    const services = execSync(`docker compose config --services 2>/dev/null || true`, { cwd: projectRoot, encoding: "utf8", timeout: 20_000 })
+      .split("\n").map((s) => s.trim()).filter(Boolean);
+    const data = services.filter((s) => DATA_SERVICE_RE.test(s));
+    if (data.length === 0) return; // nothing safe to start; don't boot app/proxy containers
+    execSync(`docker compose up -d ${data.join(" ")} >> ${JSON.stringify(logFile)} 2>&1 || true`, { cwd: projectRoot, timeout: 90_000 });
   } catch { /* best effort — DB may already be up */ }
 }
 
