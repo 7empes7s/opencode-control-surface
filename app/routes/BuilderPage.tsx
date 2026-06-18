@@ -455,7 +455,7 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
       backupPolicy: { enabled: true, beforeRun: true },
       // Generous ceiling — the run self-stops once the plan checklist is complete,
       // so this is a safety cap against runaway loops, not a target pass count.
-      riskPolicy: { liveDeploys: "disabled", maxPasses: 30 },
+      riskPolicy: { liveDeploys: "disabled", maxPasses: 120, passTimeoutSeconds: 1500, stallTimeoutSeconds: 2700 },
       geminiApprovalMode: "auto_edit",
     },
   };
@@ -789,7 +789,7 @@ function WorkflowModal({
               className="modal-input"
               type="number"
               min={1}
-              max={50}
+              max={200}
               value={draft.config.riskPolicy.maxPasses}
               onChange={(event) => setDraft((prev) => ({
                 ...prev,
@@ -807,12 +807,12 @@ function WorkflowModal({
               type="number"
               min={60}
               max={7200}
-              value={draft.config.riskPolicy.passTimeoutSeconds ?? 900}
+              value={draft.config.riskPolicy.passTimeoutSeconds ?? 1500}
               onChange={(event) => setDraft((prev) => ({
                 ...prev,
                 config: {
                   ...prev.config,
-                  riskPolicy: { ...prev.config.riskPolicy, passTimeoutSeconds: Number(event.target.value) || 900 },
+                  riskPolicy: { ...prev.config.riskPolicy, passTimeoutSeconds: Number(event.target.value) || 1500 },
                 },
               }))}
             />
@@ -824,12 +824,12 @@ function WorkflowModal({
               type="number"
               min={60}
               max={7200}
-              value={draft.config.riskPolicy.stallTimeoutSeconds ?? 900}
+              value={draft.config.riskPolicy.stallTimeoutSeconds ?? 2700}
               onChange={(event) => setDraft((prev) => ({
                 ...prev,
                 config: {
                   ...prev.config,
-                  riskPolicy: { ...prev.config.riskPolicy, stallTimeoutSeconds: Number(event.target.value) || 900 },
+                  riskPolicy: { ...prev.config.riskPolicy, stallTimeoutSeconds: Number(event.target.value) || 2700 },
                 },
               }))}
             />
@@ -1118,6 +1118,47 @@ function SourceSessionDetail({ source }: { source?: BuilderSourceSession }) {
           {source.touchedFiles.slice(0, 30).map((file) => (
             <span className="pill gray mono" key={file}>{file}</span>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkflowPolicySummary({ workflow }: { workflow?: BuilderWorkflow | null }) {
+  if (!workflow) return null;
+  const risk = workflow.config.riskPolicy;
+  const modelPolicy = workflow.config.modelPolicy;
+  const agentOrder = workflow.config.agentOrder ?? [];
+  const fallbackTargets = modelPolicy.fallbackTargets ?? [];
+  return (
+    <div className="builder-detail-section">
+      <div className="builder-detail-section-title">workflow policy</div>
+      <div className="builder-kv-grid">
+        <div><span>mode</span><strong><ModeBadge mode={workflow.mode} /></strong></div>
+        <div><span>max passes</span><strong>{risk.maxPasses}</strong></div>
+        <div><span>pass timeout</span><strong>{risk.passTimeoutSeconds ?? "-"}s</strong></div>
+        <div><span>stall timeout</span><strong>{risk.stallTimeoutSeconds ?? "-"}s</strong></div>
+        <div><span>live deploys</span><strong><Pill color={risk.liveDeploys === "disabled" ? "gray" : "amber"}>{risk.liveDeploys}</Pill></strong></div>
+        <div><span>fallbacks</span><strong>{fallbackTargets.length}</strong></div>
+      </div>
+      {agentOrder.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div className="text-xs text-dim" style={{ marginBottom: 6 }}>effective agent/model order</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {agentOrder.map((entry, index) => (
+              <span className="pill gray mono" key={`${entry}-${index}`}>{entry}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {fallbackTargets.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div className="text-xs text-dim" style={{ marginBottom: 6 }}>effective fallback targets</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {fallbackTargets.map((target) => (
+              <span className="pill blue mono" key={target}>{target}</span>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -1655,6 +1696,7 @@ function RunDetailPanel({
             )}
 
             <SourceSessionDetail source={workflow?.config.sourceSession} />
+            <WorkflowPolicySummary workflow={workflow} />
             {workflow?.mode === "scheduled" && workflow.nextRunAt && (
               <div style={{ fontSize: 11, color: "var(--text-dim)", padding: "4px 0", marginBottom: 8 }}>
                 Next scheduled run: <strong><Countdown target={workflow.nextRunAt} /></strong>
@@ -2217,6 +2259,15 @@ function WorkflowPreviewModal({ workflow, onClose }: { workflow: BuilderWorkflow
             {preview?.status === "ready" && preview.apiStatus !== "error" && (
               <span className="mono" style={{ color: "var(--accent)" }}>● live</span>
             )}
+          </div>
+        )}
+        {tab === "app" && (
+          <div className="builder-preview-apidown" style={{
+            margin: "0 16px 8px", padding: "8px 12px", borderRadius: 8,
+            background: "var(--surface-muted, rgba(127,127,127,0.08))",
+            border: "1px solid var(--border-muted, rgba(127,127,127,0.24))", color: "var(--text-muted)", fontSize: 13,
+          }}>
+            Cloudflare Quick Tunnel URLs are preview-only and can be transient; use them for live review, not durable links.
           </div>
         )}
         {tab === "app" && preview?.status === "ready" && preview.apiStatus === "error" && (

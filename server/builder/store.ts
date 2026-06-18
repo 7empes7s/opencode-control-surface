@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, relative, resolve, sep } from "node:path";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { redactForDashboard } from "../db/writer.ts";
@@ -225,6 +225,11 @@ export type BuilderValidation = {
 
 const MODES: BuilderWorkflowMode[] = ["once", "auto-continue", "scheduled", "permanent", "doctor", "plan"];
 const DRAFT_STATUSES: BuilderWorkflowInput["status"][] = ["draft", "ready"];
+export const BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS = 1500;
+export const BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS = 2700;
+export const BUILDER_DEFAULT_MAX_PASSES = 120;
+const AGENTIC_MODELS_PATH = "/var/lib/control-surface/agentic-models.json";
+const LONG_RUNNING_WORKFLOW_MODES = new Set<BuilderWorkflowMode>(["auto-continue", "scheduled", "permanent", "doctor", "plan"]);
 
 export const DEFAULT_WORKFLOW_CONFIG: BuilderWorkflowConfig = {
   projectRoot: "",
@@ -233,9 +238,129 @@ export const DEFAULT_WORKFLOW_CONFIG: BuilderWorkflowConfig = {
   validationProfile: { commands: [], internal: [], runtime: [], public: [] },
   gitPolicy: { commit: "manual", push: "never" },
   backupPolicy: { enabled: false, beforeRun: false },
-  riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+  riskPolicy: {
+    liveDeploys: "disabled",
+    maxPasses: 1,
+    passTimeoutSeconds: BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS,
+    stallTimeoutSeconds: BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS,
+  },
   geminiApprovalMode: "auto_edit",
 };
+
+function agenticModelsPath(): string {
+  return process.env.BUILDER_AGENTIC_MODELS_PATH || AGENTIC_MODELS_PATH;
+}
+
+function readAgenticModelGroup(groupName: string): string[] {
+  try {
+    const raw = readFileSync(agenticModelsPath(), "utf8");
+    const parsed = JSON.parse(raw) as { groups?: Record<string, unknown> };
+    const group = parsed.groups?.[groupName];
+    if (!Array.isArray(group)) return [];
+    return uniqueStrings(group);
+  } catch {
+    return [];
+  }
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function groupNameFromModelRef(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("group:")) return trimmed.slice("group:".length);
+  if (trimmed.startsWith("opencode:group:")) {
+    const parsed = parseAgentEntry(trimmed);
+    return parsed.agent === "opencode" && parsed.model?.startsWith("group:")
+      ? parsed.model.slice("group:".length)
+      : null;
+  }
+  return null;
+}
+
+function expandAgentOrderGroups(entries: string[]): string[] {
+  const expanded: string[] = [];
+  for (const entry of entries) {
+    const parsed = parseAgentEntry(entry);
+    const groupName = parsed.agent === "opencode" && parsed.model?.startsWith("group:")
+      ? parsed.model.slice("group:".length)
+      : null;
+    const groupModels = groupName ? readAgenticModelGroup(groupName) : [];
+    if (!groupName || groupModels.length === 0) {
+      expanded.push(entry);
+      continue;
+    }
+    for (const model of groupModels) {
+      expanded.push(`opencode:${model}${parsed.effort ? `:${parsed.effort}` : ""}`);
+    }
+  }
+  return uniqueStrings(expanded);
+}
+
+function expandFallbackTargets(targets: string[], agentOrder: string[]): string[] {
+  const groupNames = new Set<string>();
+  for (const entry of agentOrder) {
+    const parsed = parseAgentEntry(entry);
+    if (parsed.agent === "opencode" && parsed.model?.startsWith("group:")) {
+      groupNames.add(parsed.model.slice("group:".length));
+    }
+  }
+
+  const expanded: string[] = [];
+  for (const target of targets) {
+    const groupName = groupNameFromModelRef(target);
+    if (groupName) {
+      groupNames.add(groupName);
+      expanded.push(...readAgenticModelGroup(groupName));
+    } else {
+      expanded.push(target);
+    }
+  }
+
+  if (targets.length === 0) {
+    for (const groupName of groupNames) expanded.push(...readAgenticModelGroup(groupName));
+  }
+
+  return uniqueStrings(expanded);
+}
+
+function normalizeWorkflowConfig(parsed: Partial<BuilderWorkflowConfig>, mode: BuilderWorkflowMode): BuilderWorkflowConfig {
+  const rawAgentOrder = Array.isArray(parsed.agentOrder) ? parsed.agentOrder : DEFAULT_WORKFLOW_CONFIG.agentOrder;
+  const rawFallbackTargets = Array.isArray(parsed.modelPolicy?.fallbackTargets)
+    ? parsed.modelPolicy.fallbackTargets
+    : DEFAULT_WORKFLOW_CONFIG.modelPolicy.fallbackTargets;
+  const riskPolicy = { ...DEFAULT_WORKFLOW_CONFIG.riskPolicy, ...(parsed.riskPolicy ?? {}) };
+  if (LONG_RUNNING_WORKFLOW_MODES.has(mode)) {
+    riskPolicy.maxPasses = Math.max(riskPolicy.maxPasses ?? 1, BUILDER_DEFAULT_MAX_PASSES);
+    riskPolicy.passTimeoutSeconds = Math.max(riskPolicy.passTimeoutSeconds ?? 0, BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS);
+    riskPolicy.stallTimeoutSeconds = Math.max(riskPolicy.stallTimeoutSeconds ?? 0, BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS);
+  }
+  return {
+    ...DEFAULT_WORKFLOW_CONFIG,
+    ...parsed,
+    agentOrder: expandAgentOrderGroups(rawAgentOrder),
+    modelPolicy: {
+      ...DEFAULT_WORKFLOW_CONFIG.modelPolicy,
+      ...(parsed.modelPolicy ?? {}),
+      fallbackTargets: expandFallbackTargets(rawFallbackTargets, rawAgentOrder),
+    },
+    validationProfile: { ...DEFAULT_WORKFLOW_CONFIG.validationProfile, ...(parsed.validationProfile ?? {}) },
+    gitPolicy: { ...DEFAULT_WORKFLOW_CONFIG.gitPolicy, ...(parsed.gitPolicy ?? {}) },
+    backupPolicy: { ...DEFAULT_WORKFLOW_CONFIG.backupPolicy, ...(parsed.backupPolicy ?? {}) },
+    riskPolicy,
+  };
+}
 
 function stringifyJson(value: unknown): string {
   return JSON.stringify(redactForDashboard(value)) ?? "null";
@@ -350,7 +475,9 @@ function upsertBuilderProject(project: BuilderProject): string {
     now,
     tenantId,
   );
-  return id;
+  const row = db.query(`SELECT id FROM builder_projects WHERE root = ? LIMIT 1`)
+    .get(project.root) as { id: string } | null;
+  return row?.id ?? id;
 }
 
 type DbWorkflowRow = {
@@ -390,15 +517,7 @@ function deriveLifecycle(row: DbWorkflowRow): BuilderLifecycle {
 
 function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
   const parsed = parseJson<Partial<BuilderWorkflowConfig>>(row.config_json, {});
-  const config: BuilderWorkflowConfig = {
-    ...DEFAULT_WORKFLOW_CONFIG,
-    ...parsed,
-    modelPolicy: { ...DEFAULT_WORKFLOW_CONFIG.modelPolicy, ...(parsed.modelPolicy ?? {}) },
-    validationProfile: { ...DEFAULT_WORKFLOW_CONFIG.validationProfile, ...(parsed.validationProfile ?? {}) },
-    gitPolicy: { ...DEFAULT_WORKFLOW_CONFIG.gitPolicy, ...(parsed.gitPolicy ?? {}) },
-    backupPolicy: { ...DEFAULT_WORKFLOW_CONFIG.backupPolicy, ...(parsed.backupPolicy ?? {}) },
-    riskPolicy: { ...DEFAULT_WORKFLOW_CONFIG.riskPolicy, ...(parsed.riskPolicy ?? {}) },
-  };
+  const config = normalizeWorkflowConfig(parsed, row.mode);
   return {
     id: row.id,
     projectId: row.project_id,
@@ -419,10 +538,44 @@ function mapWorkflow(row: DbWorkflowRow): BuilderWorkflow {
   };
 }
 
+export function reconcileBuilderWorkflowConfigs(id?: string): number {
+  if (!isDashboardDbEnabled() || !getDashboardDb()) return 0;
+  const db = getDashboardDb()!;
+  try {
+    const tenantWhere = whereTenant();
+    const rows = id
+      ? db.query(`
+          SELECT id, mode, config_json
+          FROM builder_workflows
+          WHERE id = ?${tenantWhere.clause}
+        `).all(id, ...tenantWhere.params)
+      : db.query(`
+          SELECT id, mode, config_json
+          FROM builder_workflows
+          WHERE tenant_id = ? OR tenant_id IS NULL
+        `).all(getCurrentTenantContext().tenantId);
+    let updated = 0;
+    for (const row of rows as Array<{ id: string; mode: BuilderWorkflowMode; config_json: string }>) {
+      const parsed = parseJson<Partial<BuilderWorkflowConfig>>(row.config_json, {});
+      const normalized = normalizeWorkflowConfig(parsed, row.mode);
+      const nextJson = stringifyJson(normalized);
+      if (nextJson === row.config_json) continue;
+      db.query(`UPDATE builder_workflows SET config_json = ?, updated_at = ? WHERE id = ?`)
+        .run(nextJson, Date.now(), row.id);
+      updated += 1;
+    }
+    return updated;
+  } catch (error) {
+    console.error("[control-surface] reconcileBuilderWorkflowConfigs failed", error);
+    return 0;
+  }
+}
+
 export function createBuilderWorkflow(input: BuilderWorkflowInput): BuilderWorkflow {
   validateWorkflowInput(input);
   const project = getAllowedProject(input.projectRoot);
   if (!project) throw new Error("project root is not allowlisted");
+  const config = normalizeWorkflowConfig({ ...input.config, projectRoot: input.projectRoot }, input.mode);
 
   const db = requireDb();
   const now = Date.now();
@@ -444,7 +597,7 @@ export function createBuilderWorkflow(input: BuilderWorkflowInput): BuilderWorkf
     input.status,
     null,
     input.planFile,
-    stringifyJson({ ...input.config, projectRoot: input.projectRoot }),
+    stringifyJson(config),
     now,
     now,
     input.nextRunAt ?? null,
@@ -470,6 +623,7 @@ export function updateBuilderWorkflow(id: string, input: BuilderWorkflowInput): 
   const db = requireDb();
   const projectId = upsertBuilderProject(project);
   const now = Date.now();
+  const config = normalizeWorkflowConfig({ ...input.config, projectRoot: input.projectRoot }, input.mode);
 
   db.query(`
     UPDATE builder_workflows
@@ -482,7 +636,7 @@ export function updateBuilderWorkflow(id: string, input: BuilderWorkflowInput): 
     input.mode,
     input.status,
     input.planFile,
-    stringifyJson({ ...input.config, projectRoot: input.projectRoot }),
+    stringifyJson(config),
     now,
     input.nextRunAt ?? null,
     input.pausedReason ?? null,
@@ -495,6 +649,7 @@ export function updateBuilderWorkflow(id: string, input: BuilderWorkflowInput): 
 export function readBuilderWorkflows(): BuilderWorkflow[] {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return [];
   try {
+    reconcileBuilderWorkflowConfigs();
     const ctx = getCurrentTenantContext();
     const { tenantId } = ctx;
     return (getDashboardDb()!.query(`
@@ -513,6 +668,7 @@ export function readBuilderWorkflows(): BuilderWorkflow[] {
 export function readBuilderWorkflow(id: string): BuilderWorkflow | null {
   if (!isDashboardDbEnabled() || !getDashboardDb()) return null;
   try {
+    reconcileBuilderWorkflowConfigs(id);
     const tenantWhere = whereTenant();
     const row = getDashboardDb()!.query(`
       SELECT id, project_id, tenant_id, name, mode, status, lifecycle_status, plan_file, config_json, created_at,

@@ -170,6 +170,11 @@ export function getAuthenticatedUser(req: Request): AuthenticatedUser | null {
     if (headerToken && constantEqual(headerToken, token)) {
       return { userId: "operator-bootstrap", tenantId: ctx.tenantId, source: "operator-bootstrap", bootstrapOwner: true };
     }
+    const authHeader = req.headers.get("authorization") ?? "";
+    const bearerMatch = authHeader.match(/^Bearer\s+(\S+)$/i);
+    if (bearerMatch?.[1] && constantEqual(bearerMatch[1], token)) {
+      return { userId: "operator-bootstrap", tenantId: ctx.tenantId, source: "operator-bootstrap", bootstrapOwner: true };
+    }
     if (sessionCookie && constantEqual(sessionCookie, expectedLegacySessionValue(token))) {
       return { userId: "operator-bootstrap", tenantId: ctx.tenantId, source: "operator-bootstrap", bootstrapOwner: true };
     }

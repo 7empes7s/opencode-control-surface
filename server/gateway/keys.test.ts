@@ -294,6 +294,16 @@ describe("v1ChatCompletionsHandler auth", () => {
     expect(ledgerRow.caller).toBe("operator");
   });
 
+  test("operator Bearer token stays invalid on /v1 gateway surface", async () => {
+    const res = await v1ChatCompletionsHandler(
+      v1Request({
+        auth: "Bearer test-token",
+        body: { model: "test-model", messages: [{ role: "user", content: "hi" }] },
+      })
+    );
+    expect(res.status).toBe(401);
+  });
+
   test("allowlist deny → 403 + audit row naming allowed models", async () => {
     const created = withTestTenantContext({ tenantId: "mimule" }, () => {
       return createGatewayKey("test-agent-a", "locked-down", {

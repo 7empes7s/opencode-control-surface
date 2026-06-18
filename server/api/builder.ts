@@ -11,6 +11,9 @@ import {
 } from "../builder/discovery.ts";
 import {
   createBuilderWorkflow,
+  BUILDER_DEFAULT_MAX_PASSES,
+  BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS,
+  BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS,
   deleteBuilderWorkflow,
   readBuilderArtifacts,
   readBuilderDoctorReports,
@@ -175,6 +178,8 @@ function errorMessage(error: unknown): string {
 
 async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
   const body = await req.json() as Partial<BuilderWorkflowInput>;
+  const mode = body.mode ?? "once";
+  const defaultMaxPasses = mode === "once" ? 1 : BUILDER_DEFAULT_MAX_PASSES;
   const validationProfile = (body.config?.validationProfile ?? { commands: [], internal: [], runtime: [], public: [] }) as {
     commands?: string[];
     internal?: string[];
@@ -188,7 +193,7 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
     name: String(body.name ?? ""),
     projectRoot: String(body.projectRoot ?? body.config?.projectRoot ?? ""),
     planFile: String(body.planFile ?? ""),
-    mode: body.mode ?? "once",
+    mode,
     status: body.status ?? "draft",
     nextRunAt: body.nextRunAt ?? null,
     pausedReason: body.pausedReason ?? null,
@@ -243,10 +248,13 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
         liveDeploys: body.config?.riskPolicy?.liveDeploys ?? "disabled",
         maxPasses: Number.isFinite(body.config?.riskPolicy?.maxPasses)
           ? Number(body.config?.riskPolicy?.maxPasses)
-          : 1,
+          : defaultMaxPasses,
         passTimeoutSeconds: Number.isFinite(body.config?.riskPolicy?.passTimeoutSeconds)
           ? Number(body.config?.riskPolicy?.passTimeoutSeconds)
-          : undefined,
+          : BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS,
+        stallTimeoutSeconds: Number.isFinite(body.config?.riskPolicy?.stallTimeoutSeconds)
+          ? Number(body.config?.riskPolicy?.stallTimeoutSeconds)
+          : BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS,
       },
       geminiApprovalMode: ["default", "auto_edit", "plan", "yolo"].includes(body.config?.geminiApprovalMode as string)
         ? (body.config?.geminiApprovalMode as "default" | "auto_edit" | "plan" | "yolo")

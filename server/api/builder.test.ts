@@ -34,6 +34,7 @@ let previousDashboardDb: string | undefined;
 let previousDashboardDbPath: string | undefined;
 let previousProvisionRootsAllow: string | undefined;
 let previousProvisionedRoots: string | undefined;
+let previousAgenticModelsPath: string | undefined;
 let previousPath: string | undefined;
 
 beforeEach(() => {
@@ -43,6 +44,7 @@ beforeEach(() => {
   previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
   previousProvisionRootsAllow = process.env.BUILDER_PROVISION_ROOTS_ALLOW;
   previousProvisionedRoots = process.env.BUILDER_PROVISIONED_ROOTS;
+  previousAgenticModelsPath = process.env.BUILDER_AGENTIC_MODELS_PATH;
   previousPath = process.env.PATH;
 });
 
@@ -56,6 +58,8 @@ afterEach(() => {
   else process.env.BUILDER_PROVISION_ROOTS_ALLOW = previousProvisionRootsAllow;
   if (previousProvisionedRoots === undefined) delete process.env.BUILDER_PROVISIONED_ROOTS;
   else process.env.BUILDER_PROVISIONED_ROOTS = previousProvisionedRoots;
+  if (previousAgenticModelsPath === undefined) delete process.env.BUILDER_AGENTIC_MODELS_PATH;
+  else process.env.BUILDER_AGENTIC_MODELS_PATH = previousAgenticModelsPath;
   if (previousPath === undefined) delete process.env.PATH;
   else process.env.PATH = previousPath;
   rmSync(tempDir, { recursive: true, force: true });
@@ -210,6 +214,78 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
 
   const audit = readActionAudit({ targetType: "builder-workflow" });
   expect(audit.some((row) => row.actionKind === "builder.workflow.create")).toBe(true);
+});
+
+test("builder workflow list reconciles stale timeout and agentic-heavy model policy", async () => {
+  enableDb();
+  const catalogPath = join(tempDir, "agentic-models.json");
+  process.env.BUILDER_AGENTIC_MODELS_PATH = catalogPath;
+  writeFileSync(catalogPath, JSON.stringify({
+    groups: {
+      "agentic-heavy": [
+        "openrouter/openai/gpt-oss-120b:free",
+        "opencode/deepseek-v4-flash-free",
+      ],
+    },
+  }));
+
+  const body = {
+    name: "Stale GaffrPro workflow",
+    projectRoot: "/opt/opencode-control-surface",
+    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    mode: "auto-continue",
+    status: "ready",
+    config: {
+      projectRoot: "/opt/opencode-control-surface",
+      agentOrder: ["opencode:group:agentic-heavy:high"],
+      modelPolicy: { fallbackTargets: [] },
+      validationProfile: {
+        commands: ["bun run typecheck"],
+        internalUrl: "http://127.0.0.1:3000",
+        publicUrl: "https://control.techinsiderbytes.com",
+      },
+      gitPolicy: { commit: "manual", push: "never" },
+      backupPolicy: { enabled: false, beforeRun: false },
+      riskPolicy: { liveDeploys: "disabled", maxPasses: 30, passTimeoutSeconds: 600, stallTimeoutSeconds: 900 },
+    },
+  };
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflowId = created.data.workflow!.id;
+
+  const db = getDashboardDb();
+  expect(db).not.toBeNull();
+  db!.query(`UPDATE builder_workflows SET config_json = ? WHERE id = ?`).run(
+    JSON.stringify(body.config),
+    workflowId,
+  );
+
+  const listResponse = builderWorkflowsHandler();
+  expect(listResponse.status).toBe(200);
+  const list = await listResponse.json() as ApiEnvelope<BuilderWorkflowsResponse>;
+  const workflow = list.data.workflows.find((item) => item.id === workflowId)!;
+  expect(workflow.config.riskPolicy.maxPasses).toBe(120);
+  expect(workflow.config.riskPolicy.passTimeoutSeconds).toBe(1500);
+  expect(workflow.config.riskPolicy.stallTimeoutSeconds).toBe(2700);
+  expect(workflow.config.agentOrder).toEqual([
+    "opencode:openrouter/openai/gpt-oss-120b:free:high",
+    "opencode:opencode/deepseek-v4-flash-free:high",
+  ]);
+  expect(workflow.config.modelPolicy.fallbackTargets).toEqual([
+    "openrouter/openai/gpt-oss-120b:free",
+    "opencode/deepseek-v4-flash-free",
+  ]);
+
+  const raw = db!.query(`SELECT config_json FROM builder_workflows WHERE id = ?`).get(workflowId) as { config_json: string };
+  const stored = JSON.parse(raw.config_json) as typeof workflow.config;
+  expect(stored.riskPolicy.maxPasses).toBe(120);
+  expect(stored.modelPolicy.fallbackTargets).toContain("opencode/deepseek-v4-flash-free");
 });
 
 test("builder runner mutations are explicitly disabled until phase three", async () => {

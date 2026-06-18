@@ -1,6 +1,7 @@
 import { getDashboardDb } from '../db/dashboard.ts';
 import { broadcastBrainstormEvent } from '../api/brainstorm-stream.ts';
 import { mkdirSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { DEFAULT_WORKFLOW_CONFIG } from './store.ts';
 import { complete as gatewayComplete } from '../gateway/client.ts';
 
@@ -467,6 +468,39 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
 
   const workflowId = crypto.randomUUID().replace(/-/g, '');
   const now = Date.now();
+  const tenantId = session.tenant_id || session.tenantId || 'mimule';
+  const projectRoot = session.codebase_path ? resolve(session.codebase_path) : DEFAULT_WORKFLOW_CONFIG.projectRoot;
+  let projectId = 'brainstorm-derived';
+  if (projectRoot) {
+    const projectConfig = {
+      root: projectRoot,
+      label: session.name || basename(projectRoot),
+      risk: 'medium',
+      writable: true,
+      note: 'Created from Brainstormer session',
+      defaultPlan: session.plan_v2_path || '',
+    };
+    const requestedProjectId = `project:${projectRoot}`;
+    db.prepare(`
+      INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(root) DO UPDATE SET
+        name = excluded.name,
+        config_json = excluded.config_json,
+        updated_at = excluded.updated_at,
+        tenant_id = excluded.tenant_id
+    `).run(
+      requestedProjectId,
+      projectConfig.label,
+      projectRoot,
+      JSON.stringify(projectConfig),
+      now,
+      now,
+      tenantId,
+    );
+    const projectRow = db.prepare('SELECT id FROM builder_projects WHERE root = ? LIMIT 1').get(projectRoot) as { id: string } | null;
+    projectId = projectRow?.id || requestedProjectId;
+  }
 
   // Build a config the runner can actually iterate on. 'brainstorm' was never a
   // valid BuilderWorkflowMode, so the runner treated it as single-pass; use
@@ -477,7 +511,7 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
     ...DEFAULT_WORKFLOW_CONFIG,
     // 'existing' sessions carry codebase_path; 'new' apps leave this for the
     // operator to set via the workflow form's project picker before launch.
-    projectRoot: session.codebase_path || DEFAULT_WORKFLOW_CONFIG.projectRoot,
+    projectRoot,
     // Pick a GROUP of models, not one hardcoded id. `group:agentic-heavy` is expanded at
     // run start (runner.ts expandModelGroupsInPlace) into the verified roster written by
     // scripts/probe-agentic-models.ts — models PROVEN to drive agentic tool-calling, not
@@ -514,7 +548,7 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     workflowId,
-    'brainstorm-derived',
+    projectId,
     session.name,
     'auto-continue',
     'paused',
@@ -522,7 +556,7 @@ export async function createWorkflowFromSession(sessionId: string): Promise<stri
     JSON.stringify(derivedConfig),
     now,
     now,
-    session.tenant_id || session.tenantId
+    tenantId
   );
 
   db.prepare('UPDATE brainstorm_sessions SET workflow_id = ? WHERE id = ?').run(workflowId, sessionId);

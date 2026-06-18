@@ -102,6 +102,14 @@ BUILDER_LICENSE_PATH=~/.builder/license.key  # optional
 
 `OPERATOR_TOKEN` is never sent to the browser. The server issues an HttpOnly same-site session cookie after the operator authenticates at `/api/auth/session`.
 
+Operator automation should send the token with `x-operator-token: $OPERATOR_TOKEN`:
+
+```bash
+curl -H "x-operator-token: $OPERATOR_TOKEN" http://127.0.0.1:3000/api/builder/workflows
+```
+
+`Authorization: Bearer $OPERATOR_TOKEN` is accepted only on Control Surface operator routes for local automation compatibility. Public gateway routes keep Bearer semantics reserved for gateway keys (`gwk_*`), so use `x-operator-token` for operator smoke scripts.
+
 ---
 
 ## API

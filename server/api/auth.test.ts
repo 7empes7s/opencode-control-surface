@@ -57,6 +57,19 @@ function loginReq(password: string): Request {
 }
 
 describe("local account login", () => {
+  test("operator Bearer token authenticates local operator automation", () => {
+    const req = new Request("http://localhost/api/builder/workflows", {
+      headers: { Authorization: "Bearer test-token" },
+    });
+    const user = tenantStore.run(testTenantContext({ tenantId: "mimule" }), () => getAuthenticatedUser(req));
+    expect(user).toMatchObject({
+      userId: "operator-bootstrap",
+      tenantId: "mimule",
+      source: "operator-bootstrap",
+      bootstrapOwner: true,
+    });
+  });
+
   test("sets operator_session with a real user id", async () => {
     await seedLocalUser();
     const res = await tenantStore.run(testTenantContext({ tenantId: "mimule" }), () => authLoginHandler(loginReq("correct-password")));

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -308,5 +308,50 @@ describe("provision writes tenant_id", () => {
 
     const workflowRow = db.query(`SELECT tenant_id FROM builder_workflows WHERE id = ?`).get(result.workflowId) as { tenant_id: string | null } | null;
     expect(workflowRow?.tenant_id).toBe("t-gamma");
+  });
+
+  test("workflow links to existing project id when root is already registered", async () => {
+    process.env.BUILDER_PROVISION_ROOTS_ALLOW = tempDir;
+    const projectRoot = join(tempDir, "existing-project");
+    const planPath = join(projectRoot, "PLAN.md");
+    mkdirSync(projectRoot, { recursive: true });
+    writePlanFile(planPath);
+
+    const db = getDashboardDb()!;
+    db.query(`
+      INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "legacy-project-id",
+      "Existing Project",
+      projectRoot,
+      JSON.stringify({ root: projectRoot, label: "Existing Project", writable: true, risk: "medium" }),
+      Date.now(),
+      Date.now(),
+      "mimule",
+    );
+
+    const workflow = await asTenant("mimule", () =>
+      createBuilderWorkflow({
+        name: "Existing root workflow",
+        projectRoot,
+        planFile: planPath,
+        mode: "once",
+        status: "draft",
+        config: {
+          projectRoot,
+          agentOrder: ["opencode"],
+          modelPolicy: { fallbackTargets: [] },
+          validationProfile: { commands: ["true"], internal: ["true"], runtime: [], public: [] },
+          gitPolicy: { commit: "manual", push: "never" },
+          backupPolicy: { enabled: false, beforeRun: false },
+          riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+        },
+      }),
+    );
+
+    const row = db.query(`SELECT project_id FROM builder_workflows WHERE id = ?`).get(workflow.id) as { project_id: string } | null;
+    expect(row?.project_id).toBe("legacy-project-id");
+    expect(workflow.projectId).toBe("legacy-project-id");
   });
 });

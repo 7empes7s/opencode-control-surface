@@ -65,6 +65,12 @@ function opReq(path: string): Request {
   });
 }
 
+function opBearerReq(path: string): Request {
+  return new Request(`http://localhost${path}`, {
+    headers: { Authorization: "Bearer public-api-test-token" },
+  });
+}
+
 function anonReq(path: string): Request {
   return new Request(`http://localhost${path}`);
 }
@@ -84,6 +90,11 @@ describe("public API — authentication", () => {
       headers: { Authorization: "Bearer not-a-key" },
     });
     const res = await publicApiInsightsHandler(req);
+    expect(res.status).toBe(401);
+  });
+
+  test("public /api/v1 rejects operator Bearer token to preserve gwk_* semantics", async () => {
+    const res = await publicApiInsightsHandler(opBearerReq("/api/v1/insights"));
     expect(res.status).toBe(401);
   });
 
