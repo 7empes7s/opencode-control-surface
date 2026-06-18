@@ -2699,8 +2699,14 @@ body {
 
 /* ── Builder live-review (preview) modal ─────────────────────────────────── */
 .builder-preview-modal {
-  width: min(1100px, 96vw);
-  height: min(860px, 92vh);
+  /* Override the base .modal-box max-width:480px / max-height:720px caps that
+     were squeezing the preview (iframe + 220px QR rail couldn't fit → QR cut off). */
+  width: min(1180px, 96vw);
+  max-width: min(1180px, 96vw);
+  height: min(880px, 92vh);
+  max-height: 92vh;
+  padding: 0; /* header/tabs/launchbar/body self-pad; body iframe goes full-bleed */
+  gap: 0;
   display: flex;
   flex-direction: column;
 }
