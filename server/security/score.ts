@@ -107,7 +107,7 @@ export function computeTrustScore(): TrustScore {
       earned: false,
       plainSummary: "",
       actionDescriptorId: null,
-      manualPageHref: "/",
+      manualPageHref: "/doctor",
     },
     {
       id: "agent-liveness",
@@ -115,8 +115,10 @@ export function computeTrustScore(): TrustScore {
       points: 5,
       earned: false,
       plainSummary: "",
-      actionDescriptorId: null,
-      manualPageHref: "/",
+      // Re-running the model-health probe is the safe, standard remediation when
+      // an agent is offline, so offer it as a one-click improvement.
+      actionDescriptorId: "start-job:model-health:all",
+      manualPageHref: "/agents",
     },
     {
       id: "insights-fresh",

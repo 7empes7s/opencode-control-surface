@@ -378,82 +378,97 @@ export function SecurityPage() {
         </section>
       )}
 
-      {findings.length === 0 ? (
-        <div className="dash-section">
-          <div className="empty-state">
-            <ShieldCheck size={24} />
-            <strong>All {checksRun} security checks passed. Nothing needs your attention.</strong>
-          </div>
-        </div>
-      ) : (
-        <section className="dash-section">
-          <div className="insight-card-list">
-            {findings.map((insight) => (
-              <article key={insight.id} className={`insight-card severity-${insight.severity}`}>
-                <div className="insight-card-head">
-                  <div>
-                    <div className="insight-title-row">
-                      <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
-                      {insight.status === "resolved" && (
-                        <span className="pill green">Resolved itself — verified by the scanner</span>
-                      )}
-                      {insight.status === "applied" && <span className="pill green">Applied</span>}
-                      {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
-                    </div>
-                    <h2>{insight.title}</h2>
-                  </div>
-                  {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
+      {(() => {
+        const openFindings = findings.filter((f) => f.status === "open");
+        const closedFindings = findings.filter((f) => f.status !== "open");
+        const renderFinding = (insight: (typeof findings)[number]) => (
+          <article key={insight.id} className={`insight-card severity-${insight.severity}`}>
+            <div className="insight-card-head">
+              <div>
+                <div className="insight-title-row">
+                  <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
+                  {insight.status === "resolved" && (
+                    <span className="pill green">Resolved itself — verified by the scanner</span>
+                  )}
+                  {insight.status === "applied" && <span className="pill green">Applied</span>}
+                  {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
                 </div>
-                <p>{insight.plainSummary}</p>
-                {insight.status === "resolved" && insight.resolution && (
-                   <div className="insight-resolution">
-                     <CheckCircle2 size={14} className="text-green-600" />
-                     <span>{insight.resolution}</span>
-                   </div>
-                )}
-                <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
-                
-                {insight.status === "open" && (
-                  <>
-                    <div className="insight-reason-row">
-                      <input
-                        value={reasons[insight.id] ?? ""}
-                        onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
-                        placeholder="Reason for applying or dismissing"
-                        aria-label={`Reason for ${insight.title}`}
-                      />
-                    </div>
-                    <div className="insight-actions">
-                      {insight.actionDescriptorId ? (
-                        <>
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={busyId === insight.id}
-                            onClick={() => applyInsight(insight)}
-                          >
-                            <CheckCircle2 size={14} />
-                            Apply
-                          </button>
-                          <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
-                            <XCircle size={14} />
-                            Dismiss
-                          </button>
-                        </>
-                      ) : (
-                        <Link href={insight.manualPageHref} className="btn btn-ghost">
-                          <ExternalLink size={14} />
-                          Open the manual page
-                        </Link>
-                      )}
-                    </div>
-                  </>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
+                <h2>{insight.title}</h2>
+              </div>
+              {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
+            </div>
+            <p>{insight.plainSummary}</p>
+            {insight.status === "resolved" && insight.resolution && (
+               <div className="insight-resolution">
+                 <CheckCircle2 size={14} className="text-green-600" />
+                 <span>{insight.resolution}</span>
+               </div>
+            )}
+            <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
+
+            {insight.status === "open" && (
+              <>
+                <div className="insight-reason-row">
+                  <input
+                    value={reasons[insight.id] ?? ""}
+                    onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
+                    placeholder="Reason for applying or dismissing"
+                    aria-label={`Reason for ${insight.title}`}
+                  />
+                </div>
+                <div className="insight-actions">
+                  {insight.actionDescriptorId ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={busyId === insight.id}
+                        onClick={() => applyInsight(insight)}
+                      >
+                        <CheckCircle2 size={14} />
+                        Apply
+                      </button>
+                      <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
+                        <XCircle size={14} />
+                        Dismiss
+                      </button>
+                    </>
+                  ) : (
+                    <Link href={insight.manualPageHref} className="btn btn-ghost">
+                      <ExternalLink size={14} />
+                      Open the manual page
+                    </Link>
+                  )}
+                </div>
+              </>
+            )}
+          </article>
+        );
+        return (
+          <>
+            {openFindings.length === 0 ? (
+              <div className="dash-section">
+                <div className="empty-state">
+                  <ShieldCheck size={24} />
+                  <strong>All {checksRun} security checks passed. Nothing needs your attention.</strong>
+                </div>
+              </div>
+            ) : (
+              <section className="dash-section">
+                <div className="insight-card-list">{openFindings.map(renderFinding)}</div>
+              </section>
+            )}
+            {closedFindings.length > 0 && (
+              <section className="dash-section">
+                <details className="earned-checks-details">
+                  <summary>Resolved findings ({closedFindings.length})</summary>
+                  <div className="insight-card-list">{closedFindings.map(renderFinding)}</div>
+                </details>
+              </section>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }
