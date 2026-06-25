@@ -31,6 +31,7 @@ import { createApprovalRequest, getApprovalRequest } from "../governance/approva
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import type { StepResult } from "../orchestrator/types.ts";
 import { isNonGatewayCliLane, recordRunnerUsage } from "./runnerAccounting.ts";
+import { getBuildValidationCommand, getValidationProfileStartBlockers } from "./validation-profile.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
@@ -1712,11 +1713,18 @@ export async function startWorkflowRun(
   if (!isBuilderProjectRootAllowlisted(workflow.projectRoot)) {
     throw new Error(`project root is not allowlisted: ${workflow.projectRoot}`);
   }
+  const validationProfileBlockers = getValidationProfileStartBlockers(workflow.projectRoot, {
+    mode: workflow.mode,
+    maxPasses: workflow.config.riskPolicy?.maxPasses,
+    agentCount: workflow.config.agentOrder.length,
+  });
+  if (validationProfileBlockers.length > 0) {
+    throw new Error(`project-local validation profile required: ${validationProfileBlockers.join("; ")}`);
+  }
   const STARTABLE_STATUSES = new Set(["ready", "draft", "paused", "done", "failed", "blocked"]);
   if (!STARTABLE_STATUSES.has(workflow.status)) {
     throw new Error(`workflow cannot be started from status ${workflow.status}`);
   }
-
   // Expand any "group:<name>" token into the verified agentic roster before model selection.
   expandModelGroupsInPlace(workflow.config);
   // Determine agent/model from first agent order entry
@@ -2769,6 +2777,8 @@ function findFrameworkAppDir(projectRoot: string, configNames: string[]): string
 
 export function detectBuildCommand(projectRoot: string): string | null {
   try {
+    const profileBuildCommand = getBuildValidationCommand(projectRoot);
+    if (profileBuildCommand) return `${profileBuildCommand} 2>&1`;
     // Prefer a direct production build of the web app — catches the same class of errors
     // (use-client, override modifiers, bundler/import resolution) without nx plugin fragility.
     const nextDir = findFrameworkAppDir(projectRoot, ["next.config.js", "next.config.mjs", "next.config.ts"]);

@@ -5,6 +5,7 @@ import { getModelsDetail } from "../adapters/models.ts";
 import { getCategorizedModels } from "./modelSelector.ts";
 import { WORKSPACE_ROOTS, getProvisionedWorkspaceRoots, normalizeWorkspace, type WorkspaceRisk } from "../api/workspaces.ts";
 import { isProjectRootAllowlisted } from "./provision.ts";
+import { getProjectValidationProfile } from "./validation-profile.ts";
 
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
 
@@ -60,7 +61,19 @@ export type BuilderValidationProfile = {
   name: string;
   packageManager: "bun" | "npm" | "unknown";
   commands: string[];
+  internal?: string[];
+  runtime?: string[];
+  public?: string[];
+  installCommand?: string | null;
+  apiBuildCommand?: string | null;
+  webBuildCommand?: string | null;
+  apiSmokeCommand?: string | null;
+  webSmokeCommand?: string | null;
+  localPath?: string;
+  localExists?: boolean;
   inferredFrom: string[];
+  warnings?: string[];
+  missingRequiredCommands?: string[];
   status: DiscoveryStatus;
 };
 
@@ -472,47 +485,7 @@ function summarizeGit(projectRoot: string): BuilderGitSummary {
 }
 
 function inferValidationProfile(projectRoot: string): BuilderValidationProfile {
-  const packageJsonPath = join(projectRoot, "package.json");
-  if (!existsSync(packageJsonPath)) {
-    return {
-      name: "manual",
-      packageManager: "unknown",
-      commands: [],
-      inferredFrom: [],
-      status: "missing",
-    };
-  }
-
-  try {
-    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
-    const scripts = pkg.scripts ?? {};
-    const commands: string[] = [];
-    const inferredFrom = [packageJsonPath];
-    if (scripts.typecheck) commands.push("bun run typecheck");
-    if (scripts.build) commands.push("bun run build");
-    if (existsSync(join(projectRoot, "server", "db")) || existsSync(join(projectRoot, "server", "api"))) {
-      commands.push("bun test server/db/ server/api/");
-    } else if (scripts.test) {
-      commands.push("bun test");
-    }
-    if (scripts.check && commands.length === 0) commands.push("bun run check");
-
-    return {
-      name: "project package validation",
-      packageManager: existsSync(join(projectRoot, "bun.lock")) ? "bun" : "npm",
-      commands,
-      inferredFrom,
-      status: commands.length > 0 ? "ok" : "degraded",
-    };
-  } catch (error) {
-    return {
-      name: "package parse failed",
-      packageManager: "unknown",
-      commands: [],
-      inferredFrom: [packageJsonPath],
-      status: "error",
-    };
-  }
+  return getProjectValidationProfile(projectRoot);
 }
 
 function discoverAgents(): BuilderDiscovery["agents"] {
@@ -696,6 +669,9 @@ export function discoverBuilderProject(rootInput: string): { ok: true; data: Bui
       ? "dashboard-orchestrator skill"
       : null,
     validation.commands.length === 0 ? "validation commands" : null,
+    validation.missingRequiredCommands?.length
+      ? `project-local validation profile: ${validation.missingRequiredCommands.join(", ")}`
+      : null,
     git.status !== "ok" ? "git repository" : null,
     !project.internalUrl ? "internal URL target" : null,
     agents.options.every((agent) => agent.status !== "ok") ? "agent CLI" : null,

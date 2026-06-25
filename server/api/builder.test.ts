@@ -28,6 +28,7 @@ import {
 import type { BuilderDiscovery, BuilderModelsInventory } from "../builder/discovery.ts";
 import { readBuilderRuns, readBuilderWorkflow } from "../builder/store.ts";
 import { selectModelForRole } from "../builder/modelSelector.ts";
+import { getValidationProfileStartBlockers } from "../builder/validation-profile.ts";
 
 let tempDir: string;
 let previousDashboardDb: string | undefined;
@@ -511,6 +512,64 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   const runs = readBuilderRuns(workflowId);
   expect(runs.length).toBeGreaterThan(0);
   expect(runs[0].status).toBe("canceled");
+});
+
+test("builder workflow start rejects major runs without a project-local validation profile", async () => {
+  enableDb();
+  const projectRoot = join(tempDir, "generated-app");
+  mkdirSync(projectRoot, { recursive: true });
+  const planFile = join(projectRoot, "PLAN.md");
+  writeFileSync(planFile, "# Generated App Plan\n", { encoding: "utf8" });
+  getDashboardDb()!.query(`
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `project:${projectRoot}`,
+    "Generated App",
+    projectRoot,
+    JSON.stringify({ label: "Generated App", risk: "medium", writable: true }),
+    Date.now(),
+    Date.now(),
+    "mimule",
+  );
+
+  expect(getValidationProfileStartBlockers(projectRoot, { mode: "once", maxPasses: 2 }))
+    .toContain(`project-local validation profile missing at ${join(projectRoot, ".opencode", "validation-profile.json")}`);
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Major generated app workflow",
+      projectRoot,
+      planFile,
+      mode: "once",
+      status: "draft",
+      config: {
+        projectRoot,
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: [] },
+        validationProfile: { commands: ["bun run check"] },
+        gitPolicy: { commit: "manual", push: "never" },
+        backupPolicy: { enabled: false, beforeRun: false },
+        riskPolicy: { liveDeploys: "disabled", maxPasses: 2 },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflowId = created.data.workflow!.id;
+
+  const startResponse = await builderStartWorkflowHandler(workflowId, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(startResponse.status).toBe(409);
+  const rejected = await startResponse.json() as { error?: string };
+  expect(rejected.error).toContain("project-local validation profile required");
+  expect(readBuilderRuns(workflowId)).toHaveLength(0);
 });
 
 test("builder child helpers execute disposable child and record lifecycle evidence", async () => {

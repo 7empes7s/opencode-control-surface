@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { deriveProjectValidationProfile, detectPackageManager } from "./validation-profile.ts";
 
 export type ProvisionInput = {
   repoUrl?: string;
@@ -80,17 +81,8 @@ function findPlanFiles(projectRoot: string): string[] {
 }
 
 function inferValidationCommands(projectRoot: string): string[] {
-  if (!existsSync(join(projectRoot, "package.json"))) return [];
-  try {
-    const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as { scripts?: Record<string, string> };
-    const cmds: string[] = [];
-    if (pkg.scripts?.typecheck) cmds.push("bun run typecheck");
-    if (pkg.scripts?.build) cmds.push("bun run build");
-    if (pkg.scripts?.check) cmds.push("bun run check");
-    const hasServerDir = existsSync(join(projectRoot, "server", "db")) || existsSync(join(projectRoot, "server", "api"));
-    if (hasServerDir && pkg.scripts?.test) cmds.push("bun test");
-    return cmds;
-  } catch { return []; }
+  const profile = deriveProjectValidationProfile(projectRoot);
+  return profile.commands.length > 0 ? profile.commands : profile.internal;
 }
 
 function createAgentsMd(projectRoot: string, name: string, description: string): { ok: boolean; path: string } {
@@ -168,10 +160,26 @@ function createValidationProfileFile(projectRoot: string, input: ProvisionInput,
   const profilePath = join(profileDir, "validation-profile.json");
   try {
     mkdirSync(profileDir, { recursive: true });
+    const packageManager = detectPackageManager(projectRoot);
+    const buildCommand = commands.find((command) => /\bbuild\b/.test(command)) ?? "echo 'build command not configured'";
+    const internalUrl = "http://127.0.0.1:3000";
     const profile = {
       version: 1,
+      name: `${input.name} validation profile`,
       projectRoot,
+      packageManager,
       generatedAt: new Date().toISOString(),
+      installCommand: packageManager === "bun"
+        ? "bun install --frozen-lockfile"
+        : packageManager === "pnpm"
+          ? "pnpm install --frozen-lockfile"
+          : packageManager === "yarn"
+            ? "yarn install --frozen-lockfile"
+            : "npm install",
+      apiBuildCommand: buildCommand,
+      webBuildCommand: buildCommand,
+      apiSmokeCommand: `curl -fsS ${internalUrl}/health`,
+      webSmokeCommand: `curl -fsS ${internalUrl}/`,
       commands,
       internal: commands,
       runtime: [],

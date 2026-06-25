@@ -640,15 +640,19 @@ export async function builderStartWorkflowHandler(workflowId: string, req: Reque
       degraded: false,
     }, { builder: "ok" }), 201);
   } catch (error) {
+    const message = errorMessage(error);
     writeActionAudit({
       actionKind: "builder.workflow.start",
       targetType: "builder-workflow",
       targetId: workflowId,
       risk: "high",
       resultStatus: "failed",
-      error: errorMessage(error),
+      error: message,
     });
-    return apiError(errorMessage(error), 400);
+    const status = message.includes("project-local validation profile") || message.includes("validation profile required")
+      ? 409
+      : 400;
+    return apiError(message, status);
   }
 }
 
