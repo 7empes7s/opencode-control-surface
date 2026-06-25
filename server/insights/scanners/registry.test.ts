@@ -6,7 +6,7 @@ import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../../db/dash
 import { readActionAudit } from "../../db/writer.ts";
 import { seedDefaultAgents } from "../../agents/registry.ts";
 import { getInsight, listInsights } from "../store.ts";
-import { runRegistryScan } from "./registry.ts";
+import { runRegistryScan, INTERNAL_SYSTEM_ACTORS } from "./registry.ts";
 
 let tempDir: string;
 let prevDb: string | undefined;
@@ -77,6 +77,55 @@ describe("registry scanner: unregistered actors", () => {
     const result = runRegistryScan();
     const reasonerUnregistered = result.findings.find((f) => f.sourceKey === "registry:unregistered:reasoner");
     expect(reasonerUnregistered).toBeUndefined();
+  });
+
+  test("does NOT emit an unregistered finding for internal system actors (system, operator, etc.)", () => {
+    seedDefaultAgents();
+    const now = Date.now();
+
+    for (const actor of ["system", "operator"]) {
+      db().query(`
+        INSERT INTO action_audit (ts, actor, actor_source, action_kind, action, target_type, target_id, result_status, tenant_id)
+        VALUES (?, ?, 'system', 'tool.run', 'tool.run', 'thing', 'thing-1', 'success', 'mimule')
+      `).run(now - 1000, actor);
+    }
+
+    const result = runRegistryScan();
+    const systemUnregistered = result.findings.find((f) => f.sourceKey === "registry:unregistered:system");
+    const operatorUnregistered = result.findings.find((f) => f.sourceKey === "registry:unregistered:operator");
+
+    expect(systemUnregistered).toBeUndefined();
+    expect(operatorUnregistered).toBeUndefined();
+  });
+
+  test("STILL emits an unregistered finding for a genuinely unknown actor not in agents or internal set", () => {
+    seedDefaultAgents();
+    const now = Date.now();
+    db().query(`
+      INSERT INTO action_audit (ts, actor, actor_source, action_kind, action, target_type, target_id, result_status, tenant_id)
+      VALUES (?, 'rogue-bot', 'system', 'tool.run', 'tool.run', 'thing', 'thing-1', 'success', 'mimule')
+    `).run(now - 1000);
+
+    const result = runRegistryScan();
+    const rogueUnregistered = result.findings.find((f) => f.sourceKey === "registry:unregistered:rogue-bot");
+
+    expect(rogueUnregistered).toBeDefined();
+    expect(rogueUnregistered!.status).toBe("open");
+    expect(rogueUnregistered!.domain).toBe("security");
+    expect(rogueUnregistered!.severity).toBe("medium");
+    expect(rogueUnregistered!.title).toBe("An unregistered actor is taking actions");
+    expect(rogueUnregistered!.plainSummary).toContain("rogue-bot");
+  });
+
+  test("INTERNAL_SYSTEM_ACTORS export contains expected internal actors", () => {
+    expect(INTERNAL_SYSTEM_ACTORS.has("system")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("operator")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("anonymous")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("operator-bootstrap")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("dev-bootstrap")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("brainstorm-planner")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("insights-notifier")).toBe(true);
+    expect(INTERNAL_SYSTEM_ACTORS.has("reasoner")).toBe(true);
   });
 
   test("auto-resolves a previously emitted unregistered insight once the actor is added to an agent's aliases_json", () => {

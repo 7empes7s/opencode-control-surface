@@ -5,6 +5,7 @@ import type { Insight, InsightInput, InsightSeverity } from "./types.ts";
 import { upsertInsight, resolveStaleInsights } from "./store.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { readFileSync } from "node:fs";
+import { matchPlaybook } from "../reasoner/playbooks.ts";
 
 type AggregateResult = {
   createdOrUpdated: number;
@@ -44,6 +45,12 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+// reasoner-remediate:<playbookId>:<workflowId>:<passId>[:<incidentId>]
+function remediateDescriptor(playbookId: string, workflowId: string, passId: string | null, incidentId?: string): string {
+  const base = `reasoner-remediate:${playbookId}:${workflowId}:${passId ?? ""}`;
+  return incidentId ? `${base}:${incidentId}` : base;
 }
 
 function cents(value: number): string {
@@ -181,6 +188,10 @@ function aggregateReasoner(results: Insight[]): void {
   for (const row of diagnoses) {
     const suggested = parseJson<Array<{ title?: string; description?: string }>>(row.suggested_actions_json, []);
     const firstAction = suggested[0]?.title || suggested[0]?.description;
+    const playbook = row.workflow_id ? matchPlaybook(db, row.failure_class) : null;
+    const actionDescriptorId = playbook && row.workflow_id
+      ? remediateDescriptor(playbook.id, row.workflow_id, row.pass_id ?? null)
+      : null;
     addInsight(results, {
       id: `insight_build_diagnosis_${safeId(row.id)}`,
       sourceKey: `build:diagnosis:${row.id}`,
@@ -195,19 +206,23 @@ function aggregateReasoner(results: Insight[]): void {
         evidence("Reasoner diagnosis", "db", `reasoner_diagnoses:${row.id}`),
         evidence("Builder run", "api", `/api/builder/runs/${row.run_id}`),
       ],
-      actionDescriptorId: "start-job:doctor:scan",
+      actionDescriptorId,
       manualPageHref: `/builder?run=${encodeURIComponent(row.run_id)}`,
       createdAt: row.diagnosed_at,
     });
   }
 
+  const incidentTenant = whereTenant(undefined, "i");
   const incidents = db.query(`
-    SELECT id, failure_class, title, last_seen, occurrence_count, status, representative_diagnosis_id
-    FROM reasoner_incidents
-    WHERE status = 'open' ${tenant.clause}
-    ORDER BY occurrence_count DESC, last_seen DESC
+    SELECT i.id, i.failure_class, i.title, i.last_seen, i.occurrence_count, i.status,
+           i.representative_diagnosis_id,
+           d.workflow_id AS rep_workflow_id, d.pass_id AS rep_pass_id
+    FROM reasoner_incidents i
+    LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
+    WHERE i.status = 'open' ${incidentTenant.clause}
+    ORDER BY i.occurrence_count DESC, i.last_seen DESC
     LIMIT 50
-  `).all(...tenant.params) as Array<{
+  `).all(...incidentTenant.params) as Array<{
     id: string;
     failure_class: string;
     title: string;
@@ -215,9 +230,16 @@ function aggregateReasoner(results: Insight[]): void {
     occurrence_count: number;
     status: string;
     representative_diagnosis_id: string;
+    rep_workflow_id: string | null;
+    rep_pass_id: string | null;
   }>;
 
   for (const row of incidents) {
+    const wfId = row.rep_workflow_id && row.rep_workflow_id !== "unknown" ? row.rep_workflow_id : null;
+    const playbook = wfId ? matchPlaybook(db, row.failure_class) : null;
+    const actionDescriptorId = playbook && wfId
+      ? remediateDescriptor(playbook.id, wfId, row.rep_pass_id ?? null, row.id)
+      : null;
     addInsight(results, {
       id: `insight_build_incident_${safeId(row.id)}`,
       sourceKey: `build:incident:${row.id}`,
@@ -230,7 +252,7 @@ function aggregateReasoner(results: Insight[]): void {
         evidence("Reasoner incident", "db", `reasoner_incidents:${row.id}`),
         evidence("Incident details", "api", `/api/reasoner/incidents/${row.id}`),
       ],
-      actionDescriptorId: "start-job:doctor:scan",
+      actionDescriptorId,
       manualPageHref: `/incidents`,
       createdAt: row.last_seen,
     });

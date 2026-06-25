@@ -190,6 +190,7 @@ import {
   insightDismissHandler,
   insightsListHandler,
   insightsScanHandler,
+  insightsBulkApplyHandler,
   requireInsightPermission,
 } from "./insights.ts";
 import { securityPostureHandler, trustScoreHandler } from "./security.ts";
@@ -512,6 +513,11 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return insightsScanHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/insights/bulk-apply") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return insightsBulkApplyHandler(req);
   }
   const insightActionMatch = pathname.match(/^\/api\/insights\/([^/]+)\/(apply|dismiss)$/);
   if (method === "POST" && insightActionMatch) {

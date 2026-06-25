@@ -13,6 +13,20 @@ type ScanResult = {
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
+// Internal control-surface service accounts. These act on the system by
+// design and must never be flagged as "unregistered actors". 'anonymous' is
+// also treated as internal. Real registered agents come from the agents table.
+export const INTERNAL_SYSTEM_ACTORS: ReadonlySet<string> = new Set([
+  "anonymous",
+  "system",
+  "operator",
+  "operator-bootstrap",
+  "dev-bootstrap",
+  "brainstorm-planner",
+  "insights-notifier",
+  "reasoner",
+]);
+
 function evidence(label: string, kind: EvidenceRef["kind"], ref: string): EvidenceRef {
   return { label, kind, ref, redacted: true };
 }
@@ -119,12 +133,14 @@ export function runRegistryScan(): ScanResult {
       AND ts >= ? ${tenant.clause}
   `).all(thirtyDaysAgo, ...tenant.params) as Array<{ caller: string }>;
 
+  const isInternal = (a: string) => INTERNAL_SYSTEM_ACTORS.has(a);
+
   const unregistered = new Set<string>();
   for (const { actor } of auditActors) {
-    if (!aliasSet.has(actor)) unregistered.add(actor);
+    if (!aliasSet.has(actor) && !isInternal(actor)) unregistered.add(actor);
   }
   for (const { caller } of gatewayCallers) {
-    if (!aliasSet.has(caller)) unregistered.add(caller);
+    if (!aliasSet.has(caller) && !isInternal(caller)) unregistered.add(caller);
   }
 
   for (const actor of unregistered) {

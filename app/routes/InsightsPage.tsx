@@ -79,6 +79,7 @@ export function InsightsPage() {
   const { data, loading, error, refresh } = useApi<InsightsPayload>(`/api/insights?status=${statusFilter}`, 30_000);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [bulkReasons, setBulkReasons] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
@@ -150,6 +151,24 @@ export function InsightsPage() {
     }
   }
 
+  async function applyGroup(domain: Insight["domain"]) {
+    setBusyId(`bulk:${domain}`);
+    setMessage(null);
+    try {
+      const result = await post("/api/insights/bulk-apply", {
+        domain,
+        reason: (bulkReasons[domain] ?? "").trim(),
+        confirmed: true,
+      });
+      setMessage(result.data?.message ?? "Bulk apply finished.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Bulk apply could not be completed.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const openCount = data?.openCount ?? data?.insights.length ?? 0;
 
   return (
@@ -204,11 +223,30 @@ export function InsightsPage() {
       {(Object.keys(grouped) as Insight["domain"][]).map((domain) => {
         const insights = grouped[domain];
         if (insights.length === 0) return null;
+        const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open").length;
         return (
           <section className="dash-section" key={domain}>
             <div className="insight-group-title">
               <span>{DOMAIN_LABEL[domain]}</span>
               <span className="pill gray">{insights.length}</span>
+              <div className="insight-group-bulk">
+                <input
+                  value={bulkReasons[domain] ?? ""}
+                  onChange={(e) => setBulkReasons((c) => ({ ...c, [domain]: e.target.value }))}
+                  placeholder="Reason for applying all"
+                  aria-label={`Reason for applying all ${DOMAIN_LABEL[domain]} insights`}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={actionableCount === 0 || busyId === `bulk:${domain}`}
+                  onClick={() => applyGroup(domain)}
+                  title={actionableCount === 0 ? "No one-click actions in this group" : "Apply every actionable insight in this group"}
+                >
+                  <CheckCircle2 size={14} />
+                  Apply all safe ({actionableCount})
+                </button>
+              </div>
             </div>
             <div className="insight-card-list">
               {insights.map((insight) => (

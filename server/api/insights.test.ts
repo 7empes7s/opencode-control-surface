@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { closeDashboardDb, initDashboardDb, getDashboardDb } from "../db/dashboard.ts";
 import {
   _getLastAggregatedAt,
   _resetAggregationThrottleForTests,
   insightsListHandler,
+  insightsBulkApplyHandler,
 } from "./insights.ts";
+import { aggregateInsights } from "../insights/aggregate.ts";
+import { seedPlaybooks } from "../reasoner/playbooks.ts";
+import { listInsights } from "../insights/store.ts";
 
 let tempDir: string;
 let prevDb: string | undefined;
@@ -96,5 +100,82 @@ describe("insightsListHandler aggregation throttle", () => {
     const secondStamp = _getLastAggregatedAt();
     expect(secondStamp).toBeGreaterThan(0);
     expect(secondStamp).toBeGreaterThanOrEqual(firstStamp);
+  });
+});
+
+describe("build-insight playbook routing + bulk apply", () => {
+  function seedDiagnosis(id: string, failureClass: string, workflowId: string): void {
+    const db = getDashboardDb()!;
+    db.query(
+      `INSERT INTO reasoner_diagnoses
+        (id, pass_id, run_id, workflow_id, failure_class, root_cause,
+         evidence_json, suggested_actions_json, confidence, diagnosed_at, tenant_id)
+       VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', 'high', ?, NULL)`,
+    ).run(id, `${id}-pass`, `${id}-run`, workflowId, failureClass, "root cause", Date.now());
+  }
+
+  it("routes a build diagnosis with a matching playbook to a reasoner-remediate action", () => {
+    seedPlaybooks(getDashboardDb()!);
+    // 'pass-timeout' matches the built-in safe playbook and has a workflow id.
+    seedDiagnosis("d-match", "pass-timeout", "wf-match");
+    aggregateInsights();
+
+    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-match");
+    expect(insight).toBeTruthy();
+    expect(insight?.actionDescriptorId ?? "").toMatch(/^reasoner-remediate:pass-timeout:/);
+  });
+
+  it("leaves a build diagnosis with no matching playbook as manual-only (null action)", () => {
+    seedPlaybooks(getDashboardDb()!);
+    // 'unknown' matches no playbook -> no one-click action.
+    seedDiagnosis("d-nomatch", "unknown", "wf-nomatch");
+    aggregateInsights();
+
+    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-nomatch");
+    expect(insight).toBeTruthy();
+    expect(insight?.actionDescriptorId).toBeNull();
+  });
+
+  it("bulk-apply targets only actionable insights and never reports a manual-only insight", async () => {
+    seedPlaybooks(getDashboardDb()!);
+    seedDiagnosis("d-actionable", "pass-timeout", "wf-x"); // actionable (reasoner-remediate)
+    seedDiagnosis("d-manual", "unknown", "wf-y");          // manual-only (null action)
+    aggregateInsights();
+
+    const req = new Request("http://localhost/api/insights/bulk-apply", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-operator-token": "test-token",
+        "x-user-id": "owner-user",
+      },
+      body: JSON.stringify({ domain: "build", reason: "bulk test", confirmed: true }),
+    });
+    const res = await insightsBulkApplyHandler(req);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()).data as {
+      applied: number;
+      appliedIds: string[];
+      skipped: Array<{ id: string; title: string; reason: string }>;
+      failed: Array<{ id: string; title: string; reason: string }>;
+      message: string;
+    };
+
+    // Response shape: applied count + detail arrays + plain-English message.
+    expect(typeof data.applied).toBe("number");
+    expect(Array.isArray(data.appliedIds)).toBe(true);
+    expect(Array.isArray(data.skipped)).toBe(true);
+    expect(Array.isArray(data.failed)).toBe(true);
+    expect(typeof data.message).toBe("string");
+
+    const reported = [...data.appliedIds, ...data.skipped.map((s) => s.id), ...data.failed.map((f) => f.id)];
+    // The manual-only insight is filtered out as a non-candidate and must never
+    // appear in any bucket.
+    expect(reported).not.toContain("insight_build_diagnosis_d-manual");
+    // The actionable insight is a candidate and must be accounted for. In this
+    // temp DB its remediation fails because the referenced workflow does not
+    // exist, which proves the per-item error path is graceful (no throw).
+    expect(reported).toContain("insight_build_diagnosis_d-actionable");
   });
 });
