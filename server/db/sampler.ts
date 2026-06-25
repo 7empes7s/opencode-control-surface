@@ -1890,3 +1890,31 @@ export function runHomeSampler(home: HomeData): void {
 export function __resetSamplerStateForTests(): void {
   prevSnapshot = null;
 }
+
+// The ingestor samples high-volume operational metrics every ~30s with no
+// upper bound, which grew metric_samples to millions of rows / >1GB. Charts
+// default to a 24h window, so keep a generous 14-day window of raw samples and
+// prune older rows. Low-volume long-range series (trust-score history,
+// model-eval digest) are exempt.
+const METRIC_RETENTION_EXEMPT_SOURCES = ["trust-score", "model-eval"] as const;
+
+export function metricRetentionDays(): number {
+  const v = Number(process.env.DASHBOARD_METRIC_RETENTION_DAYS);
+  return Number.isFinite(v) && v > 0 ? v : 14;
+}
+
+export function pruneOldMetricSamples(retentionDays = metricRetentionDays()): number {
+  const db = getDashboardDb();
+  if (!db) return 0;
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const placeholders = METRIC_RETENTION_EXEMPT_SOURCES.map(() => "?").join(",");
+  try {
+    const res = db
+      .query(`DELETE FROM metric_samples WHERE ts < ? AND source NOT IN (${placeholders})`)
+      .run(cutoff, ...METRIC_RETENTION_EXEMPT_SOURCES);
+    return res.changes ?? 0;
+  } catch (err) {
+    console.error("[sampler] metric_samples prune failed", err);
+    return 0;
+  }
+}

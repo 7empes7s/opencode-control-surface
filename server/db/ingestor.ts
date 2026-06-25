@@ -3,7 +3,7 @@ import { getLiteLLMHealthProbe } from "../api/litellm.ts";
 import { createReportRun } from "../api/reports.ts";
 import type { HomeData, SourceStatus } from "../api/types.ts";
 import { getDashboardDb, isDashboardDbEnabled } from "./dashboard.ts";
-import { runHomeSampler } from "./sampler.ts";
+import { runHomeSampler, pruneOldMetricSamples } from "./sampler.ts";
 import { redactForDashboard, writeChannelLog, writeMetricSample } from "./writer.ts";
 
 export type IngestorController = { stop(): void; tick(): Promise<void> };
@@ -210,8 +210,10 @@ export function startIngestor(
   const channelsInitialLookbackMs = Number(process.env.DASHBOARD_CHANNELS_INITIAL_LOOKBACK_MS) || 600_000;
   let lastLiteLLMProbeAt = 0;
   let lastChannelsProbeAt = Date.now() - channelsInitialLookbackMs;
+  let lastPruneAt = 0;
   let stopped = false;
   let inFlight = false;
+  const pruneIntervalMs = Number(process.env.DASHBOARD_METRIC_PRUNE_INTERVAL_MS) || 60 * 60_000;
 
   async function sampleLiteLLMHealth(): Promise<void> {
     try {
@@ -248,6 +250,11 @@ export function startIngestor(
         await sampleChannelLogs(sinceMs);
       }
       await runScheduledReports(now);
+      if (now - lastPruneAt >= pruneIntervalMs) {
+        lastPruneAt = now;
+        const pruned = pruneOldMetricSamples();
+        if (pruned > 0) console.log(`[ingestor] pruned ${pruned} old metric_samples rows`);
+      }
     } catch (err) {
       console.error("[ingestor] tick failed", err);
     } finally {
