@@ -17,6 +17,7 @@ let tempDir: string;
 let prevDb: string | undefined;
 let prevDbPath: string | undefined;
 let prevToken: string | undefined;
+let prevSentinel: string | undefined;
 
 function apiReq(path: string): Request {
   return new Request(`http://localhost${path}`, {
@@ -30,9 +31,13 @@ beforeEach(() => {
   prevDb = process.env.DASHBOARD_DB;
   prevDbPath = process.env.DASHBOARD_DB_PATH;
   prevToken = process.env.OPERATOR_TOKEN;
+  prevSentinel = process.env.SENTINEL_HEALTH_PATH;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
+  // Isolate from the real Product Health Sentinel scorecard so aggregation is
+  // deterministic and bulk-apply never executes live sentinel actions in tests.
+  process.env.SENTINEL_HEALTH_PATH = join(tempDir, "no-sentinel.json");
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   _resetAggregationThrottleForTests();
 });
@@ -45,6 +50,8 @@ afterEach(() => {
   else process.env.DASHBOARD_DB_PATH = prevDbPath;
   if (prevToken === undefined) delete process.env.OPERATOR_TOKEN;
   else process.env.OPERATOR_TOKEN = prevToken;
+  if (prevSentinel === undefined) delete process.env.SENTINEL_HEALTH_PATH;
+  else process.env.SENTINEL_HEALTH_PATH = prevSentinel;
   rmSync(tempDir, { recursive: true, force: true });
   _resetAggregationThrottleForTests();
 });
@@ -106,12 +113,20 @@ describe("insightsListHandler aggregation throttle", () => {
 describe("build-insight playbook routing + bulk apply", () => {
   function seedDiagnosis(id: string, failureClass: string, workflowId: string): void {
     const db = getDashboardDb()!;
+    // Build insights are only surfaced when their workflow still exists, so seed
+    // a live builder_workflows row for the referenced workflow id.
+    const now = Date.now();
+    db.query(
+      `INSERT OR IGNORE INTO builder_workflows
+        (id, project_id, name, mode, status, plan_file, config_json, created_at, updated_at, tenant_id)
+       VALUES (?, 'proj-test', ?, 'plan', 'active', 'plan.md', '{}', ?, ?, NULL)`,
+    ).run(workflowId, `wf ${workflowId}`, now, now);
     db.query(
       `INSERT INTO reasoner_diagnoses
         (id, pass_id, run_id, workflow_id, failure_class, root_cause,
          evidence_json, suggested_actions_json, confidence, diagnosed_at, tenant_id)
        VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', 'high', ?, NULL)`,
-    ).run(id, `${id}-pass`, `${id}-run`, workflowId, failureClass, "root cause", Date.now());
+    ).run(id, `${id}-pass`, `${id}-run`, workflowId, failureClass, "root cause", now);
   }
 
   it("routes a build diagnosis with a matching playbook to a reasoner-remediate action", () => {
@@ -123,6 +138,20 @@ describe("build-insight playbook routing + bulk apply", () => {
     const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-match");
     expect(insight).toBeTruthy();
     expect(insight?.actionDescriptorId ?? "").toMatch(/^reasoner-remediate:pass-timeout:/);
+  });
+
+  it("does not surface a build diagnosis whose builder run/workflow no longer exists", () => {
+    seedPlaybooks(getDashboardDb()!);
+    // Insert a diagnosis directly with NO matching builder_workflows / builder_runs row.
+    getDashboardDb()!.query(
+      `INSERT INTO reasoner_diagnoses
+        (id, pass_id, run_id, workflow_id, failure_class, root_cause,
+         evidence_json, suggested_actions_json, confidence, diagnosed_at, tenant_id)
+       VALUES ('d-orphan', 'p', 'dead-run', 'dead-wf', 'pass-timeout', 'rc', '[]', '[]', 'high', ?, NULL)`,
+    ).run(Date.now());
+    aggregateInsights();
+    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-orphan");
+    expect(insight).toBeUndefined();
   });
 
   it("leaves a build diagnosis with no matching playbook as manual-only (null action)", () => {
@@ -138,8 +167,10 @@ describe("build-insight playbook routing + bulk apply", () => {
 
   it("bulk-apply targets only actionable insights and never reports a manual-only insight", async () => {
     seedPlaybooks(getDashboardDb()!);
-    seedDiagnosis("d-actionable", "pass-timeout", "wf-x"); // actionable (reasoner-remediate)
-    seedDiagnosis("d-manual", "unknown", "wf-y");          // manual-only (null action)
+    // 'validation-failed' maps to the notify-operator playbook (no workflow run
+    // is spawned), so the apply path completes quickly in a unit test.
+    seedDiagnosis("d-actionable", "validation-failed", "wf-x"); // actionable (reasoner-remediate)
+    seedDiagnosis("d-manual", "unknown", "wf-y");               // manual-only (null action)
     aggregateInsights();
 
     const req = new Request("http://localhost/api/insights/bulk-apply", {
@@ -173,9 +204,8 @@ describe("build-insight playbook routing + bulk apply", () => {
     // The manual-only insight is filtered out as a non-candidate and must never
     // appear in any bucket.
     expect(reported).not.toContain("insight_build_diagnosis_d-manual");
-    // The actionable insight is a candidate and must be accounted for. In this
-    // temp DB its remediation fails because the referenced workflow does not
-    // exist, which proves the per-item error path is graceful (no throw).
+    // The actionable insight is a candidate and must be accounted for (it
+    // applies successfully via the notify-operator playbook).
     expect(reported).toContain("insight_build_diagnosis_d-actionable");
   });
 });

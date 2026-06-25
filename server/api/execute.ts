@@ -132,7 +132,10 @@ async function routeAndExecute(
       return { ok: false, error: "not in allowlist", code: "ALLOWLIST" };
     }
     try {
-      execSync("systemctl start " + targetId + ".service", { timeout: 5_000 });
+      // --no-block: these are oneshot jobs that can run for minutes; we only
+      // need to enqueue them, not wait for completion (which would always
+      // exceed the timeout and report a false failure).
+      execSync("systemctl start --no-block " + targetId + ".service", { timeout: 5_000 });
       return { ok: true, action: "start-job", message: targetId + " started" };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
@@ -153,7 +156,9 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
 
   if (kind === "start-job" && targetType === "model-health" && targetId === "all") {
     try {
-      execSync("systemctl start model-health-check.service", { timeout: 5_000 });
+      // --no-block: model-health-check is a oneshot that probes every model and
+      // runs for minutes; enqueue it rather than waiting for it to finish.
+      execSync("systemctl start --no-block model-health-check.service", { timeout: 5_000 });
       return { ok: true, action: "start-job", message: "model health check started" };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };

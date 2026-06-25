@@ -165,6 +165,20 @@ function aggregateReasoner(results: Insight[]): void {
   const db = getDashboardDb();
   if (!db) return;
   const tenant = whereTenant();
+
+  // Build insights are only actionable while the builder run/workflow they
+  // describe still exists. Orphaned diagnoses/incidents (run deleted) and
+  // sentinel_health rows (owned by the Product Sentinel path, not the builder)
+  // are skipped here and resolved at the end, so the inbox never fills up with
+  // dead, un-actionable build noise.
+  const liveWorkflows = new Set<string>(
+    (db.query(`SELECT id FROM builder_workflows`).all() as Array<{ id: string }>).map((r) => r.id),
+  );
+  const liveRuns = new Set<string>(
+    (db.query(`SELECT id FROM builder_runs`).all() as Array<{ id: string }>).map((r) => r.id),
+  );
+  const emittedBuildKeys: string[] = [];
+
   const diagnoses = db.query(`
     SELECT id, pass_id, run_id, workflow_id, failure_class, root_cause,
            evidence_json, suggested_actions_json, confidence, diagnosed_at
@@ -186,6 +200,8 @@ function aggregateReasoner(results: Insight[]): void {
   }>;
 
   for (const row of diagnoses) {
+    if (row.failure_class === "sentinel_health") continue;
+    if (!liveWorkflows.has(row.workflow_id) && !liveRuns.has(row.run_id)) continue;
     const suggested = parseJson<Array<{ title?: string; description?: string }>>(row.suggested_actions_json, []);
     const firstAction = suggested[0]?.title || suggested[0]?.description;
     const playbook = row.workflow_id ? matchPlaybook(db, row.failure_class) : null;
@@ -210,6 +226,7 @@ function aggregateReasoner(results: Insight[]): void {
       manualPageHref: `/builder?run=${encodeURIComponent(row.run_id)}`,
       createdAt: row.diagnosed_at,
     });
+    emittedBuildKeys.push(`build:diagnosis:${row.id}`);
   }
 
   const incidentTenant = whereTenant(undefined, "i");
@@ -235,7 +252,9 @@ function aggregateReasoner(results: Insight[]): void {
   }>;
 
   for (const row of incidents) {
+    if (row.failure_class === "sentinel_health") continue;
     const wfId = row.rep_workflow_id && row.rep_workflow_id !== "unknown" ? row.rep_workflow_id : null;
+    if (!wfId || !liveWorkflows.has(wfId)) continue;
     const playbook = wfId ? matchPlaybook(db, row.failure_class) : null;
     const actionDescriptorId = playbook && wfId
       ? remediateDescriptor(playbook.id, wfId, row.rep_pass_id ?? null, row.id)
@@ -256,7 +275,17 @@ function aggregateReasoner(results: Insight[]): void {
       manualPageHref: `/incidents`,
       createdAt: row.last_seen,
     });
+    emittedBuildKeys.push(`build:incident:${row.id}`);
   }
+
+  // Resolve any build insight whose run/workflow is gone (or that we no longer
+  // emit). Without this, build insights accumulated forever even after the
+  // builder runs they described were deleted.
+  resolveStaleInsights(
+    "build:",
+    emittedBuildKeys,
+    "The builder run this was about no longer exists, so this build issue is no longer actionable.",
+  );
 }
 
 function aggregateContentHealth(results: Insight[]): void {
@@ -315,6 +344,40 @@ function getSentinelHealthPath(): string {
   return process.env.SENTINEL_HEALTH_PATH ?? DEFAULT_SENTINEL_HEALTH_PATH;
 }
 
+// Send each sentinel finding to a page where the operator can actually act,
+// instead of the dashboard root.
+function sentinelManualPage(fid: string): string {
+  const s = fid.toLowerCase();
+  if (s.includes("gemini")) return "/gemini";
+  if (s.includes("litellm")) return "/litellm";
+  if (s.includes("model") || s.includes("runner") || s.includes("roundtrip")) return "/models";
+  if (s.includes("deploy") || s.includes("frontend") || s.includes("service")) return "/infra";
+  if (s.includes("secur") || s.includes("secret") || s.includes("role")) return "/security";
+  if (s.includes("gateway") || s.includes("cost")) return "/gateway";
+  return "/doctor";
+}
+
+// Re-running the model-health check is the standard, safe remediation for agent/
+// model/runner health findings, so offer it as a one-click action.
+function sentinelAction(fid: string): string | null {
+  const s = fid.toLowerCase();
+  if (
+    s.includes("model") || s.includes("runner") || s.includes("roundtrip") ||
+    s.includes("gemini") || s.includes("agent")
+  ) {
+    return "start-job:model-health:all";
+  }
+  return null;
+}
+
+// Sentinel "detail" can be a raw multi-line stack trace; collapse it to a single
+// readable line so the inbox stays legible.
+function cleanSentinelDetail(detail: string): string {
+  const firstLine = detail.split(/\r?\n/)[0]?.trim() ?? "";
+  if (!firstLine) return "The Product Health Sentinel flagged this on the live site.";
+  return firstLine.length > 200 ? `${firstLine.slice(0, 197)}…` : firstLine;
+}
+
 function aggregateSentinel(results: Insight[]): string[] | null {
   const emittedSourceKeys: string[] = [];
   let card: { findings?: Array<Record<string, unknown>>; checkedAt?: number };
@@ -339,14 +402,14 @@ function aggregateSentinel(results: Insight[]): string[] | null {
       domain: sentinelDomain(fid),
       severity,
       title: `Product health: ${String(f.name ?? fid)}`,
-      plainSummary: `${String(f.detail ?? "")} — detected by the Product Health Sentinel on the live site.`,
+      plainSummary: `${cleanSentinelDetail(String(f.detail ?? ""))} — detected by the Product Health Sentinel on the live site.`,
       confidence: 0.9,
       evidenceRefs: [
         evidence("Product health scorecard", "file", getSentinelHealthPath()),
         evidence("Live health endpoint", "api", "/api/product-health"),
       ],
-      actionDescriptorId: null,
-      manualPageHref: "/",
+      actionDescriptorId: sentinelAction(fid),
+      manualPageHref: sentinelManualPage(fid),
       createdAt: ts,
     });
     emittedSourceKeys.push(sourceKey);
