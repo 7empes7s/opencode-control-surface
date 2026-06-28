@@ -456,6 +456,76 @@ export function finishJob(
   }
 }
 
+// Mark a running job as cancel-requested. The producer should poll
+// cancel_requested_at and exit early; the caller finishes with "canceled".
+export function requestJobCancel(id: string): boolean {
+  if (!isDashboardDbEnabled()) return false;
+  const db = getDashboardDb();
+  if (!db) return false;
+  const tenantWhere = whereTenant();
+  try {
+    const info = db.query(`
+      UPDATE jobs
+      SET cancel_requested_at = ?, state = 'canceled', status = 'canceled', finished_at = ?
+      WHERE id = ? AND COALESCE(status, state) = 'running'${tenantWhere.clause}
+    `).run(Date.now(), Date.now(), id, ...tenantWhere.params);
+    return (info as { changes?: number }).changes === 1;
+  } catch (error) {
+    logDbWriteError("requestJobCancel", error);
+    return false;
+  }
+}
+
+// Create a retry child job cloned from a failed parent. Increments retry_count
+// on the parent and returns the new child job id on success, null on failure.
+export function retryJob(parentId: string): string | null {
+  if (!isDashboardDbEnabled()) return null;
+  const db = getDashboardDb();
+  if (!db) return null;
+  const tenantWhere = whereTenant();
+  try {
+    const parent = db.query(`
+      SELECT id, kind, actor, reason, target_type, target_id, command,
+             request_json, evidence_json, max_retries, retry_count, tenant_id
+      FROM jobs
+      WHERE id = ? AND COALESCE(status, state) IN ('failed', 'canceled')${tenantWhere.clause}
+    `).get(parentId, ...tenantWhere.params) as {
+      id: string; kind: string; actor: string | null; reason: string | null;
+      target_type: string | null; target_id: string | null; command: string | null;
+      request_json: string | null; evidence_json: string | null;
+      max_retries: number; retry_count: number; tenant_id: string | null;
+    } | null;
+
+    if (!parent) return null;
+    if (parent.retry_count >= parent.max_retries) return null;
+
+    const childId = crypto.randomUUID();
+    const now = Date.now();
+    const tenantId = parent.tenant_id ?? getCurrentTenantContext().tenantId;
+
+    db.query(`
+      UPDATE jobs SET retry_count = retry_count + 1 WHERE id = ?${tenantWhere.clause}
+    `).run(parentId, ...tenantWhere.params);
+
+    db.query(`
+      INSERT INTO jobs
+        (id, ts, kind, state, status, actor, reason, target_type, target_id,
+         command, request_json, evidence_json, started_at, max_retries,
+         retry_count, retry_of_job_id, tenant_id)
+      VALUES (?, ?, ?, 'running', 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(
+      childId, now, parent.kind, parent.actor, parent.reason,
+      parent.target_type, parent.target_id, parent.command,
+      parent.request_json, parent.evidence_json, now,
+      parent.max_retries, parentId, tenantId,
+    );
+    return childId;
+  } catch (error) {
+    logDbWriteError("retryJob", error);
+    return null;
+  }
+}
+
 export function readOperatorState(key: string): unknown | null {
   if (!isDashboardDbEnabled()) {
     return null;

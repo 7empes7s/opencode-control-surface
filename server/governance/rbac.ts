@@ -85,7 +85,11 @@ export function isAuthenticatedForRequest(req: Request): boolean {
   return Boolean(getAuthenticatedUser(req));
 }
 
+// Fail-closed: mutations require OPERATOR_TOKEN to be configured. When the
+// token is absent the dev-bootstrap path would otherwise grant owner access
+// on any deployment where NODE_ENV != "production".
 export function canMutate(req: Request): boolean {
+  if (!process.env.OPERATOR_TOKEN) return false;
   const role = getRoleForRequest(req);
   return role === "owner" || role === "operator";
 }

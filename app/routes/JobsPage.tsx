@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
+import { useAction } from "../hooks/useAction";
 import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
@@ -44,6 +45,36 @@ function stringify(value: unknown): string {
 }
 
 export type JobsSortKey = "startedAt" | "status" | "kind" | "targetId" | "finishedAt";
+
+function JobActions({ job, onDone }: { job: JobRow; onDone: () => void }) {
+  const cancel = useAction(`/api/jobs/${job.id}/cancel`);
+  const retry = useAction(`/api/jobs/${job.id}/retry`);
+
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+      {job.status === "running" && (
+        <button
+          className="btn btn-sm btn-danger"
+          disabled={cancel.loading}
+          onClick={() => cancel.run({}).then((ok) => { if (ok) onDone(); })}
+        >
+          {cancel.loading ? "canceling…" : "Cancel"}
+        </button>
+      )}
+      {(job.status === "failed" || job.status === "canceled") && job.retryCount < job.maxRetries && (
+        <button
+          className="btn btn-sm btn-secondary"
+          disabled={retry.loading}
+          onClick={() => retry.run({}).then((ok) => { if (ok) onDone(); })}
+        >
+          {retry.loading ? "retrying…" : `Retry (${job.retryCount}/${job.maxRetries})`}
+        </button>
+      )}
+      {cancel.error && <span className="error" style={{ fontSize: 12 }}>{cancel.error}</span>}
+      {retry.error && <span className="error" style={{ fontSize: 12 }}>{retry.error}</span>}
+    </div>
+  );
+}
 
 export function JobsPage() {
   const [status, setStatus] = useState("");
@@ -146,6 +177,11 @@ export function JobsPage() {
                 <pre className="audit-pre">{stringify(selected.evidence)}</pre>
               </div>
             )}
+
+            <div className="evidence-block">
+              <div className="evidence-block-title">Actions</div>
+              <JobActions job={selected} onDone={() => { setSelected(null); refresh(); }} />
+            </div>
           </aside>
         </div>
       )}

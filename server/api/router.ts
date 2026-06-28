@@ -37,7 +37,7 @@ import { actionCatalogHandler } from "./actionDescriptors.ts";
 import { actionAuditHandler, auditExportHandler } from "./audit.ts";
 import { contentHealthHandler, contentHealthRunHandler } from "./content-health.ts";
 import { eventsHandler } from "./events.ts";
-import { jobHandler, jobsHandler } from "./jobs.ts";
+import { jobHandler, jobsHandler, cancelJobHandler, retryJobHandler } from "./jobs.ts";
 import { metricsHandler } from "./metrics.ts";
 import { 
   getBudgets, 
@@ -152,6 +152,7 @@ import {
   infraServiceRestartHandler,
   infraRunTimerHandler,
   doctorScanHandler,
+  doctorRequeuHandler,
   authSessionHandler,
   authStatusHandler,
   checkToken,
@@ -552,6 +553,18 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && jobMatch) {
     if (!checkToken(req)) return unauthorized();
     return jobHandler(jobMatch[1]);
+  }
+  const jobCancelMatch = pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/);
+  if (method === "POST" && jobCancelMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return cancelJobHandler(decodeURIComponent(jobCancelMatch[1]), req);
+  }
+  const jobRetryMatch = pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+  if (method === "POST" && jobRetryMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return retryJobHandler(decodeURIComponent(jobRetryMatch[1]), req);
   }
   if (method === "GET" && pathname === "/api/home") return homeHandler();
   if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();
@@ -984,6 +997,11 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return doctorScanHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/doctor/requeue") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return doctorRequeuHandler(req);
   }
   if (method === "POST" && pathname === "/api/newsbites/deploy") {
     const denied = requireMutation(req);

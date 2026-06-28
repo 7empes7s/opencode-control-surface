@@ -40,7 +40,10 @@ function reasonFromBody(body: unknown): string | undefined {
     : undefined;
 }
 
+// Fail-closed: rejects when OPERATOR_TOKEN is not set (prevents dev-bootstrap
+// from granting read access on a misconfigured production deployment).
 export function checkToken(req: Request): boolean {
+  if (!process.env.OPERATOR_TOKEN) return false;
   return Boolean(getAuthenticatedUser(req));
 }
 
@@ -206,54 +209,131 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
   return json({ error: `unknown action: ${action}` }, 400);
 }
 
-// POST /api/doctor/scan
+// POST /api/doctor/scan — durable job wrapper
 export async function doctorScanHandler(req: Request): Promise<Response> {
   const denied = requireMutation(req);
   if (denied) return denied;
-  try {
-    const res = await fetch(`${PIPELINE_API}/doctor/scan`, {
-      method: "POST",
-      signal: AbortSignal.timeout(30_000),
-    });
-    const text = await res.text();
+
+  const jobId = randomUUID();
+  createJob({
+    id: jobId,
+    kind: "doctor-scan",
+    targetType: "doctor",
+    targetId: "scan",
+    command: `POST ${PIPELINE_API}/doctor/scan`,
+    evidence: [{ label: "Doctor log", kind: "file", ref: "/var/lib/mimule/doctor-log.jsonl" }],
+    request: {},
+  });
+  audit({
+    actionKind: "doctor.scan",
+    actionId: "start-job:doctor:scan",
+    targetType: "doctor",
+    targetId: "scan",
+    risk: "medium",
+    request: {},
+    resultStatus: "running",
+    jobId,
+  });
+
+  // Run scan asynchronously so the HTTP response is immediate.
+  (async () => {
     try {
-      const result = JSON.parse(text);
+      const res = await fetch(`${PIPELINE_API}/doctor/scan`, {
+        method: "POST",
+        signal: AbortSignal.timeout(30_000),
+      });
+      const text = await res.text();
+      updateJobOutput(jobId, text);
+      finishJob(jobId, res.ok ? "success" : "failed", {
+        output: text,
+        exitCode: res.ok ? 0 : 1,
+        error: res.ok ? undefined : text,
+      });
       audit({
-        actionKind: "doctor.scan",
+        actionKind: "doctor.scan.finished",
         targetType: "doctor",
         targetId: "scan",
         risk: "medium",
         request: {},
         resultStatus: res.ok ? "success" : "failed",
-        resultJson: result,
+        result: text.slice(0, 200),
         error: res.ok ? undefined : text,
+        jobId,
       });
-      return json(result, res.status);
-    } catch {
+    } catch (e) {
+      finishJob(jobId, "failed", { error: errorMessage(e), exitCode: 1 });
       audit({
-        actionKind: "doctor.scan",
+        actionKind: "doctor.scan.finished",
         targetType: "doctor",
         targetId: "scan",
         risk: "medium",
         request: {},
-        resultStatus: res.ok ? "success" : "failed",
-        result: text,
-        error: res.ok ? undefined : text,
+        resultStatus: "failed",
+        error: errorMessage(e),
+        jobId,
       });
-      return json({ ok: res.ok, output: text }, res.status);
     }
-  } catch (e) {
-    audit({
-      actionKind: "doctor.scan",
-      targetType: "doctor",
-      targetId: "scan",
-      risk: "medium",
-      request: {},
-      resultStatus: "failed",
-      error: errorMessage(e),
-    });
-    return json({ error: String(e) }, 502);
-  }
+  })();
+
+  return json({ ok: true, jobId, message: "Doctor scan started" });
+}
+
+// POST /api/doctor/requeue — requeue a story at a specific stage via autopipeline
+export async function doctorRequeuHandler(req: Request): Promise<Response> {
+  const denied = requireMutation(req);
+  if (denied) return denied;
+  let body: { slug?: string; nextStage?: string; reason?: string };
+  try { body = await req.json() as typeof body; } catch { return json({ error: "invalid json" }, 400); }
+  const { slug, nextStage, reason } = body;
+  if (!slug) return json({ error: "slug required" }, 400);
+
+  const jobId = randomUUID();
+  createJob({
+    id: jobId,
+    kind: "doctor-requeue",
+    targetType: "story",
+    targetId: slug,
+    command: `requeue slug=${slug} nextStage=${nextStage ?? "auto"}`,
+    evidence: [{ label: "Autopipeline", kind: "api", ref: "/api/autopipeline" }],
+    request: { slug, nextStage, reason },
+  });
+  audit({
+    actionKind: "doctor.requeue",
+    actionId: `start-job:doctor-requeue:${slug}`,
+    targetType: "story",
+    targetId: slug,
+    risk: "medium",
+    reason,
+    request: { slug, nextStage },
+    resultStatus: "running",
+    jobId,
+    rollbackHint: `Pause the autopipeline queue or remove the story manually if the requeue causes issues.`,
+  });
+
+  (async () => {
+    try {
+      const payload: Record<string, unknown> = { command: "requeue", slug };
+      if (nextStage) payload.nextStage = nextStage;
+      if (reason) payload.reason = reason;
+      const res = await fetch(`${PIPELINE_API}/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const text = await res.text();
+      updateJobOutput(jobId, text);
+      finishJob(jobId, res.ok ? "success" : "failed", {
+        output: text,
+        exitCode: res.ok ? 0 : 1,
+        error: res.ok ? undefined : text,
+      });
+    } catch (e) {
+      finishJob(jobId, "failed", { error: errorMessage(e), exitCode: 1 });
+    }
+  })();
+
+  return json({ ok: true, jobId, message: `Requeue started for ${slug}` });
 }
 
 // In-memory deploy job store

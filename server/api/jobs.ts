@@ -1,6 +1,7 @@
 import { isDashboardDbEnabled } from "../db/dashboard.ts";
-import { readJob, readJobs, type JobRow } from "../db/writer.ts";
+import { readJob, readJobs, requestJobCancel, retryJob, type JobRow } from "../db/writer.ts";
 import { ok, type ApiEnvelope } from "./types.ts";
+import { writeActionAudit } from "../db/writer.ts";
 
 export type JobsResponse = {
   jobs: JobRow[];
@@ -48,4 +49,48 @@ export function jobHandler(id: string): Response {
   }
 
   return response({ jobs: [job], degraded: false });
+}
+
+export function cancelJobHandler(id: string, req: Request): Response {
+  if (!isDashboardDbEnabled()) {
+    return new Response(JSON.stringify({ error: "DASHBOARD_DB disabled" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+  const ok2 = requestJobCancel(id);
+  writeActionAudit({
+    actionKind: "jobs.cancel",
+    actionId: `cancel-job:${id}`,
+    targetType: "job",
+    targetId: id,
+    risk: "low",
+    request: { jobId: id },
+    resultStatus: ok2 ? "success" : "failed",
+    error: ok2 ? undefined : "job not found or not running",
+  });
+  if (!ok2) {
+    return new Response(JSON.stringify({ error: "job not found or not in a cancelable state" }), { status: 404, headers: { "Content-Type": "application/json" } });
+  }
+  return new Response(JSON.stringify({ ok: true, jobId: id, status: "canceled" }), { headers: { "Content-Type": "application/json" } });
+}
+
+export function retryJobHandler(id: string, req: Request): Response {
+  if (!isDashboardDbEnabled()) {
+    return new Response(JSON.stringify({ error: "DASHBOARD_DB disabled" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+  const childId = retryJob(id);
+  writeActionAudit({
+    actionKind: "jobs.retry",
+    actionId: `retry-job:${id}`,
+    targetType: "job",
+    targetId: id,
+    risk: "medium",
+    request: { jobId: id },
+    resultStatus: childId ? "success" : "failed",
+    error: childId ? undefined : "job not found, not failed/canceled, or retry limit reached",
+    resultJson: childId ? { childJobId: childId } : undefined,
+    rollbackHint: `Cancel the child job ${childId ?? "?"} if the retry produces unwanted side effects.`,
+  });
+  if (!childId) {
+    return new Response(JSON.stringify({ error: "job not found, not failed/canceled, or retry limit reached" }), { status: 404, headers: { "Content-Type": "application/json" } });
+  }
+  return new Response(JSON.stringify({ ok: true, parentJobId: id, childJobId: childId }), { headers: { "Content-Type": "application/json" } });
 }
