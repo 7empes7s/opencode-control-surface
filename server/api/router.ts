@@ -196,6 +196,12 @@ import {
   requireInsightPermission,
 } from "./insights.ts";
 import { securityPostureHandler, trustScoreHandler } from "./security.ts";
+import {
+  adminHealthHandler,
+  adminBriefingHandler,
+  adminSearchHandler,
+  adminAutoFixFeedHandler,
+} from "./admin.ts";
 import { promptsHandler } from "./prompts.ts";
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
@@ -565,6 +571,22 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return retryJobHandler(decodeURIComponent(jobRetryMatch[1]), req);
+  }
+  if (method === "GET" && pathname === "/api/admin/health") {
+    if (!checkToken(req)) return unauthorized();
+    return adminHealthHandler();
+  }
+  if (method === "GET" && pathname === "/api/admin/briefing") {
+    if (!checkToken(req)) return unauthorized();
+    return adminBriefingHandler();
+  }
+  if (method === "GET" && pathname === "/api/admin/search") {
+    if (!checkToken(req)) return unauthorized();
+    return adminSearchHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/admin/autofixes") {
+    if (!checkToken(req)) return unauthorized();
+    return adminAutoFixFeedHandler();
   }
   if (method === "GET" && pathname === "/api/home") return homeHandler();
   if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();

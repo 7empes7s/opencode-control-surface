@@ -13,6 +13,7 @@ export interface RouteEntry {
  * - hidden: not linked in nav (e.g. legacy or admin-only)
  */
 export const NAV_REGISTRY: Record<string, RouteEntry> = {
+  "/admin": { status: "core" },
   "/": { status: "core" },
   "/insights": { status: "core" },
   "/security": { status: "core" },

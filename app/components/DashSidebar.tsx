@@ -38,6 +38,7 @@ import {
   Inbox,
   FileCheck2,
   FileText,
+  ShieldAlert,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -55,8 +56,9 @@ type Theme = "dark" | "light";
 type Variant = "terminal" | "compact";
 
 const NAV: NavItem[] = [
+  { href: "/admin", label: "Admin Center", icon: ShieldAlert, match: (l) => l === "/admin" },
   { href: "/", label: "Home", icon: LayoutGrid, match: (l) => l === "/" },
-  { href: "/insights", label: "Insights", icon: Inbox },
+  { href: "/insights", label: "Detections", icon: Inbox },
   { href: "/security", label: "Security", icon: Shield },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/today", label: "Today", icon: CalendarDays },
@@ -76,7 +78,7 @@ const NAV: NavItem[] = [
   { href: "/marketplace", label: "Marketplace", icon: Package },
   { href: "/traces", label: "Traces", icon: GitBranch },
   { href: "/gateway", label: "Gateway", icon: Route },
-  { href: "/governance", label: "Governance", icon: Shield },
+  { href: "/governance", label: "Access & Policy", icon: Shield },
   { href: "/compliance", label: "Compliance", icon: Shield },
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/settings", label: "Settings", icon: Settings2 },
@@ -97,7 +99,7 @@ const NAV: NavItem[] = [
 const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");
 const ADVANCED_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "advanced");
 
-const PRIMARY_NAV: NavItem[] = ["/", "/insights", "/security", "/agents", "/today", "/autopipeline", "/models", "/opencode"]
+const PRIMARY_NAV: NavItem[] = ["/admin", "/", "/insights", "/security", "/agents", "/today", "/autopipeline", "/models", "/opencode"]
   .map((href) => CORE_NAV.find((item) => item.href === href))
   .filter((item): item is NavItem => Boolean(item));
 

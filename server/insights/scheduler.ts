@@ -1,4 +1,5 @@
 import { aggregateInsights } from "./aggregate.ts";
+import { computeAdminHealthScore, writeHealthSample } from "./health.ts";
 import { runSecurityScan } from "./scanners/security.ts";
 import { runRegistryScan } from "./scanners/registry.ts";
 import { runBudgetScan } from "./scanners/budget.ts";
@@ -76,6 +77,12 @@ export async function runInsightsScanOnce(): Promise<{
   void autoApplySafeInsights(listInsights("open")).catch((err) => {
     console.error("[insights] auto-apply failed", err instanceof Error ? err.message : err);
   });
+
+  // Write a health score sample so the trend sparkline has data
+  try {
+    const hs = computeAdminHealthScore();
+    writeHealthSample(hs.score);
+  } catch { /* ignore */ }
 
   return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, notifications };
 }

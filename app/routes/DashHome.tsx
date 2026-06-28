@@ -1,9 +1,12 @@
+import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import { useApi, fmtAge, fmtMs } from "../hooks/useApi";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
 import { BarChart, Bar, ResponsiveContainer, Tooltip, Cell } from "recharts";
 import { AnimatedNumber, AreaSparkline, Gauge, LiveTick, PipelineFlowBar } from "../components/AnimatedCharts";
+import { authFetch } from "../lib/authFetch";
+import { AlertTriangle, ArrowUpRight, Sparkles } from "lucide-react";
 
 interface MissionControlData {
   nowCard: {
@@ -145,6 +148,108 @@ function StatusDot({ status }: { status: string }) {
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: "green" | "red" | "amber" | "gray" | "blue" }) {
   return <span className={`pill ${color}`}>{children}</span>;
+}
+
+type HealthDriver = { label: string; impact: number; link: string };
+type AdminHealth = {
+  score: number;
+  openCritical: number;
+  openHigh: number;
+  openMedium: number;
+  productHealthFails: number;
+  drivers: HealthDriver[];
+};
+type FindingPreview = { id: string; title: string; severity: string; sourceKey: string | null };
+
+function GovernanceCluster() {
+  const { data: health } = useApi<AdminHealth>("/api/admin/health", 60_000);
+  const { data: insightsData } = useApi<{ insights: FindingPreview[]; openCount: number }>("/api/insights?status=open", 30_000);
+  const { data: autoFixData } = useApi<{ feed: Array<{ ts: number; resultStatus: string | null }> }>("/api/admin/autofixes", 60_000);
+  const [briefing, setBriefing] = useState<string | null>(null);
+  const briefingFetched = useRef(false);
+
+  useEffect(() => {
+    if (briefingFetched.current) return;
+    briefingFetched.current = true;
+    authFetch("/api/admin/briefing")
+      .then((r) => r.json() as Promise<{ data?: { briefing?: { text: string } | null } }>)
+      .then((d) => { if (d.data?.briefing?.text) setBriefing(d.data.briefing.text); })
+      .catch(() => {});
+  }, []);
+
+  const score = health?.score ?? null;
+  const scoreColor = score === null ? "gray" : score >= 80 ? "green" : score >= 55 ? "amber" : "red";
+  const critCount = health?.openCritical ?? 0;
+  const topFindings = (insightsData?.insights ?? []).slice(0, 3);
+
+  const dayAgo = Date.now() - 86_400_000;
+  const autoFixesToday = (autoFixData?.feed ?? []).filter((r) => r.ts > dayAgo && r.resultStatus === "success").length;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-section-title">admin center</div>
+      <div className="gov-cluster">
+        {/* Score + link to admin */}
+        <Link href="/admin" className="gov-score-card">
+          <div className="w-label">health score</div>
+          <div className="gov-score-num" style={{ color: score !== null ? (score >= 80 ? "var(--green)" : score >= 55 ? "var(--amber)" : "var(--red)") : "var(--dim)" }}>
+            {score !== null ? score : "—"}
+            {score !== null && <span className="gov-score-denom">/100</span>}
+          </div>
+          <span className={`pill ${scoreColor}`}>{score !== null ? (score >= 80 ? "Healthy" : score >= 55 ? "Degraded" : "Critical") : "Checking…"}</span>
+        </Link>
+
+        {/* Critical alert count */}
+        <Link href="/insights?status=open&severity=critical" className="gov-stat-card">
+          <div className="w-label"><AlertTriangle size={12} /> open critical</div>
+          <div className="gov-stat-num" style={{ color: critCount > 0 ? "var(--red)" : "var(--green)" }}>
+            {critCount}
+          </div>
+          <span className={`pill ${critCount > 0 ? "red" : "green"}`}>{critCount > 0 ? "needs attention" : "all clear"}</span>
+        </Link>
+
+        {/* Auto-fixes today */}
+        <Link href="/admin" className="gov-stat-card">
+          <div className="w-label">auto-fixes 24h</div>
+          <div className="gov-stat-num">{autoFixesToday}</div>
+          <span className="pill green">applied</span>
+        </Link>
+      </div>
+
+      {/* AI briefing */}
+      {briefing && (
+        <div className="gov-briefing">
+          <Sparkles size={13} />
+          <span>{briefing}</span>
+          <Link href="/admin" className="gov-briefing-link">
+            <ArrowUpRight size={12} />
+          </Link>
+        </div>
+      )}
+
+      {/* Top findings */}
+      {topFindings.length > 0 && (
+        <div className="gov-findings">
+          {topFindings.map((f) => (
+            <Link
+              key={f.id}
+              href={f.sourceKey ? `/insights?focus=${encodeURIComponent(f.sourceKey)}` : "/insights"}
+              className="gov-finding-row"
+            >
+              <span className={`pill ${f.severity === "critical" || f.severity === "high" ? "red" : f.severity === "medium" ? "amber" : "blue"}`}>{f.severity}</span>
+              <span className="gov-finding-title">{f.title}</span>
+              <ArrowUpRight size={12} className="dim" />
+            </Link>
+          ))}
+          {(insightsData?.openCount ?? 0) > 3 && (
+            <Link href="/insights" className="gov-finding-row dim">
+              +{(insightsData?.openCount ?? 0) - 3} more → View all
+            </Link>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function WCard({ href, children, className = "" }: { href?: string; children: React.ReactNode; className?: string }) {
@@ -365,22 +470,8 @@ export function DashHome() {
   return (
     <div className="dash-page">
 
-      {/* ── Demo opener: Insights Inbox ────────────────── */}
-      <div className="dash-section">
-        <WCard href="/insights" className="full">
-          <div className="w-label">demo opener</div>
-          <div className="w-headline sm">Insights Inbox</div>
-          <div className="w-caption">
-            AI recommendations are grouped by cost, security, build, and data. Apply actions are audited and reversible.
-          </div>
-          <div className="w-row">
-            <Pill color={(insightsData?.openCount ?? 0) > 0 ? "amber" : "green"}>
-              {insightsData?.openCount ?? 0} open
-            </Pill>
-            <span className="pill blue">Open inbox →</span>
-          </div>
-        </WCard>
-      </div>
+      {/* ── Admin Center governance cluster ───────────── */}
+      <GovernanceCluster />
 
       {/* ── Product health (sentinel scorecard) ─────────── */}
       <ProductHealthTile />

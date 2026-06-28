@@ -40,7 +40,9 @@ import { InsightsPage } from "./routes/InsightsPage";
 import { SecurityPage } from "./routes/SecurityPage";
 import { AgentRegistryPage } from "./routes/AgentRegistryPage";
 import { StatusPage } from "./routes/StatusPage";
+import { AdminPage } from "./routes/AdminPage";
 import { AuthPrompt } from "./components/AuthPrompt";
+import { CommandPalette, useCommandPalette } from "./components/CommandPalette";
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -73,9 +75,20 @@ function PublicLayout({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function AppShell({ children }: { children: React.ReactNode }) {
+  const { open, onClose } = useCommandPalette();
+  return (
+    <>
+      {children}
+      <CommandPalette open={open} onClose={onClose} />
+    </>
+  );
+}
+
 export function App() {
   return (
     <Router>
+      <AppShell>
       <AuthPrompt />
       <Switch>
         <Route path="/status">
@@ -97,6 +110,9 @@ export function App() {
           <DashLayoutBare><GeminiPage /></DashLayoutBare>
         </Route>
 
+        <Route path="/admin">
+          <DashLayout><AdminPage /></DashLayout>
+        </Route>
         <Route path="/autopipeline">
           <DashLayout><AutopipelinePage /></DashLayout>
         </Route>
@@ -201,6 +217,7 @@ export function App() {
           <DashLayout><DashHome /></DashLayout>
         </Route>
       </Switch>
+      </AppShell>
     </Router>
   );
 }

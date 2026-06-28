@@ -1,6 +1,10 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, RefreshCw, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import {
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink,
+  RefreshCw, ShieldCheck, Sparkles, XCircle, Filter, X, RotateCcw,
+  Activity,
+} from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
@@ -40,7 +44,6 @@ const DOMAIN_LABEL: Record<Insight["domain"], string> = {
   ops: "Operations",
 };
 
-// Operations (stack health) leads — it is the most operationally urgent group.
 const DOMAIN_ORDER: Insight["domain"][] = ["ops", "security", "cost", "build", "data"];
 
 const SEVERITY_RANK: Record<Insight["severity"], number> = {
@@ -50,6 +53,31 @@ const SEVERITY_RANK: Record<Insight["severity"], number> = {
   low: 2,
   info: 1,
 };
+
+type SeverityFilter = "all" | "critical" | "high" | "medium" | "low" | "info";
+type DomainFilter = "all" | Insight["domain"];
+
+const SAVED_FILTERS_KEY = "tib-insights-filters";
+
+type SavedFilters = { severity: SeverityFilter; domain: DomainFilter };
+
+function loadSavedFilters(): SavedFilters {
+  try {
+    const raw = localStorage.getItem(SAVED_FILTERS_KEY);
+    if (!raw) return { severity: "all", domain: "all" };
+    return JSON.parse(raw) as SavedFilters;
+  } catch { return { severity: "all", domain: "all" }; }
+}
+
+function saveFilters(f: SavedFilters) {
+  try { localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(f)); } catch { /* ignore */ }
+}
+
+function parseFocusParam(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("focus");
+  } catch { return null; }
+}
 
 function severityClass(severity: Insight["severity"]): string {
   if (severity === "critical" || severity === "high") return "red";
@@ -89,24 +117,178 @@ function EvidenceDrawer({ evidenceRefs }: { evidenceRefs: EvidenceRef[] }) {
   );
 }
 
+// ── Auto-apply activity feed ─────────────────────────────────────────────────
+
+type AutoFixRow = {
+  id: number;
+  ts: number;
+  targetId: string | null;
+  result: string | null;
+  resultStatus: string | null;
+  rollbackHint: string | null;
+  risk: string | null;
+  request: unknown;
+};
+
+function AutoFixActivity() {
+  const { data, loading } = useApi<{ feed: AutoFixRow[]; degraded: boolean }>("/api/admin/autofixes", 30_000);
+  const [reverting, setReverting] = useState<number | null>(null);
+  const [revertMsg, setRevertMsg] = useState<string | null>(null);
+
+  async function revert(row: AutoFixRow) {
+    if (!row.rollbackHint) return;
+    setReverting(row.id);
+    setRevertMsg(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actionId: row.rollbackHint, reason: "Operator revert", confirmed: true, params: {} }),
+      });
+      const json = await res.json().catch(() => ({})) as { data?: { message?: string }; error?: string };
+      if (!res.ok) throw new Error(json.error ?? "Revert failed");
+      setRevertMsg(json.data?.message ?? "Reverted.");
+    } catch (err) {
+      setRevertMsg(err instanceof Error ? err.message : "Revert could not be completed.");
+    } finally {
+      setReverting(null);
+    }
+  }
+
+  if (loading && !data) return <div className="loading-panel">Loading auto-fix activity…</div>;
+  const feed = data?.feed ?? [];
+
+  return (
+    <div className="insight-autofeed">
+      {revertMsg && <div className="insights-message"><CheckCircle2 size={14} />{revertMsg}</div>}
+      {feed.length === 0 ? (
+        <div className="empty-state">
+          <CheckCircle2 size={20} />
+          <strong>No auto-fixes recorded yet.</strong>
+          <span>Auto-fixes appear here when safe remediations run automatically.</span>
+        </div>
+      ) : (
+        <div className="insight-card-list">
+          {feed.map((row) => {
+            const req = (row.request as Record<string, unknown>) ?? {};
+            const sourceKey = typeof req.sourceKey === "string" ? req.sourceKey : null;
+            const insightId = typeof req.insightId === "string" ? req.insightId : null;
+            return (
+              <article key={row.id} className={`insight-card severity-${row.resultStatus === "success" ? "info" : "medium"}`}>
+                <div className="insight-card-head">
+                  <div>
+                    <div className="insight-title-row">
+                      <span className={`pill ${row.resultStatus === "success" ? "green" : "red"}`}>
+                        {row.resultStatus === "success" ? "Auto-applied ✓" : "Failed"}
+                      </span>
+                      <span className="pill gray">{row.risk ?? "low"} risk</span>
+                    </div>
+                    <h2>{row.result ?? "Auto-fix"}</h2>
+                  </div>
+                  <Activity size={18} />
+                </div>
+                <div className="w-caption dim">{new Date(row.ts).toLocaleString()}</div>
+                {sourceKey && (
+                  <div style={{ marginTop: 6 }}>
+                    <Link
+                      href={`/insights?focus=${encodeURIComponent(sourceKey)}`}
+                      className="btn btn-ghost"
+                    >
+                      <ExternalLink size={13} />
+                      View finding: {sourceKey}
+                    </Link>
+                  </div>
+                )}
+                {insightId && !sourceKey && (
+                  <Link href={`/insights?focus=${encodeURIComponent(insightId)}`} className="btn btn-ghost">
+                    <ExternalLink size={13} />
+                    View finding
+                  </Link>
+                )}
+                {row.rollbackHint && (
+                  <div className="insight-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      disabled={reverting === row.id}
+                      onClick={() => revert(row)}
+                    >
+                      <RotateCcw size={13} />
+                      {reverting === row.id ? "Reverting…" : "Revert"}
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main InsightsPage ────────────────────────────────────────────────────────
+
 export function InsightsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
+  const [activeTab, setActiveTab] = useState<"inbox" | "autofeed">("inbox");
+
+  // Persistent filter chips
+  const [savedFilters, setSavedFiltersState] = useState<SavedFilters>(loadSavedFilters);
+  const [severityFilter, setSeverityFilterState] = useState<SeverityFilter>(savedFilters.severity);
+  const [domainFilter, setDomainFilterState] = useState<DomainFilter>(savedFilters.domain);
+
+  function setSeverityFilter(v: SeverityFilter) {
+    setSeverityFilterState(v);
+    const next = { severity: v, domain: domainFilter };
+    setSavedFiltersState(next);
+    saveFilters(next);
+  }
+  function setDomainFilter(v: DomainFilter) {
+    setDomainFilterState(v);
+    const next = { severity: severityFilter, domain: v };
+    setSavedFiltersState(next);
+    saveFilters(next);
+  }
+
   const { data, loading, error, refresh } = useApi<InsightsPayload>(`/api/insights?status=${statusFilter}`, 30_000);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [bulkReasons, setBulkReasons] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
 
+  // Deep-link focus support: ?focus=<sourceKey or id>
+  const focusKey = useMemo(() => parseFocusParam(), []);
+  const cardRefs = useRef<Record<string, HTMLElement | null>>({});
+  const focusScrolled = useRef(false);
+
+  useEffect(() => {
+    if (!focusKey || focusScrolled.current) return;
+    const el = cardRefs.current[focusKey];
+    if (el) {
+      focusScrolled.current = true;
+      setTimeout(() => {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("insight-focus-flash");
+        setTimeout(() => el.classList.remove("insight-focus-flash"), 2000);
+      }, 300);
+    }
+  }, [focusKey, data]);
+
   const grouped = useMemo(() => {
     const groups: Record<Insight["domain"], InsightWithAi[]> = { cost: [], security: [], build: [], data: [], ops: [] };
     for (const insight of data?.insights ?? []) {
+      // Apply severity filter
+      if (severityFilter !== "all" && insight.severity !== severityFilter) continue;
+      // Apply domain filter
+      if (domainFilter !== "all" && insight.domain !== domainFilter) continue;
       groups[insight.domain].push(insight);
     }
     for (const domain of Object.keys(groups) as Insight["domain"][]) {
       groups[domain].sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || b.createdAt - a.createdAt);
     }
     return groups;
-  }, [data]);
+  }, [data, severityFilter, domainFilter]);
 
   async function post(path: string, body: Record<string, unknown>) {
     const res = await authFetch(path, {
@@ -124,17 +306,12 @@ export function InsightsPage() {
     setMessage(null);
     try {
       const reason = (reasons[insight.id] ?? "").trim();
-      const result = await post(`/api/insights/${encodeURIComponent(insight.id)}/apply`, {
-        confirmed: true,
-        reason,
-      });
+      const result = await post(`/api/insights/${encodeURIComponent(insight.id)}/apply`, { confirmed: true, reason });
       setMessage(result.data?.message ?? "The insight was applied and recorded.");
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The insight could not be applied.");
-    } finally {
-      setBusyId(null);
-    }
+    } finally { setBusyId(null); }
   }
 
   async function dismissInsight(insight: Insight) {
@@ -147,9 +324,7 @@ export function InsightsPage() {
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The insight could not be dismissed.");
-    } finally {
-      setBusyId(null);
-    }
+    } finally { setBusyId(null); }
   }
 
   async function reanalyze(insight: Insight) {
@@ -161,9 +336,7 @@ export function InsightsPage() {
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The finding could not be re-analysed right now.");
-    } finally {
-      setBusyId(null);
-    }
+    } finally { setBusyId(null); }
   }
 
   async function scanNow() {
@@ -175,9 +348,7 @@ export function InsightsPage() {
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The scan could not be started.");
-    } finally {
-      setBusyId(null);
-    }
+    } finally { setBusyId(null); }
   }
 
   async function applyGroup(domain: Insight["domain"]) {
@@ -193,21 +364,26 @@ export function InsightsPage() {
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Bulk apply could not be completed.");
-    } finally {
-      setBusyId(null);
-    }
+    } finally { setBusyId(null); }
   }
 
   const openCount = data?.openCount ?? data?.insights.length ?? 0;
+  const hasActiveFilters = severityFilter !== "all" || domainFilter !== "all";
+
+  const setCardRef = useCallback((el: HTMLElement | null, insight: InsightWithAi) => {
+    cardRefs.current[insight.id] = el;
+    if (insight.sourceKey) cardRefs.current[insight.sourceKey] = el;
+  }, []);
 
   return (
     <div className="dash-page insights-page">
       <section className="insights-hero">
         <div>
-          <div className="dash-section-title">insights inbox</div>
-          <h1>AI recommendations ready for review</h1>
+          <div className="dash-section-title">admin center · detections</div>
+          <h1>Detections &amp; Auto-fix</h1>
           <p>
-            Review plain-English findings, apply safe actions through the audited action engine, or open the manual page when a human should configure it.
+            AI-reasoned findings sorted by severity. Safe remediations auto-apply;
+            review-tier actions require one click.
           </p>
         </div>
         <div className="insights-hero-actions">
@@ -235,143 +411,225 @@ export function InsightsPage() {
         </div>
       </section>
 
+      {/* ── Filter bar ── */}
+      <div className="insights-filter-bar">
+        <Filter size={13} className="dim" />
+        <span className="dim" style={{ fontSize: 12 }}>Severity:</span>
+        {(["all", "critical", "high", "medium", "low", "info"] as SeverityFilter[]).map((s) => (
+          <button
+            key={s}
+            type="button"
+            className={`filter-chip${severityFilter === s ? " active" : ""}`}
+            onClick={() => setSeverityFilter(s)}
+          >
+            {s === "all" ? "All" : s}
+          </button>
+        ))}
+        <span className="dim" style={{ fontSize: 12, marginLeft: 8 }}>Domain:</span>
+        {(["all", "ops", "security", "cost", "build", "data"] as DomainFilter[]).map((d) => (
+          <button
+            key={d}
+            type="button"
+            className={`filter-chip${domainFilter === d ? " active" : ""}`}
+            onClick={() => setDomainFilter(d)}
+          >
+            {d === "all" ? "All" : DOMAIN_LABEL[d as Insight["domain"]] ?? d}
+          </button>
+        ))}
+        {hasActiveFilters && (
+          <button
+            type="button"
+            className="filter-chip"
+            title="Reset filters"
+            onClick={() => { setSeverityFilter("all"); setDomainFilter("all"); }}
+          >
+            <X size={11} /> Reset
+          </button>
+        )}
+      </div>
+
+      {/* ── Tab bar ── */}
+      <div className="insights-tabs">
+        <button
+          type="button"
+          className={`insights-tab${activeTab === "inbox" ? " active" : ""}`}
+          onClick={() => setActiveTab("inbox")}
+        >
+          <Sparkles size={13} /> Inbox
+          {openCount > 0 && <span className="pill amber" style={{ fontSize: 9, padding: "1px 5px" }}>{openCount}</span>}
+        </button>
+        <button
+          type="button"
+          className={`insights-tab${activeTab === "autofeed" ? " active" : ""}`}
+          onClick={() => setActiveTab("autofeed")}
+        >
+          <Activity size={13} /> Auto-fix Activity
+        </button>
+      </div>
+
       {message && <div className="insights-message"><CheckCircle2 size={15} />{message}</div>}
-      {loading && !data && <div className="loading-panel">Loading insights from the inbox.</div>}
-      {error && !data && <div className="loading-panel error">The insights inbox did not load. Try refreshing the page.</div>}
 
-      {!loading && data && data.insights.length === 0 && (
-        <div className="dash-section">
-          <div className="empty-state">
-            <ShieldCheck size={24} />
-            <strong>{statusFilter === "open" ? "No open insights right now." : `No ${STATUS_LABEL[statusFilter].toLowerCase()} insights.`}</strong>
-            {statusFilter === "open" && <span>Run a scan to refresh cost, security, build, and data checks.</span>}
-          </div>
-        </div>
-      )}
+      {activeTab === "autofeed" && <AutoFixActivity />}
 
-      {DOMAIN_ORDER.map((domain) => {
-        const insights = grouped[domain];
-        if (insights.length === 0) return null;
-        const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open").length;
-        return (
-          <section className="dash-section" key={domain}>
-            <div className="insight-group-title">
-              <span>{DOMAIN_LABEL[domain]}</span>
-              <span className="pill gray">{insights.length}</span>
-              <div className="insight-group-bulk">
-                <input
-                  value={bulkReasons[domain] ?? ""}
-                  onChange={(e) => setBulkReasons((c) => ({ ...c, [domain]: e.target.value }))}
-                  placeholder="Reason for applying all"
-                  aria-label={`Reason for applying all ${DOMAIN_LABEL[domain]} insights`}
-                />
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={actionableCount === 0 || busyId === `bulk:${domain}`}
-                  onClick={() => applyGroup(domain)}
-                  title={actionableCount === 0 ? "No one-click actions in this group" : "Apply every actionable insight in this group"}
-                >
-                  <CheckCircle2 size={14} />
-                  Apply all safe ({actionableCount})
-                </button>
+      {activeTab === "inbox" && (
+        <>
+          {loading && !data && <div className="loading-panel">Loading insights from the inbox.</div>}
+          {error && !data && <div className="loading-panel error">The insights inbox did not load. Try refreshing the page.</div>}
+
+          {!loading && data && data.insights.length === 0 && (
+            <div className="dash-section">
+              <div className="empty-state">
+                <ShieldCheck size={24} />
+                <strong>{statusFilter === "open" ? "No open insights right now." : `No ${STATUS_LABEL[statusFilter].toLowerCase()} insights.`}</strong>
+                {statusFilter === "open" && <span>Run a scan to refresh cost, security, build, and data checks.</span>}
               </div>
             </div>
-            <div className="insight-card-list">
-              {insights.map((insight) => (
-                <article key={insight.id} className={`insight-card severity-${insight.severity}`}>
-                  <div className="insight-card-head">
-                    <div>
-                      <div className="insight-title-row">
-                        <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
-                        <span className="pill blue">{confidenceLabel(insight.confidence)}</span>
-                        {insight.status === "resolved" && (
-                          <span className="pill green">Resolved itself — verified by the scanner</span>
-                        )}
-                        {insight.status === "applied" && (
-                          <span className="pill green">{insight.riskTier === "auto" ? "Auto-applied ✓" : "Applied"}</span>
-                        )}
-                        {insight.status === "open" && insight.riskTier === "auto" && (
-                          <span className="pill green" title="Safe, non-customer-facing fix — applied automatically on the next scan">Auto-fix</span>
-                        )}
-                        {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
-                      </div>
-                      <h2>{insight.title}</h2>
-                    </div>
-                    {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
-                  </div>
-                  {insight.aiAnalysis ? (
-                    <div className="insight-ai">
-                      <div className="insight-ai-head">
-                        <Sparkles size={14} />
-                        <span>AI analysis</span>
-                        <span className="pill blue">{Math.round(insight.aiAnalysis.confidence * 100)}% confident</span>
-                        <span className="dim">{insight.aiAnalysis.model}</span>
-                      </div>
-                      <p className="insight-ai-summary">{insight.aiAnalysis.summary}</p>
-                      <div className="insight-ai-grid">
-                        <div>
-                          <span className="w-caption">Likely cause</span>
-                          <p>{insight.aiAnalysis.rootCause}</p>
-                        </div>
-                        <div>
-                          <span className="w-caption">Recommended action</span>
-                          <p>{insight.aiAnalysis.recommendedAction}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="insight-ai-pending dim">AI analysis pending — it appears after the next scan.</p>
-                  )}
-                  <details className="insight-detector">
-                    <summary>Detector signal</summary>
-                    <p>{insight.plainSummary}</p>
-                  </details>
-                  <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
-                  <div className="insight-reason-row">
+          )}
+
+          {DOMAIN_ORDER.map((domain) => {
+            const insights = grouped[domain];
+            if (insights.length === 0) return null;
+            const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open").length;
+            return (
+              <section className="dash-section" key={domain}>
+                <div className="insight-group-title">
+                  <span>{DOMAIN_LABEL[domain]}</span>
+                  <span className="pill gray">{insights.length}</span>
+                  <div className="insight-group-bulk">
                     <input
-                      value={reasons[insight.id] ?? ""}
-                      onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
-                      placeholder="Reason for applying or dismissing"
-                      aria-label={`Reason for ${insight.title}`}
+                      value={bulkReasons[domain] ?? ""}
+                      onChange={(e) => setBulkReasons((c) => ({ ...c, [domain]: e.target.value }))}
+                      placeholder="Reason for applying all"
+                      aria-label={`Reason for applying all ${DOMAIN_LABEL[domain]} insights`}
                     />
-                  </div>
-                  <div className="insight-actions">
                     <button
                       type="button"
                       className="btn"
-                      disabled={!insight.actionDescriptorId || busyId === insight.id}
-                      onClick={() => applyInsight(insight)}
-                      title={insight.actionDescriptorId ? "Apply this audited action" : "Open the manual page for this insight"}
+                      disabled={actionableCount === 0 || busyId === `bulk:${domain}`}
+                      onClick={() => applyGroup(domain)}
+                      title={actionableCount === 0 ? "No one-click actions in this group" : "Apply every actionable insight in this group"}
                     >
                       <CheckCircle2 size={14} />
-                      Apply
-                    </button>
-                    <Link href={insight.manualPageHref} className="btn btn-ghost">
-                      <ExternalLink size={14} />
-                      Configure manually
-                    </Link>
-                    <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
-                      <XCircle size={14} />
-                      Dismiss
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      disabled={busyId === `ai:${insight.id}`}
-                      onClick={() => reanalyze(insight)}
-                      title="Ask the AI to re-analyse this finding now"
-                    >
-                      <Sparkles size={14} />
-                      {busyId === `ai:${insight.id}` ? "Analysing…" : "Re-analyze"}
+                      Apply all safe ({actionableCount})
                     </button>
                   </div>
-                </article>
-              ))}
-            </div>
-          </section>
-        );
-      })}
+                </div>
+                <div className="insight-card-list">
+                  {insights.map((insight) => {
+                    const isFocused = focusKey && (insight.id === focusKey || insight.sourceKey === focusKey);
+                    return (
+                      <article
+                        key={insight.id}
+                        className={`insight-card severity-${insight.severity}${isFocused ? " insight-focused" : ""}`}
+                        ref={(el) => setCardRef(el, insight)}
+                        id={`insight-${insight.id}`}
+                      >
+                        <div className="insight-card-head">
+                          <div>
+                            <div className="insight-title-row">
+                              <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
+                              <span className="pill blue">{confidenceLabel(insight.confidence)}</span>
+                              {insight.riskTier === "auto" && insight.status === "open" && (
+                                <span className="pill green" title="Safe, non-customer-facing fix — applied automatically on the next scan">Auto-fix</span>
+                              )}
+                              {insight.riskTier === "review" && insight.status === "open" && (
+                                <span className="pill amber">Review required</span>
+                              )}
+                              {insight.status === "resolved" && (
+                                <span className="pill green">Resolved itself — verified by the scanner</span>
+                              )}
+                              {insight.status === "applied" && (
+                                <span className="pill green">{insight.riskTier === "auto" ? "Auto-applied ✓" : "Applied"}</span>
+                              )}
+                              {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
+                            </div>
+                            <h2>{insight.title}</h2>
+                          </div>
+                          {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
+                        </div>
+                        {insight.aiAnalysis ? (
+                          <div className="insight-ai">
+                            <div className="insight-ai-head">
+                              <Sparkles size={14} />
+                              <span>AI analysis</span>
+                              <span className="pill blue">{Math.round(insight.aiAnalysis.confidence * 100)}% confident</span>
+                              <span className="dim">{insight.aiAnalysis.model}</span>
+                            </div>
+                            <p className="insight-ai-summary">{insight.aiAnalysis.summary}</p>
+                            <div className="insight-ai-grid">
+                              <div>
+                                <span className="w-caption">Likely cause</span>
+                                <p>{insight.aiAnalysis.rootCause}</p>
+                              </div>
+                              <div>
+                                <span className="w-caption">Recommended action</span>
+                                <p>{insight.aiAnalysis.recommendedAction}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="insight-ai-pending dim">AI analysis pending — it appears after the next scan.</p>
+                        )}
+                        <details className="insight-detector">
+                          <summary>Detector signal</summary>
+                          <p>{insight.plainSummary}</p>
+                        </details>
+                        <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
+                        {insight.sourceKey && (
+                          <div className="insight-source-key">
+                            <span className="dim" style={{ fontSize: 11 }}>source key:</span>
+                            <Link href={`/insights?focus=${encodeURIComponent(insight.sourceKey)}`} className="pill gray" style={{ fontSize: 11 }}>
+                              {insight.sourceKey}
+                            </Link>
+                          </div>
+                        )}
+                        <div className="insight-reason-row">
+                          <input
+                            value={reasons[insight.id] ?? ""}
+                            onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
+                            placeholder="Reason for applying or dismissing"
+                            aria-label={`Reason for ${insight.title}`}
+                          />
+                        </div>
+                        <div className="insight-actions">
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={!insight.actionDescriptorId || busyId === insight.id}
+                            onClick={() => applyInsight(insight)}
+                            title={insight.actionDescriptorId ? "Apply this audited action" : "Open the manual page for this insight"}
+                          >
+                            <CheckCircle2 size={14} />
+                            Apply
+                          </button>
+                          <Link href={insight.manualPageHref} className="btn btn-ghost">
+                            <ExternalLink size={14} />
+                            Configure manually
+                          </Link>
+                          <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
+                            <XCircle size={14} />
+                            Dismiss
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            disabled={busyId === `ai:${insight.id}`}
+                            onClick={() => reanalyze(insight)}
+                            title="Ask the AI to re-analyse this finding now"
+                          >
+                            <Sparkles size={14} />
+                            {busyId === `ai:${insight.id}` ? "Analysing…" : "Re-analyze"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }

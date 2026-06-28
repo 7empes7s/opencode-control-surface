@@ -7,6 +7,8 @@ import { authFetch } from "../lib/authFetch";
 import type { HomeData } from "../../server/api/types";
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
+  "/admin": { title: "Admin Center", sub: "Health score · Detections · Audit · Governance" },
+  "/insights": { title: "Detections & Auto-fix", sub: "AI-reasoned findings, risk-tiered remediations" },
   "/": { title: "Operations", sub: "Live stack telemetry — last 5 min" },
   "/autopipeline": { title: "Autopipeline", sub: "Editorial queue, stages, throughput" },
   "/doctor": { title: "Doctor", sub: "Auto-repair history & error analysis" },
