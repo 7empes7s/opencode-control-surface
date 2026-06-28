@@ -190,6 +190,7 @@ import {
   insightDismissHandler,
   insightsListHandler,
   insightsScanHandler,
+  insightsReanalyzeHandler,
   insightsBulkApplyHandler,
   requireInsightPermission,
 } from "./insights.ts";
@@ -519,13 +520,14 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return insightsBulkApplyHandler(req);
   }
-  const insightActionMatch = pathname.match(/^\/api\/insights\/([^/]+)\/(apply|dismiss)$/);
+  const insightActionMatch = pathname.match(/^\/api\/insights\/([^/]+)\/(apply|dismiss|reanalyze)$/);
   if (method === "POST" && insightActionMatch) {
     const denied = requireMutation(req);
     if (denied) return denied;
     const insightId = decodeURIComponent(insightActionMatch[1]);
     const action = insightActionMatch[2];
     if (action === "apply") return insightApplyHandler(req, insightId);
+    if (action === "reanalyze") return insightsReanalyzeHandler(req, insightId);
     return insightDismissHandler(req, insightId);
   }
   if (method === "GET" && pathname === "/api/actions/audit") {

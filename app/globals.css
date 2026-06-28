@@ -1563,6 +1563,40 @@ body {
   color: var(--text);
   max-width: 920px;
 }
+.insight-ai {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-hover);
+}
+.insight-ai-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--blue);
+}
+.insight-ai-head .dim { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.insight-ai-summary { margin-top: 8px; color: var(--text); max-width: 920px; }
+.insight-ai-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 10px;
+}
+.insight-ai-grid > div { min-width: 0; }
+.insight-ai-grid p { margin-top: 2px; }
+@media (max-width: 720px) {
+  .insight-ai-grid { grid-template-columns: 1fr; }
+}
+.insight-ai-pending { margin-top: 12px; font-style: italic; }
+.insight-detector { margin-top: 10px; }
+.insight-detector > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); }
+.insight-detector p { margin-top: 6px; }
 .insight-evidence { margin-top: 12px; }
 .insight-evidence-toggle {
   display: inline-flex;

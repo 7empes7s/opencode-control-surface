@@ -184,7 +184,7 @@ type GeminiStreamEvent = {
 };
 
 export async function geminiStreamHandler(req: Request, id: string): Promise<Response> {
-  const body = (await req.json().catch(() => ({}))) as { text?: string; approvalMode?: string; outputFormat?: string };
+  const body = (await req.json().catch(() => ({}))) as { text?: string; approvalMode?: string; outputFormat?: string; model?: string };
   const text = body.text?.trim() ?? "";
   if (!text) return new Response(JSON.stringify({ error: "text required" }), { status: 400 });
 
@@ -214,7 +214,6 @@ export async function geminiStreamHandler(req: Request, id: string): Promise<Res
   session.updatedAt = Date.now();
   saveState(state);
 
-  // TODO(model-selector): inject --model <name> here when Gemini CLI supports per-request model selection.
   const outputFormat = body.outputFormat === "text" ? "text" : "stream-json";
   const args = [
     "--prompt", text,
@@ -223,6 +222,11 @@ export async function geminiStreamHandler(req: Request, id: string): Promise<Res
     isFirstTurn ? "--session-id" : "--resume",
     targetSessionId,
   ];
+
+  // Inject model selector when provided (Gemini CLI supports -m / --model)
+  if (body.model && typeof body.model === "string" && body.model.trim()) {
+    args.push("--model", body.model.trim());
+  }
 
   if (body.approvalMode && ["default", "auto_edit", "plan"].includes(body.approvalMode)) {
     args.push("--approval-mode", body.approvalMode);

@@ -9,6 +9,8 @@ import { executeActionHandler } from "./execute.ts";
 import { aggregateInsights } from "../insights/aggregate.ts";
 import { runInsightsScanOnce } from "../insights/scheduler.ts";
 import { getInsight, listInsights, updateInsightStatus } from "../insights/store.ts";
+import { getAiAnalysis, enrichInsight } from "../insights/ai.ts";
+import { riskTierFor } from "../insights/autoapply.ts";
 import type { Insight } from "../insights/types.ts";
 import { dispatchEventFireAndForget } from "../webhooks/dispatcher.ts";
 import { reasonerApplyPlaybookHandler } from "./reasoner.ts";
@@ -85,7 +87,35 @@ export async function insightsListHandler(req: Request, url: URL): Promise<Respo
   const status = url.searchParams.get("status") as "open" | "applied" | "dismissed" | "all" | null;
   const insights = listInsights(status ?? "open");
   const openCount = insights.filter((insight) => insight.status === "open").length;
-  return json(ok({ insights, openCount }));
+  const withAi = insights.map((insight) => ({
+    ...insight,
+    aiAnalysis: getAiAnalysis(insight.id),
+    riskTier: riskTierFor(insight),
+  }));
+  return json(ok({ insights: withAi, openCount }));
+}
+
+export async function insightsReanalyzeHandler(req: Request, insightId: string): Promise<Response> {
+  const roleErr = requireInsightPermission(req, "insights.apply");
+  if (roleErr) return roleErr;
+
+  const insight = getInsight(insightId);
+  if (!insight) return plainError("insight not found", 404);
+
+  const analysis = await enrichInsight(insight, { force: true });
+  writeActionAudit({
+    actor: getUserId(req),
+    actorSource: getCurrentTenantContext().source,
+    actionKind: "insights.reanalyze",
+    targetType: "insight",
+    targetId: insightId,
+    risk: "low",
+    request: {},
+    resultStatus: analysis ? "success" : "error",
+    result: analysis ? `Re-analysed with ${analysis.model}` : "AI analysis unavailable",
+  });
+  if (!analysis) return plainError("AI analysis is currently unavailable. Try again shortly.", 503);
+  return json(ok({ insight: { ...insight, aiAnalysis: analysis } }));
 }
 
 export async function insightsScanHandler(req: Request): Promise<Response> {

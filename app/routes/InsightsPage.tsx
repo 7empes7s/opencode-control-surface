@@ -6,8 +6,19 @@ import { authFetch } from "../lib/authFetch";
 import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
 import type { Insight, InsightStatus } from "../../server/insights/types";
 
+type AiAnalysis = {
+  summary: string;
+  rootCause: string;
+  recommendedAction: string;
+  confidence: number;
+  model: string;
+  generatedAt: number;
+};
+
+type InsightWithAi = Insight & { aiAnalysis?: AiAnalysis | null; riskTier?: "auto" | "review" | "none" };
+
 type InsightsPayload = {
-  insights: Insight[];
+  insights: InsightWithAi[];
   openCount: number;
 };
 
@@ -26,7 +37,11 @@ const DOMAIN_LABEL: Record<Insight["domain"], string> = {
   security: "Security",
   build: "Build",
   data: "Data",
+  ops: "Operations",
 };
+
+// Operations (stack health) leads — it is the most operationally urgent group.
+const DOMAIN_ORDER: Insight["domain"][] = ["ops", "security", "cost", "build", "data"];
 
 const SEVERITY_RANK: Record<Insight["severity"], number> = {
   critical: 5,
@@ -83,7 +98,7 @@ export function InsightsPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
-    const groups: Record<Insight["domain"], Insight[]> = { cost: [], security: [], build: [], data: [] };
+    const groups: Record<Insight["domain"], InsightWithAi[]> = { cost: [], security: [], build: [], data: [], ops: [] };
     for (const insight of data?.insights ?? []) {
       groups[insight.domain].push(insight);
     }
@@ -137,12 +152,26 @@ export function InsightsPage() {
     }
   }
 
+  async function reanalyze(insight: Insight) {
+    setBusyId(`ai:${insight.id}`);
+    setMessage(null);
+    try {
+      await post(`/api/insights/${encodeURIComponent(insight.id)}/reanalyze`, {});
+      setMessage("The AI re-analysed this finding.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "The finding could not be re-analysed right now.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function scanNow() {
     setBusyId("scan");
     setMessage(null);
     try {
       await post("/api/insights/scan", {});
-      setMessage("The inbox was refreshed from cost, security, build, and data signals.");
+      setMessage("The inbox was refreshed from operations, security, cost, build, and data signals.");
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The scan could not be started.");
@@ -220,7 +249,7 @@ export function InsightsPage() {
         </div>
       )}
 
-      {(Object.keys(grouped) as Insight["domain"][]).map((domain) => {
+      {DOMAIN_ORDER.map((domain) => {
         const insights = grouped[domain];
         if (insights.length === 0) return null;
         const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open").length;
@@ -259,14 +288,45 @@ export function InsightsPage() {
                         {insight.status === "resolved" && (
                           <span className="pill green">Resolved itself — verified by the scanner</span>
                         )}
-                        {insight.status === "applied" && <span className="pill green">Applied</span>}
+                        {insight.status === "applied" && (
+                          <span className="pill green">{insight.riskTier === "auto" ? "Auto-applied ✓" : "Applied"}</span>
+                        )}
+                        {insight.status === "open" && insight.riskTier === "auto" && (
+                          <span className="pill green" title="Safe, non-customer-facing fix — applied automatically on the next scan">Auto-fix</span>
+                        )}
                         {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
                       </div>
                       <h2>{insight.title}</h2>
                     </div>
                     {insight.severity === "critical" || insight.severity === "high" ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}
                   </div>
-                  <p>{insight.plainSummary}</p>
+                  {insight.aiAnalysis ? (
+                    <div className="insight-ai">
+                      <div className="insight-ai-head">
+                        <Sparkles size={14} />
+                        <span>AI analysis</span>
+                        <span className="pill blue">{Math.round(insight.aiAnalysis.confidence * 100)}% confident</span>
+                        <span className="dim">{insight.aiAnalysis.model}</span>
+                      </div>
+                      <p className="insight-ai-summary">{insight.aiAnalysis.summary}</p>
+                      <div className="insight-ai-grid">
+                        <div>
+                          <span className="w-caption">Likely cause</span>
+                          <p>{insight.aiAnalysis.rootCause}</p>
+                        </div>
+                        <div>
+                          <span className="w-caption">Recommended action</span>
+                          <p>{insight.aiAnalysis.recommendedAction}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="insight-ai-pending dim">AI analysis pending — it appears after the next scan.</p>
+                  )}
+                  <details className="insight-detector">
+                    <summary>Detector signal</summary>
+                    <p>{insight.plainSummary}</p>
+                  </details>
                   <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
                   <div className="insight-reason-row">
                     <input
@@ -294,6 +354,16 @@ export function InsightsPage() {
                     <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
                       <XCircle size={14} />
                       Dismiss
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      disabled={busyId === `ai:${insight.id}`}
+                      onClick={() => reanalyze(insight)}
+                      title="Ask the AI to re-analyse this finding now"
+                    >
+                      <Sparkles size={14} />
+                      {busyId === `ai:${insight.id}` ? "Analysing…" : "Re-analyze"}
                     </button>
                   </div>
                 </article>

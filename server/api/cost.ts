@@ -1,5 +1,6 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { isDashboardDbEnabled } from "../db/dashboard.ts";
+import { getVastInstance, getVastAccount } from "../adapters/vast.ts";
 
 // Types based on the plan specification
 export interface BudgetDefinition {
@@ -327,22 +328,23 @@ export async function getSpend(req: Request): Promise<Response> {
   }
 }
 
-export async function getVastRunway(req: Request): Promise<Response> {
+export async function getVastRunway(_req: Request): Promise<Response> {
   try {
-    // For now, we'll return mock data
-    // In a real implementation, this would fetch from Vast.ai API or system state
-    const hourly_cents = 13.8; // $0.138/hr * 100 (in cents)
-    const balance_cents = 5000; // $50 * 100 (in cents)
-    const hours_remaining = balance_cents / hourly_cents;
-    const days_remaining = hours_remaining / 24;
-    const last_checked_at = Date.now();
+    const [instance, account] = await Promise.all([getVastInstance(), getVastAccount()]);
+    const totalUsd = ((account?.balance ?? 0) + (account?.credit ?? 0));
+    const hourlyUsd = instance?.hourlyRate ?? null;
+    const hourly_cents = hourlyUsd !== null ? Math.round(hourlyUsd * 100) : null;
+    const balance_cents = Math.round(totalUsd * 100);
+    const hours_remaining = hourlyUsd && totalUsd > 0 ? totalUsd / hourlyUsd : null;
+    const days_remaining = hours_remaining !== null ? hours_remaining / 24 : null;
 
     return Response.json({
       hourly_cents,
       balance_cents,
       hours_remaining,
       days_remaining,
-      last_checked_at
+      last_checked_at: Date.now(),
+      instance_status: instance?.status ?? null,
     });
   } catch (error) {
     console.error("getVastRunway failed:", error);
@@ -470,50 +472,148 @@ export async function getFallbacks(req: Request): Promise<Response> {
   }
 }
 
-export async function getRecommendations(req: Request): Promise<Response> {
-  try {
-    const body = await req.json();
-    const { scope_type, scope_id } = body;
+type GatewayRow = {
+  logical_model: string | null;
+  tier: string | null;
+  total_cents: number;
+  event_count: number;
+};
 
-    // Mock recommendations - in a real implementation, this would analyze usage patterns
-    const recommendations = [
-      {
-        id: "rec_1",
-        type: "model_optimization",
-        title: "Switch to cheaper model for research tasks",
-        description: "Consider using gemma4-26b-free instead of deepseek-v3 for research tasks to save ~40% cost",
-        estimated_savings_pct: 40,
-        impact: "low"
-      },
-      {
-        id: "rec_2",
-        type: "batch_processing",
-        title: "Batch small requests",
-        description: "Group small API calls into batches to reduce overhead and costs",
-        estimated_savings_pct: 15,
-        impact: "medium"
+export async function getRecommendations(_req: Request): Promise<Response> {
+  const db = getDashboardDb();
+  const recommendations: Array<{
+    id: string;
+    type: string;
+    title: string;
+    description: string;
+    estimated_savings_pct: number;
+    impact: string;
+  }> = [];
+
+  if (db) {
+    try {
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+      // Group spend by model to find high-spend models and cloud vs local patterns
+      const byModel = db.query<GatewayRow, [number]>(`
+        SELECT logical_model, tier,
+               COALESCE(SUM(cost_cents), 0) as total_cents,
+               COUNT(*) as event_count
+        FROM gateway_calls
+        WHERE ts >= ?
+        GROUP BY logical_model, tier
+        ORDER BY total_cents DESC
+        LIMIT 20
+      `).all(thirtyDaysAgo);
+
+      const totalCents = byModel.reduce((s, r) => s + r.total_cents, 0);
+      const cloudRows = byModel.filter((r) => r.tier === "cloud" || r.tier === "cloud-fast" || r.tier === "cloud-heavy");
+      const freeRows = byModel.filter((r) => r.tier === "free" || r.tier === "local");
+      const cloudCents = cloudRows.reduce((s, r) => s + r.total_cents, 0);
+
+      if (totalCents > 0 && cloudCents / totalCents > 0.5) {
+        const savingsPct = Math.round((cloudCents / totalCents) * 0.4 * 100);
+        recommendations.push({
+          id: "rec_cloud_to_local",
+          type: "model_optimization",
+          title: "Shift more traffic to local/free models",
+          description: `${Math.round((cloudCents / totalCents) * 100)}% of the last 30 days' spend went to cloud models. Routing lower-stakes tasks (research, summarise) to local free-tier models could reduce cloud spend by ~${savingsPct}%.`,
+          estimated_savings_pct: savingsPct,
+          impact: "high",
+        });
       }
-    ];
 
-    return Response.json({
-      recommendations,
-      model_used: "cost-recommender-v1"
+      const topCloud = cloudRows[0];
+      const cheaperFree = freeRows[0];
+      if (topCloud && cheaperFree && topCloud.total_cents > 0) {
+        recommendations.push({
+          id: "rec_top_model_swap",
+          type: "model_optimization",
+          title: `Consider cheaper alternative for ${topCloud.logical_model ?? "top model"}`,
+          description: `${topCloud.logical_model ?? "Your top cloud model"} accounts for $${(topCloud.total_cents / 100).toFixed(2)} (${topCloud.event_count} calls). ${cheaperFree.logical_model ?? "A free-tier model"} handled ${cheaperFree.event_count} comparable calls at no cloud cost. Review whether all calls to the cloud model require that tier.`,
+          estimated_savings_pct: 30,
+          impact: "medium",
+        });
+      }
+
+      // Flag high-fallback rate (error_class present on successful calls = fallback occurred)
+      const fallbackRow = db.query<{ fallback_count: number }, [number]>(`
+        SELECT COUNT(*) as fallback_count FROM gateway_calls
+        WHERE ts >= ? AND success = 1 AND error_class IS NOT NULL
+      `).get(thirtyDaysAgo);
+
+      const totalRow = db.query<{ total: number }, [number]>(`
+        SELECT COUNT(*) as total FROM gateway_calls WHERE ts >= ?
+      `).get(thirtyDaysAgo);
+
+      const fallbackCount = fallbackRow?.fallback_count ?? 0;
+      const totalCount = totalRow?.total ?? 0;
+      if (totalCount > 10 && fallbackCount / totalCount > 0.1) {
+        recommendations.push({
+          id: "rec_fallback_rate",
+          type: "reliability",
+          title: "High fallback rate detected",
+          description: `${fallbackCount} of ${totalCount} gateway calls in the last 30 days hit a fallback path (${Math.round((fallbackCount / totalCount) * 100)}%). Investigate model-health.json for cooldowns piling up; clearing stale cooldowns may eliminate unnecessary cloud fallbacks.`,
+          estimated_savings_pct: 10,
+          impact: "medium",
+        });
+      }
+    } catch (err) {
+      console.warn("getRecommendations DB analysis failed:", err);
+    }
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push({
+      id: "rec_no_data",
+      type: "info",
+      title: "No spend data yet",
+      description: "Once gateway calls are recorded, cost optimisation recommendations will appear here based on actual usage patterns.",
+      estimated_savings_pct: 0,
+      impact: "none",
     });
-  } catch (error) {
-    console.error("getRecommendations failed:", error);
-    return new Response(JSON.stringify({ error: "Failed to fetch recommendations" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+  }
+
+  return Response.json({ recommendations, model_used: "usage-analysis-v1" });
+}
+
+type BudgetRow = {
+  id: string;
+  scope: string;
+  project_id: string | null;
+  daily_cap_usd: number | null;
+  monthly_cap_usd: number | null;
+  warn_pct: number;
+  created_at: number;
+  updated_at: number;
+};
+
+async function getRealRunway() {
+  try {
+    const [instance, account] = await Promise.all([getVastInstance(), getVastAccount()]);
+    const totalUsd = ((account?.balance ?? 0) + (account?.credit ?? 0));
+    const hourlyUsd = instance?.hourlyRate ?? null;
+    return {
+      hourly_cents: hourlyUsd !== null ? Math.round(hourlyUsd * 100) : null,
+      balance_cents: Math.round(totalUsd * 100),
+      hours_remaining: hourlyUsd && totalUsd > 0 ? totalUsd / hourlyUsd : null,
+      days_remaining: hourlyUsd && totalUsd > 0 ? totalUsd / hourlyUsd / 24 : null,
+      last_checked_at: Date.now(),
+      instance_status: instance?.status ?? null,
+    };
+  } catch {
+    return { hourly_cents: null, balance_cents: 0, hours_remaining: null, days_remaining: null, last_checked_at: Date.now(), instance_status: null };
   }
 }
 
-export async function getCostSummary(req: Request): Promise<Response> {
+export async function getCostSummary(_req: Request): Promise<Response> {
+  const [runway] = await Promise.all([getRealRunway()]);
+
   if (!isDashboardDbEnabled()) {
     return Response.json({
       budgets: [],
       spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+      runway,
       fallbacks: [],
       anomalies: [],
       note: "DASHBOARD_DB disabled",
@@ -526,7 +626,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
       return Response.json({
         budgets: [],
         spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-        runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+        runway,
         fallbacks: [],
         anomalies: [],
         note: "database unavailable",
@@ -535,34 +635,50 @@ export async function getCostSummary(req: Request): Promise<Response> {
 
     const now = Date.now();
     const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const monthStart = new Date();
+    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const monthStartTs = monthStart.getTime();
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const dayStartTs = dayStart.getTime();
 
-    let budgets: unknown[] = [];
+    let budgets: BudgetRow[] = [];
     try {
-      budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all();
+      budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all() as BudgetRow[];
     } catch { /* table may not exist */ }
+
+    // Compute actual spend for each budget period
+    const budgetsWithSpend = budgets.map((b) => {
+      const capUsd = b.monthly_cap_usd ?? b.daily_cap_usd ?? 0;
+      const capCents = Math.round(capUsd * 100);
+      const periodStart = b.monthly_cap_usd ? monthStartTs : dayStartTs;
+      let usedCents = 0;
+      try {
+        const row = db!.query<{ used: number }, [number]>(
+          "SELECT COALESCE(SUM(cost_cents), 0) as used FROM gateway_calls WHERE ts >= ?"
+        ).get(periodStart);
+        usedCents = row?.used ?? 0;
+      } catch { /* ignore */ }
+      const usagePct = capCents > 0 ? usedCents / capCents : 0;
+      return { ...b, cap_cents: capCents, used_cents: usedCents, usage_pct: usagePct };
+    });
 
     let totalCents = 0;
     let eventCount = 0;
     try {
-      const costColExists = db.query("SELECT cost_cents FROM gateway_calls LIMIT 1").all();
-      if (costColExists !== undefined) {
-        const row = db.query<{total_cents: number, event_count: number}, [number]>(
-          "SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count FROM gateway_calls WHERE ts >= ?"
-        ).get(thirtyDaysAgo) as { total_cents: number, event_count: number } | null;
-        if (row) { totalCents = row.total_cents; eventCount = row.event_count; }
-      }
+      const row = db.query<{total_cents: number, event_count: number}, [number]>(
+        "SELECT COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count FROM gateway_calls WHERE ts >= ?"
+      ).get(thirtyDaysAgo);
+      if (row) { totalCents = row.total_cents; eventCount = row.event_count; }
     } catch { /* cost_cents column may not exist */ }
 
     let spendGroups: unknown[] = [];
     try {
-      const providerColExists = db.query("SELECT provider FROM gateway_calls LIMIT 1").all();
-      if (providerColExists !== undefined) {
-        spendGroups = db.query(
-          `SELECT COALESCE(provider, 'unknown') as group_value, COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count
-           FROM gateway_calls WHERE ts >= ? GROUP BY COALESCE(provider, 'unknown') ORDER BY total_cents DESC LIMIT 20`
-        ).all(thirtyDaysAgo) ?? [];
-      }
-    } catch { /* fallback column may not exist */ }
+      spendGroups = db.query(
+        `SELECT COALESCE(logical_model, 'unknown') as group_value, COALESCE(SUM(cost_cents), 0) as total_cents, COUNT(*) as event_count
+         FROM gateway_calls WHERE ts >= ? GROUP BY COALESCE(logical_model, 'unknown') ORDER BY total_cents DESC LIMIT 20`
+      ).all(thirtyDaysAgo) ?? [];
+    } catch { /* column may not exist */ }
 
     let fallbacks: unknown[] = [];
     try {
@@ -574,12 +690,12 @@ export async function getCostSummary(req: Request): Promise<Response> {
     const anomalies = readRecentCostAnomalies(thirtyDaysAgo);
 
     return Response.json({
-      budgets,
+      budgets: budgetsWithSpend,
       spend: {
         totals: [{ total_cents: totalCents, event_count: eventCount }],
         groups: spendGroups,
       },
-      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: now },
+      runway,
       fallbacks,
       anomalies,
     });
@@ -588,7 +704,7 @@ export async function getCostSummary(req: Request): Promise<Response> {
     return Response.json({
       budgets: [],
       spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-      runway: { hourly_cents: 138, balance_cents: 5000, hours_remaining: 36, days_remaining: 1.5, last_checked_at: Date.now() },
+      runway,
       fallbacks: [],
       anomalies: [],
       error: "Failed to fetch cost summary",

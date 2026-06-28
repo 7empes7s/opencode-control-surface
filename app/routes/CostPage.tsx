@@ -12,6 +12,9 @@ interface CostData {
     warn_pct: number;
     created_at: number;
     updated_at: number;
+    cap_cents?: number;
+    used_cents?: number;
+    usage_pct?: number;
   }>;
   spend: {
     totals: Array<{
@@ -25,11 +28,12 @@ interface CostData {
     }>;
   };
   runway: {
-    hourly_cents: number;
+    hourly_cents: number | null;
     balance_cents: number;
-    hours_remaining: number;
-    days_remaining: number;
+    hours_remaining: number | null;
+    days_remaining: number | null;
     last_checked_at: number;
+    instance_status?: string | null;
   };
   fallbacks: Array<{
     id: number;
@@ -99,12 +103,12 @@ export function CostPage() {
           </div>
           <div className="w-card">
             <div className="w-label">Hourly Burn Rate</div>
-            <div className="w-headline sm">{fmtCurrency(d.runway.hourly_cents)}/hr</div>
+            <div className="w-headline sm">{d.runway.hourly_cents !== null ? `${fmtCurrency(d.runway.hourly_cents)}/hr` : "—"}</div>
           </div>
           <div className="w-card">
             <div className="w-label">Runway Remaining</div>
-            <div className="w-headline">{d.runway.days_remaining.toFixed(1)} days</div>
-            <div className="w-caption">{d.runway.hours_remaining.toFixed(0)} hours</div>
+            <div className="w-headline">{d.runway.days_remaining !== null ? `${d.runway.days_remaining.toFixed(1)} days` : "—"}</div>
+            <div className="w-caption">{d.runway.hours_remaining !== null ? `${d.runway.hours_remaining.toFixed(0)} hours` : ""}</div>
           </div>
         </div>
         <div className="w-caption" style={{ marginTop: 8 }}>
@@ -181,22 +185,18 @@ export function CostPage() {
                 <tbody>
                   {d.budgets.map((budget) => {
                     const period = budget.daily_cap_usd ? "Daily" : "Monthly";
-                    const cap = budget.daily_cap_usd || budget.monthly_cap_usd || 0;
-                    const capCents = cap * 100;
-                    
-                    // Calculate usage (mock for now)
-                    const usedCents = capCents * 0.3; // 30% usage for demo
-                    const usagePct = usedCents / capCents;
-                    
+                    const capCents = budget.cap_cents ?? Math.round((budget.daily_cap_usd ?? budget.monthly_cap_usd ?? 0) * 100);
+                    const usedCents = budget.used_cents ?? 0;
+                    const usagePct = budget.usage_pct ?? (capCents > 0 ? usedCents / capCents : 0);
+
                     let status = "normal";
                     let statusText = "Normal";
-                    if (usagePct >= budget.warn_pct) {
+                    if (usagePct >= 1.0) {
+                      status = "critical";
+                      statusText = "Over budget";
+                    } else if (usagePct >= budget.warn_pct) {
                       status = "warning";
                       statusText = "Warning";
-                    }
-                    if (usagePct >= budget.warn_pct * 1.2) {
-                      status = "critical";
-                      statusText = "Critical";
                     }
 
                     return (

@@ -1,6 +1,6 @@
 import type { EvidenceRef } from "../api/types.ts";
 
-export type InsightDomain = "cost" | "security" | "build" | "data";
+export type InsightDomain = "cost" | "security" | "build" | "data" | "ops";
 export type InsightStatus = "open" | "applied" | "dismissed" | "resolved";
 export type InsightSeverity = "info" | "low" | "medium" | "high" | "critical";
 

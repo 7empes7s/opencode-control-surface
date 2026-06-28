@@ -4,6 +4,10 @@ import { runRegistryScan } from "./scanners/registry.ts";
 import { runBudgetScan } from "./scanners/budget.ts";
 import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
+import { runOpsScan } from "./scanners/ops.ts";
+import { listInsights } from "./store.ts";
+import { enrichOpenInsights } from "./ai.ts";
+import { autoApplySafeInsights } from "./autoapply.ts";
 import { notifyCriticalFindings } from "../notifications/notifier.ts";
 import { startModelEvalScheduler, stopModelEvalScheduler } from "../evals/modelEval.ts";
 import { generateOperatorDigest, shouldSendWeeklyDigest } from "../reporting/digest.ts";
@@ -27,6 +31,7 @@ export async function runInsightsScanOnce(): Promise<{
   budgetFindings: number;
   anomalies: number;
   sentinelIncidents: number;
+  opsFindings: number;
   notifications: { sent: number; deduped: number; scanned: number; skipped: number };
 }> {
   const aggregated = aggregateInsights().createdOrUpdated;
@@ -39,6 +44,12 @@ export async function runInsightsScanOnce(): Promise<{
     sentinelIncidents = runSentinelIncidentScan().createdOrUpdated;
   } catch (error) {
     console.error("[insights] sentinel incident scan failed", error);
+  }
+  let opsFindings = 0;
+  try {
+    opsFindings = runOpsScan().findings.length;
+  } catch (error) {
+    console.error("[insights] ops scan failed", error);
   }
 
   let notifications = { sent: 0, deduped: 0, scanned: 0, skipped: 0 };
@@ -54,7 +65,19 @@ export async function runInsightsScanOnce(): Promise<{
     console.error("[insights] notifyCriticalFindings failed", error);
   }
 
-  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, notifications };
+  // Fire-and-forget AI reasoning enrichment for open findings. Never blocks the
+  // scan (or finding creation); guarded internally against overlapping runs.
+  void enrichOpenInsights(listInsights("open")).catch((err) => {
+    console.error("[insights] ai enrichment failed", err instanceof Error ? err.message : err);
+  });
+
+  // Fire-and-forget auto-apply of safe (allowlisted, non-customer-facing)
+  // remediations. Review-tier findings are untouched and wait for a human Apply.
+  void autoApplySafeInsights(listInsights("open")).catch((err) => {
+    console.error("[insights] auto-apply failed", err instanceof Error ? err.message : err);
+  });
+
+  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {

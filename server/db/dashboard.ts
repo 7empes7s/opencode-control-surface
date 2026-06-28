@@ -953,7 +953,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
 
     CREATE TABLE IF NOT EXISTS insights (
       id TEXT PRIMARY KEY,
-      domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data')),
+      domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
       severity TEXT NOT NULL,
       title TEXT NOT NULL,
       plain_summary TEXT NOT NULL,
@@ -975,6 +975,20 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
       ON insights (tenant_id, source_key)
       WHERE source_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS ai_analysis (
+      signature TEXT PRIMARY KEY,
+      insight_id TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      root_cause TEXT NOT NULL,
+      recommended_action TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      model TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      generated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_analysis_insight
+      ON ai_analysis (insight_id, generated_at);
   `);
 
   // Add columns to tables created above (must run after CREATE TABLE)
@@ -1266,7 +1280,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       db.exec(`
         CREATE TABLE insights_new (
           id TEXT PRIMARY KEY,
-          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data')),
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
           severity TEXT NOT NULL,
           title TEXT NOT NULL,
           plain_summary TEXT NOT NULL,
@@ -1306,6 +1320,75 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     db.query("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)")
       .run(DASHBOARD_SCHEMA_VERSION, appliedAt);
   }
+
+  // Migration: allow the 'ops' insight domain. SQLite cannot ALTER a CHECK
+  // constraint, so rebuild the insights table when an older constraint is
+  // detected. Idempotent and version-independent: keyed on whether the live
+  // table's SQL already permits 'ops'.
+  try {
+    const insightsTable = db.query(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='insights'",
+    ).get() as { sql: string } | null;
+    if (insightsTable && !insightsTable.sql.includes("'ops'")) {
+      db.exec(`
+        CREATE TABLE insights_ops_new (
+          id TEXT PRIMARY KEY,
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
+          severity TEXT NOT NULL,
+          title TEXT NOT NULL,
+          plain_summary TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          evidence_refs_json TEXT NOT NULL,
+          action_descriptor_id TEXT,
+          manual_page_href TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'applied', 'dismissed', 'resolved')),
+          tenant_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          source_key TEXT,
+          resolved_at INTEGER,
+          resolution TEXT
+        );
+        INSERT INTO insights_ops_new (id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, resolved_at, resolution)
+        SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, resolved_at, resolution
+        FROM insights;
+        DROP TABLE insights;
+        ALTER TABLE insights_ops_new RENAME TO insights;
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_created
+          ON insights (tenant_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_status_severity
+          ON insights (tenant_id, status, severity);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
+          ON insights (tenant_id, source_key)
+          WHERE source_key IS NOT NULL;
+      `);
+    }
+  } catch (err) {
+    console.error("[dashboard] ops-domain insights migration failed", err);
+  }
+
+  // ── Phase 7: system_configs + config_changes (settings persistence) ────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_configs (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL DEFAULT 'operator'
+    );
+
+    CREATE TABLE IF NOT EXISTS config_changes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      old_value_json TEXT,
+      new_value_json TEXT NOT NULL,
+      changed_by TEXT NOT NULL DEFAULT 'operator',
+      note TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_config_changes_ts ON config_changes (ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_config_changes_key ON config_changes (key, ts DESC);
+  `);
 
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
