@@ -20,6 +20,7 @@ import {
   type BuilderRun,
   type BuilderWorkflow,
   type BuilderPass,
+  type BuilderValidation,
 } from "./store.ts";
 import { selectModelForRole, type ModelRole } from "./modelSelector.ts";
 import { getVerifiedAgenticGroup } from "./discovery.ts";
@@ -40,6 +41,44 @@ const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
 // filesystem MCP servers (vault/newsbites/editorial) that make agentic models falsely
 // believe they are sandboxed, and without the MIMULE infra CLAUDE.md instructions.
 const BUILDER_OPENCODE_CONFIG_HOME = "/var/lib/control-surface/opencode-builder";
+
+function validationSucceeded(status: string): boolean {
+  return /^(ok|pass|passed|success|succeeded|skipped)$/i.test(status);
+}
+
+export function repeatedValidationFailurePauseReason(
+  passes: BuilderPass[],
+  validations: BuilderValidation[],
+  threshold: number,
+): string | null {
+  const normalizedThreshold = Math.min(20, Math.max(2, Math.round(threshold || 3)));
+  const validationsByPass = new Map<string, BuilderValidation[]>();
+  for (const validation of validations) {
+    if (!validation.passId) continue;
+    const rows = validationsByPass.get(validation.passId) ?? [];
+    rows.push(validation);
+    validationsByPass.set(validation.passId, rows);
+  }
+
+  let streak = 0;
+  const failedLabels: string[] = [];
+  for (const pass of [...passes].sort((a, b) => b.sequence - a.sequence)) {
+    const passValidations = validationsByPass.get(pass.id) ?? [];
+    if (passValidations.length === 0) break;
+    const failed = passValidations.filter((validation) => !validationSucceeded(validation.status));
+    if (failed.length === 0) break;
+    streak += 1;
+    for (const validation of failed) {
+      const label = validation.command ?? validation.kind;
+      if (label && !failedLabels.includes(label)) failedLabels.push(label);
+    }
+    if (streak >= normalizedThreshold) {
+      const examples = failedLabels.slice(0, 3).join("; ");
+      return `${streak} consecutive passes ended with validation failures${examples ? ` (${examples})` : ""} — workflow paused for repair before more agent passes run.`;
+    }
+  }
+  return null;
+}
 
 function ensureRunsDir(): void {
   if (!existsSync(BUILDER_RUNS_DIR)) {
@@ -2485,6 +2524,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   if (shouldContinue && workflow) {
     const CONSECUTIVE_TIMEOUT_LIMIT = 3; // N back-to-back no-output timeouts → pause
     const NO_BUILD_PROGRESS_LIMIT = 6;   // N passes where the build never went green → pause
+    const validationPausePolicy = workflow.config.riskPolicy.pauseOnRepeatedValidationFailure;
     const tail = readBuilderPasses(runId)
       .filter((p) => p.sequence <= passSeq)
       .sort((a, b) => b.sequence - a.sequence);
@@ -2493,9 +2533,16 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
       if (p.failureClass === "pass-timeout" || p.error === "Agent exited with code 124") timeoutStreak++;
       else break;
     }
-    if (timeoutStreak >= CONSECUTIVE_TIMEOUT_LIMIT) {
+    if (validationPausePolicy?.enabled !== false) {
+      pauseReason = repeatedValidationFailurePauseReason(
+        tail,
+        readBuilderValidations(runId),
+        validationPausePolicy?.threshold ?? 3,
+      );
+    }
+    if (!pauseReason && timeoutStreak >= CONSECUTIVE_TIMEOUT_LIMIT) {
       pauseReason = `${timeoutStreak} consecutive agent timeouts with no output — needs a reasoner/operator diagnosis before continuing.`;
-    } else if (buildFailed) {
+    } else if (!pauseReason && buildFailed) {
       // Count trailing passes that never produced a green build.
       let brokenStreak = 0;
       for (const p of tail) {

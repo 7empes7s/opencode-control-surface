@@ -256,6 +256,12 @@ async function parseWorkflowInput(req: Request): Promise<BuilderWorkflowInput> {
         stallTimeoutSeconds: Number.isFinite(body.config?.riskPolicy?.stallTimeoutSeconds)
           ? Number(body.config?.riskPolicy?.stallTimeoutSeconds)
           : BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS,
+        pauseOnRepeatedValidationFailure: {
+          enabled: body.config?.riskPolicy?.pauseOnRepeatedValidationFailure?.enabled !== false,
+          threshold: Number.isFinite(body.config?.riskPolicy?.pauseOnRepeatedValidationFailure?.threshold)
+            ? Number(body.config?.riskPolicy?.pauseOnRepeatedValidationFailure?.threshold)
+            : 3,
+        },
       },
       geminiApprovalMode: ["default", "auto_edit", "plan", "yolo"].includes(body.config?.geminiApprovalMode as string)
         ? (body.config?.geminiApprovalMode as "default" | "auto_edit" | "plan" | "yolo")
@@ -1455,7 +1461,10 @@ function buildRepairPlan(run: BuilderRun, workflow: BuilderWorkflow, validations
       lines.push(`### ${failure.kind}: ${failure.status}`, "");
       if (failure.command) lines.push(`Command: \`${failure.command}\``);
       if (failure.url) lines.push(`URL: ${failure.url}`);
-      const detail = (failure.error ?? failure.outputTail ?? "").trim();
+      const detail = [failure.error, failure.outputTail]
+        .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+        .join("\n\n")
+        .trim();
       if (detail) lines.push("", "```text", detail.slice(-2500), "```");
       lines.push("");
     }

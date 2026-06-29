@@ -12,6 +12,7 @@ import {
   builderModelsHandler,
   builderPauseWorkflowHandler,
   builderProvisionHandler,
+  builderRepairBaselineHandler,
   builderProjectsHandler,
   builderRunHandler,
   builderRunSummaryHandler,
@@ -21,6 +22,7 @@ import {
   builderStopWorkflowHandler,
   builderWorkflowsHandler,
   type BuilderProvisionResponse,
+  type BuilderRepairBaselineResponse,
   type BuilderProjectsResponse,
   type BuilderRunResponse,
   type BuilderRunSummaryResponse,
@@ -31,6 +33,7 @@ import type { BuilderDiscovery, BuilderModelsInventory } from "../builder/discov
 import { readBuilderRuns, readBuilderWorkflow } from "../builder/store.ts";
 import { selectModelForRole } from "../builder/modelSelector.ts";
 import { getValidationProfileStartBlockers } from "../builder/validation-profile.ts";
+import { repeatedValidationFailurePauseReason } from "../builder/runner.ts";
 
 let tempDir: string;
 let previousDashboardDb: string | undefined;
@@ -127,10 +130,10 @@ test("builder run summary exposes run-detail health signals", async () => {
   `).run("br_health", "bw_health", "manual", "failed", now - 120_000, now, "bp_health", "validation failed");
   db.query(`
     INSERT INTO builder_passes (
-      id, run_id, workflow_id, sequence, phase, status, started_at, finished_at,
+      id, run_id, workflow_id, sequence, phase, status, agent, model, started_at, finished_at,
       job_ids_json, validation_ids_json, artifact_ids_json, summary, failure_class, error, analytics_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     "bp_health",
     "br_health",
@@ -138,6 +141,8 @@ test("builder run summary exposes run-detail health signals", async () => {
     1,
     "implement",
     "failed",
+    "codex",
+    "gpt-5",
     now - 110_000,
     now - 10_000,
     "[]",
@@ -225,6 +230,22 @@ test("builder run summary exposes run-detail health signals", async () => {
     now - 100_000,
     JSON.stringify({ dirtyFiles: 3 }),
   );
+  const stdoutPath = join(tempDir, "bp_health-stdout.log");
+  writeFileSync(stdoutPath, "Planning repair\n[builder] running validation\nApplied patch\n", "utf8");
+  db.query(`
+    INSERT INTO builder_artifacts (id, workflow_id, run_id, pass_id, kind, path, sha256, created_at, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "ba_stdout",
+    "bw_health",
+    "br_health",
+    "bp_health",
+    "stdout",
+    stdoutPath,
+    null,
+    now - 50_000,
+    "{}",
+  );
 
   const response = builderRunSummaryHandler("br_health");
   expect(response.status).toBe(200);
@@ -243,6 +264,194 @@ test("builder run summary exposes run-detail health signals", async () => {
   expect(envelope.data.dirtyFileSnapshot?.passSequence).toBe(1);
   expect(envelope.data.previewStatus.status).toBe("ok");
   expect(envelope.data.previewStatus.label).toContain("preview-web");
+  expect(envelope.data.modelQuality).toHaveLength(1);
+  expect(envelope.data.modelQuality[0]).toMatchObject({
+    model: "gpt-5",
+    passCount: 1,
+    failedPasses: 1,
+    timeoutRate: 1,
+    validationPassRate: 0.67,
+    fileWriteProbe: "passed",
+    averageUsefulStdoutIntervalMs: 50_000,
+    lastStatus: "failed",
+  });
+});
+
+test("builder repair baseline action creates focused workflow from build failures", async () => {
+  enableDb();
+  const db = getDashboardDb()!;
+  const projectRoot = "/opt/opencode-control-surface";
+  const planFile = join(tempDir, "REPAIR_SOURCE_PLAN.md");
+  writeFileSync(planFile, "- [ ] Ship feature after build is green\n", "utf8");
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Generated app roadmap",
+      projectRoot,
+      planFile,
+      mode: "auto-continue",
+      status: "ready",
+      config: {
+        projectRoot,
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: ["zen-gpt-5-mini"] },
+        validationProfile: { commands: ["bun run typecheck", "bun run build"], internal: [], runtime: [], public: [] },
+        gitPolicy: { commit: "manual", push: "workflow-branch" },
+        backupPolicy: { enabled: true, beforeRun: true },
+        riskPolicy: { liveDeploys: "disabled", maxPasses: 8 },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflowId = created.data.workflow!.id;
+  const now = Date.now();
+
+  db.query(`
+    INSERT INTO builder_runs (id, workflow_id, trigger, status, started_at, finished_at, current_pass_id, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("br_repair", workflowId, "manual", "failed", now - 120_000, now, "bp_repair", "build failed");
+  db.query(`
+    INSERT INTO builder_passes (
+      id, run_id, workflow_id, sequence, phase, status, started_at, finished_at,
+      job_ids_json, validation_ids_json, artifact_ids_json, summary, failure_class, error, analytics_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bp_repair",
+    "br_repair",
+    workflowId,
+    1,
+    "validate",
+    "failed",
+    now - 90_000,
+    now - 60_000,
+    "[]",
+    JSON.stringify(["bv_repair"]),
+    "[]",
+    "Build failed during baseline validation.",
+    "validation-failed",
+    "TypeScript compile failed",
+    "{}",
+  );
+  db.query(`
+    INSERT INTO builder_validations (
+      id, workflow_id, run_id, pass_id, kind, status, command, url, started_at,
+      finished_at, output_tail, artifact_id, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bv_repair",
+    workflowId,
+    "br_repair",
+    "bp_repair",
+    "web-build",
+    "failed",
+    "bun run build",
+    null,
+    now - 80_000,
+    now - 70_000,
+    "src/app.ts:42:7 - error TS2322: Type 'string' is not assignable to type 'number'.",
+    null,
+    "compile failed",
+  );
+
+  const response = await builderRepairBaselineHandler("br_repair", new Request("http://localhost/api/builder/runs/br_repair/repair-baseline", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(response.status).toBe(201);
+  const envelope = await response.json() as ApiEnvelope<BuilderRepairBaselineResponse>;
+  const repairWorkflow = envelope.data.workflow!;
+  const repairPlanFile = envelope.data.repairPlanFile;
+
+  expect(repairWorkflow.name).toContain("Repair build baseline");
+  expect(repairWorkflow.status).toBe("ready");
+  expect(repairWorkflow.mode).toBe("once");
+  expect(repairWorkflow.projectRoot).toBe(projectRoot);
+  expect(repairWorkflow.planFile).toBe(repairPlanFile);
+  expect(repairWorkflow.config.riskPolicy.maxPasses).toBe(1);
+  expect(repairWorkflow.config.gitPolicy.commit).toBe("manual");
+  expect(repairWorkflow.config.gitPolicy.push).toBe("never");
+  expect(readBuilderWorkflow(repairWorkflow.id)?.planFile).toBe(repairPlanFile);
+
+  const repairPlan = readFileSync(repairPlanFile, "utf8");
+  expect(repairPlan).toContain("Restore the compile/build baseline");
+  expect(repairPlan).toContain("Command: `bun run build`");
+  expect(repairPlan).toContain("TS2322");
+  expect(repairPlan).toContain("Do not implement unrelated plan items");
+
+  const audit = readActionAudit({ targetType: "builder-run" });
+  expect(audit.some((row) => (
+    row.actionKind === "builder.workflow.repair-baseline"
+    && row.targetId === "br_repair"
+    && row.resultStatus === "success"
+  ))).toBe(true);
+
+  rmSync(repairPlanFile, { force: true });
+});
+
+test("builder repeated validation failure policy detects a configured streak", () => {
+  const passes = [
+    { id: "bp_1", sequence: 1 },
+    { id: "bp_2", sequence: 2 },
+    { id: "bp_3", sequence: 3 },
+  ] as Parameters<typeof repeatedValidationFailurePauseReason>[0];
+  const validations = [
+    { id: "bv_1", passId: "bp_1", kind: "typecheck", status: "failed", command: "bun run typecheck" },
+    { id: "bv_2", passId: "bp_2", kind: "build", status: "failed", command: "bun run build" },
+    { id: "bv_3", passId: "bp_3", kind: "build", status: "failed", command: "bun run build" },
+  ] as Parameters<typeof repeatedValidationFailurePauseReason>[1];
+
+  expect(repeatedValidationFailurePauseReason(passes, validations, 3)).toContain("3 consecutive passes");
+
+  const recovered = [
+    ...validations,
+    { id: "bv_4", passId: "bp_4", kind: "build", status: "success", command: "bun run build" },
+  ] as Parameters<typeof repeatedValidationFailurePauseReason>[1];
+  const recoveredPasses = [
+    ...passes,
+    { id: "bp_4", sequence: 4 },
+  ] as Parameters<typeof repeatedValidationFailurePauseReason>[0];
+  expect(repeatedValidationFailurePauseReason(recoveredPasses, recovered, 3)).toBeNull();
+});
+
+test("builder workflow stores configured repeated-validation pause policy", async () => {
+  enableDb();
+  const response = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Validation pause policy",
+      projectRoot: "/opt/opencode-control-surface",
+      planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+      mode: "auto-continue",
+      status: "ready",
+      config: {
+        projectRoot: "/opt/opencode-control-surface",
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: [] },
+        validationProfile: { commands: ["bun run typecheck"], internal: [], runtime: [], public: [] },
+        gitPolicy: { commit: "manual", push: "never" },
+        backupPolicy: { enabled: false, beforeRun: false },
+        riskPolicy: {
+          liveDeploys: "disabled",
+          maxPasses: 8,
+          pauseOnRepeatedValidationFailure: { enabled: true, threshold: 99 },
+        },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(response.status).toBe(201);
+  const created = await response.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  expect(created.data.workflow?.config.riskPolicy.pauseOnRepeatedValidationFailure).toEqual({
+    enabled: true,
+    threshold: 20,
+  });
 });
 
 test("opencode agent model selection uses native provider/model ids", () => {
@@ -294,7 +503,11 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
       },
       gitPolicy: { commit: "manual", push: "never" },
       backupPolicy: { enabled: true, beforeRun: true },
-      riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      riskPolicy: {
+        liveDeploys: "disabled",
+        maxPasses: 1,
+        pauseOnRepeatedValidationFailure: { enabled: false, threshold: 5 },
+      },
       sourceSession: {
         agent: "codex",
         sessionId: "cdx_test",
@@ -324,6 +537,7 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
 
   const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
   expect(created.data.workflow?.status).toBe("draft");
+  expect(created.data.workflow?.config.riskPolicy.pauseOnRepeatedValidationFailure).toEqual({ enabled: false, threshold: 5 });
   expect(created.data.workflow?.config.validationProfile.commands).toContain("bun run build");
   expect(created.data.workflow?.config.sourceSession?.agent).toBe("codex");
   expect(created.data.workflow?.config.sourceSession?.sessionId).toBe("cdx_test");
@@ -405,6 +619,7 @@ test("builder workflow list reconciles stale timeout and agentic-heavy model pol
   expect(workflow.config.riskPolicy.maxPasses).toBe(120);
   expect(workflow.config.riskPolicy.passTimeoutSeconds).toBe(1500);
   expect(workflow.config.riskPolicy.stallTimeoutSeconds).toBe(2700);
+  expect(workflow.config.riskPolicy.pauseOnRepeatedValidationFailure).toEqual({ enabled: true, threshold: 3 });
   expect(workflow.config.agentOrder).toEqual([
     "opencode:openrouter/openai/gpt-oss-120b:free:high",
     "opencode:opencode/deepseek-v4-flash-free:high",
@@ -417,6 +632,7 @@ test("builder workflow list reconciles stale timeout and agentic-heavy model pol
   const raw = db!.query(`SELECT config_json FROM builder_workflows WHERE id = ?`).get(workflowId) as { config_json: string };
   const stored = JSON.parse(raw.config_json) as typeof workflow.config;
   expect(stored.riskPolicy.maxPasses).toBe(120);
+  expect(stored.riskPolicy.pauseOnRepeatedValidationFailure).toEqual({ enabled: true, threshold: 3 });
   expect(stored.modelPolicy.fallbackTargets).toContain("opencode/deepseek-v4-flash-free");
 });
 

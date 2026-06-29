@@ -83,6 +83,10 @@ export type BuilderWorkflowConfig = {
     maxPasses: number;
     passTimeoutSeconds?: number;
     stallTimeoutSeconds?: number;
+    pauseOnRepeatedValidationFailure?: {
+      enabled: boolean;
+      threshold: number;
+    };
   };
   geminiApprovalMode?: "default" | "auto_edit" | "plan" | "yolo";
   effortLevel?: "low" | "medium" | "high";
@@ -243,6 +247,7 @@ export const DEFAULT_WORKFLOW_CONFIG: BuilderWorkflowConfig = {
     maxPasses: 1,
     passTimeoutSeconds: BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS,
     stallTimeoutSeconds: BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS,
+    pauseOnRepeatedValidationFailure: { enabled: true, threshold: 3 },
   },
   geminiApprovalMode: "auto_edit",
 };
@@ -346,6 +351,11 @@ function normalizeWorkflowConfig(parsed: Partial<BuilderWorkflowConfig>, mode: B
     riskPolicy.passTimeoutSeconds = Math.max(riskPolicy.passTimeoutSeconds ?? 0, BUILDER_DEFAULT_PASS_TIMEOUT_SECONDS);
     riskPolicy.stallTimeoutSeconds = Math.max(riskPolicy.stallTimeoutSeconds ?? 0, BUILDER_DEFAULT_STALL_TIMEOUT_SECONDS);
   }
+  const pausePolicy = riskPolicy.pauseOnRepeatedValidationFailure ?? DEFAULT_WORKFLOW_CONFIG.riskPolicy.pauseOnRepeatedValidationFailure!;
+  riskPolicy.pauseOnRepeatedValidationFailure = {
+    enabled: pausePolicy.enabled !== false,
+    threshold: Math.min(20, Math.max(2, Math.round(Number(pausePolicy.threshold) || 3))),
+  };
   return {
     ...DEFAULT_WORKFLOW_CONFIG,
     ...parsed,

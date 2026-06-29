@@ -464,7 +464,13 @@ function workflowDefaults(data: BuilderDiscovery, projectRoot: string): BuilderW
       backupPolicy: { enabled: true, beforeRun: true },
       // Generous ceiling — the run self-stops once the plan checklist is complete,
       // so this is a safety cap against runaway loops, not a target pass count.
-      riskPolicy: { liveDeploys: "disabled", maxPasses: 120, passTimeoutSeconds: 1500, stallTimeoutSeconds: 2700 },
+      riskPolicy: {
+        liveDeploys: "disabled",
+        maxPasses: 120,
+        passTimeoutSeconds: 1500,
+        stallTimeoutSeconds: 2700,
+        pauseOnRepeatedValidationFailure: { enabled: true, threshold: 3 },
+      },
       geminiApprovalMode: "auto_edit",
     },
   };
@@ -843,6 +849,49 @@ function WorkflowModal({
               }))}
             />
           </label>
+          <label className="builder-checkbox builder-form-wide">
+            <input
+              type="checkbox"
+              checked={draft.config.riskPolicy.pauseOnRepeatedValidationFailure?.enabled !== false}
+              onChange={(event) => setDraft((prev) => ({
+                ...prev,
+                config: {
+                  ...prev.config,
+                  riskPolicy: {
+                    ...prev.config.riskPolicy,
+                    pauseOnRepeatedValidationFailure: {
+                      enabled: event.target.checked,
+                      threshold: prev.config.riskPolicy.pauseOnRepeatedValidationFailure?.threshold ?? 3,
+                    },
+                  },
+                },
+              }))}
+            />
+            pause after repeated validation failures
+          </label>
+          <label className="modal-input-row">
+            <span className="modal-input-label">Failure threshold</span>
+            <input
+              className="modal-input"
+              type="number"
+              min={2}
+              max={20}
+              value={draft.config.riskPolicy.pauseOnRepeatedValidationFailure?.threshold ?? 3}
+              onChange={(event) => setDraft((prev) => ({
+                ...prev,
+                config: {
+                  ...prev.config,
+                  riskPolicy: {
+                    ...prev.config.riskPolicy,
+                    pauseOnRepeatedValidationFailure: {
+                      enabled: prev.config.riskPolicy.pauseOnRepeatedValidationFailure?.enabled !== false,
+                      threshold: Number(event.target.value) || 3,
+                    },
+                  },
+                },
+              }))}
+            />
+          </label>
           <ButtonGroup
             label="Live deploys"
             value={draft.config.riskPolicy.liveDeploys}
@@ -1147,6 +1196,7 @@ function WorkflowPolicySummary({ workflow }: { workflow?: BuilderWorkflow | null
         <div><span>max passes</span><strong>{risk.maxPasses}</strong></div>
         <div><span>pass timeout</span><strong>{risk.passTimeoutSeconds ?? "-"}s</strong></div>
         <div><span>stall timeout</span><strong>{risk.stallTimeoutSeconds ?? "-"}s</strong></div>
+        <div><span>validation pause</span><strong><Pill color={risk.pauseOnRepeatedValidationFailure?.enabled === false ? "gray" : "amber"}>{risk.pauseOnRepeatedValidationFailure?.enabled === false ? "off" : `${risk.pauseOnRepeatedValidationFailure?.threshold ?? 3} failures`}</Pill></strong></div>
         <div><span>live deploys</span><strong><Pill color={risk.liveDeploys === "disabled" ? "gray" : "amber"}>{risk.liveDeploys}</Pill></strong></div>
         <div><span>fallbacks</span><strong>{fallbackTargets.length}</strong></div>
       </div>
