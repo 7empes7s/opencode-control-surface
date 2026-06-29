@@ -194,4 +194,41 @@ describe("executeActionHandler", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("NOT_FOUND");
   });
+
+  it("15. project budget cap action persists project scope and audit", async () => {
+    const { status, result } = await makeRequest({
+      actionId: "mutate-policy:budget:project:project-alpha:set-cap",
+      confirmed: true,
+      reason: "project budget test",
+      params: { dailyCapUsd: 3, monthlyCapUsd: 30, warnPct: 0.75 },
+    });
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.result.budget.scope).toBe("project");
+    expect(result.result.budget.project_id).toBe("project-alpha");
+    expect(result.result.budget.warn_pct).toBe(0.75);
+
+    const row = getDashboardDb()!.query(`
+      SELECT scope, project_id, daily_cap_usd, monthly_cap_usd, warn_pct
+      FROM governance_budgets
+      WHERE scope = 'project' AND project_id = ?
+    `).get("project-alpha") as {
+      scope: string;
+      project_id: string;
+      daily_cap_usd: number;
+      monthly_cap_usd: number;
+      warn_pct: number;
+    } | null;
+    expect(row?.daily_cap_usd).toBe(3);
+    expect(row?.monthly_cap_usd).toBe(30);
+    expect(row?.warn_pct).toBe(0.75);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT COUNT(*) AS count
+      FROM action_audit
+      WHERE action_id = ?
+        AND result_status = 'success'
+    `).get("mutate-policy:budget:project:project-alpha:set-cap") as { count: number };
+    expect(audit.count).toBe(1);
+  });
 });

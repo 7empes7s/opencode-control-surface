@@ -48,9 +48,13 @@ export function checkBudget(scope: BudgetScope, projectId?: string, ctx?: Tenant
   const tenantCtx = ctx ?? getCurrentTenantContext();
   const { clause: tenantClause, params: tenantParams } = whereTenant(tenantCtx);
 
-  const budgets = db.query(
-    `SELECT * FROM governance_budgets WHERE scope = ? ${tenantClause}`,
-  ).all(scope, ...tenantParams) as GovernanceBudget[];
+  const budgets = scope === "project"
+    ? db.query(
+      `SELECT * FROM governance_budgets WHERE scope = ? AND project_id = ? ${tenantClause}`,
+    ).all(scope, projectId ?? "", ...tenantParams) as GovernanceBudget[]
+    : db.query(
+      `SELECT * FROM governance_budgets WHERE scope = ? ${tenantClause}`,
+    ).all(scope, ...tenantParams) as GovernanceBudget[];
 
   if (!budgets.length) return { allowed: true };
 
@@ -59,16 +63,9 @@ export function checkBudget(scope: BudgetScope, projectId?: string, ctx?: Tenant
   const dayStart = getStartOfDay();
   const monthStart = getStartOfMonth();
 
-  const dayRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
-  ).get(dayStart, ...tenantParams) as { total: number | null };
-
-  const monthRow = db.query(
-    `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,
-  ).get(monthStart, ...tenantParams) as { total: number | null };
-
-  const daySpent = dayRow?.total ?? 0;
-  const monthSpent = monthRow?.total ?? 0;
+  const spending = getBudgetSpending(scope, projectId, tenantCtx);
+  const daySpent = spending.daily;
+  const monthSpent = spending.monthly;
 
   if (budget.daily_cap_usd != null && daySpent >= budget.daily_cap_usd) {
     return { allowed: false, reason: "Daily budget exceeded", period: "daily", cap: budget.daily_cap_usd, spent: daySpent };
@@ -150,6 +147,26 @@ export function getBudgetSpending(scope: BudgetScope, projectId?: string, ctx?: 
 
   const dayStart = getStartOfDay();
   const monthStart = getStartOfMonth();
+
+  if (scope === "project") {
+    if (!projectId) return { daily: 0, monthly: 0 };
+    try {
+      const dayRow = db.query(
+        `SELECT SUM(cost_cents) / 100.0 as total FROM cost_events WHERE ts >= ? AND project = ? ${tenantClause}`,
+      ).get(dayStart, projectId, ...tenantParams) as { total: number | null };
+
+      const monthRow = db.query(
+        `SELECT SUM(cost_cents) / 100.0 as total FROM cost_events WHERE ts >= ? AND project = ? ${tenantClause}`,
+      ).get(monthStart, projectId, ...tenantParams) as { total: number | null };
+
+      return {
+        daily: dayRow?.total ?? 0,
+        monthly: monthRow?.total ?? 0,
+      };
+    } catch {
+      return { daily: 0, monthly: 0 };
+    }
+  }
 
   const dayRow = db.query(
     `SELECT SUM(cost_estimate_usd) as total FROM gateway_calls WHERE ts >= ? ${tenantClause}`,

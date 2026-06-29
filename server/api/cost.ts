@@ -1,6 +1,9 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { isDashboardDbEnabled } from "../db/dashboard.ts";
+import { writeMetricSample } from "../db/writer.ts";
 import { getVastInstance, getVastAccount } from "../adapters/vast.ts";
+import { getModelsDetail, type DiscoveryLogEntry } from "../adapters/models.ts";
+import { getBudgetSpending } from "../governance/budgets.ts";
 
 // Types based on the plan specification
 export interface BudgetDefinition {
@@ -588,6 +591,14 @@ type BudgetRow = {
   updated_at: number;
 };
 
+type DiscoveryHistoryRow = {
+  ts: number;
+  event_ts: string;
+  new_models_added: string[];
+  total_model_count: number | null;
+  source: string;
+};
+
 async function getRealRunway() {
   try {
     const [instance, account] = await Promise.all([getVastInstance(), getVastAccount()]);
@@ -606,6 +617,102 @@ async function getRealRunway() {
   }
 }
 
+function persistModelDiscoveryEvents(): void {
+  try {
+    const detail = getModelsDetail();
+    for (const entry of detail.discoveryLog.slice(-100)) {
+      writeMetricSample({
+        source: "model-discovery",
+        key: "event",
+        value: {
+          eventTs: entry.ts,
+          newModelsAdded: entry.newModelsAdded,
+          totalModelCount: entry.totalModelCount,
+          source: "model-discovery-log",
+        },
+      });
+    }
+  } catch {
+    // Missing model-discovery-log.jsonl is expected on fresh installs.
+  }
+}
+
+function readModelDiscoveryHistory(limit = 100): DiscoveryHistoryRow[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+
+  persistModelDiscoveryEvents();
+
+  let rows: Array<{ ts: number; value_json: string }> = [];
+  try {
+    rows = db.query(`
+      SELECT ts, value_json
+      FROM metric_samples
+      WHERE source = ? AND key = ?
+      ORDER BY ts DESC
+      LIMIT ?
+    `).all("model-discovery", "event", limit) as Array<{ ts: number; value_json: string }>;
+  } catch {
+    rows = [];
+  }
+
+  if (rows.length === 0) {
+    try {
+      rows = db.query(`
+        SELECT ts, value_json
+        FROM metric_samples
+        WHERE source = ? AND key = ?
+        ORDER BY ts DESC
+        LIMIT ?
+      `).all("models", "health", limit) as Array<{ ts: number; value_json: string }>;
+      return rows.map((row) => {
+        let total = 0;
+        try {
+          const value = JSON.parse(row.value_json) as { healthy?: unknown; degraded?: unknown; down?: unknown };
+          total = Number(value.healthy ?? 0) + Number(value.degraded ?? 0) + Number(value.down ?? 0);
+        } catch {
+          total = 0;
+        }
+        return {
+          ts: row.ts,
+          event_ts: new Date(row.ts).toISOString(),
+          new_models_added: [],
+          total_model_count: Number.isFinite(total) ? total : null,
+          source: "models-health-sample",
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  const seen = new Set<string>();
+  const out: DiscoveryHistoryRow[] = [];
+  for (const row of rows) {
+    try {
+      const value = JSON.parse(row.value_json) as {
+        eventTs?: unknown;
+        newModelsAdded?: unknown;
+        totalModelCount?: unknown;
+        source?: unknown;
+      };
+      const eventTs = typeof value.eventTs === "string" ? value.eventTs : new Date(row.ts).toISOString();
+      if (seen.has(eventTs)) continue;
+      seen.add(eventTs);
+      out.push({
+        ts: row.ts,
+        event_ts: eventTs,
+        new_models_added: Array.isArray(value.newModelsAdded) ? value.newModelsAdded.map(String) : [],
+        total_model_count: typeof value.totalModelCount === "number" ? value.totalModelCount : null,
+        source: typeof value.source === "string" ? value.source : "model-discovery",
+      });
+    } catch {
+      // Ignore malformed samples.
+    }
+  }
+  return out.slice(0, limit);
+}
+
 export async function getCostSummary(_req: Request): Promise<Response> {
   const [runway] = await Promise.all([getRealRunway()]);
 
@@ -616,6 +723,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
       runway,
       fallbacks: [],
       anomalies: [],
+      discoveryHistory: [],
       note: "DASHBOARD_DB disabled",
     });
   }
@@ -629,19 +737,13 @@ export async function getCostSummary(_req: Request): Promise<Response> {
         runway,
         fallbacks: [],
         anomalies: [],
+        discoveryHistory: [],
         note: "database unavailable",
       });
     }
 
     const now = Date.now();
     const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
-    const monthStart = new Date();
-    monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-    const monthStartTs = monthStart.getTime();
-    const dayStart = new Date();
-    dayStart.setHours(0, 0, 0, 0);
-    const dayStartTs = dayStart.getTime();
-
     let budgets: BudgetRow[] = [];
     try {
       budgets = db.query("SELECT * FROM governance_budgets ORDER BY created_at DESC").all() as BudgetRow[];
@@ -649,18 +751,21 @@ export async function getCostSummary(_req: Request): Promise<Response> {
 
     // Compute actual spend for each budget period
     const budgetsWithSpend = budgets.map((b) => {
-      const capUsd = b.monthly_cap_usd ?? b.daily_cap_usd ?? 0;
+      const spending = getBudgetSpending(b.scope === "project" ? "project" : "global", b.project_id ?? undefined);
+      const dailyPct = b.daily_cap_usd ? spending.daily / b.daily_cap_usd : 0;
+      const monthlyPct = b.monthly_cap_usd ? spending.monthly / b.monthly_cap_usd : 0;
+      const capUsd = monthlyPct >= dailyPct ? b.monthly_cap_usd ?? b.daily_cap_usd ?? 0 : b.daily_cap_usd ?? b.monthly_cap_usd ?? 0;
       const capCents = Math.round(capUsd * 100);
-      const periodStart = b.monthly_cap_usd ? monthStartTs : dayStartTs;
-      let usedCents = 0;
-      try {
-        const row = db!.query<{ used: number }, [number]>(
-          "SELECT COALESCE(SUM(cost_cents), 0) as used FROM gateway_calls WHERE ts >= ?"
-        ).get(periodStart);
-        usedCents = row?.used ?? 0;
-      } catch { /* ignore */ }
+      const usedCents = Math.round((monthlyPct >= dailyPct ? spending.monthly : spending.daily) * 100);
       const usagePct = capCents > 0 ? usedCents / capCents : 0;
-      return { ...b, cap_cents: capCents, used_cents: usedCents, usage_pct: usagePct };
+      return {
+        ...b,
+        cap_cents: capCents,
+        used_cents: usedCents,
+        daily_used_cents: Math.round(spending.daily * 100),
+        monthly_used_cents: Math.round(spending.monthly * 100),
+        usage_pct: usagePct,
+      };
     });
 
     let totalCents = 0;
@@ -698,6 +803,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
       runway,
       fallbacks,
       anomalies,
+      discoveryHistory: readModelDiscoveryHistory(),
     });
   } catch (error) {
     console.error("getCostSummary failed:", error);
@@ -707,6 +813,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
       runway,
       fallbacks: [],
       anomalies: [],
+      discoveryHistory: [],
       error: "Failed to fetch cost summary",
     });
   }

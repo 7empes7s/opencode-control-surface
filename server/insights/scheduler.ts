@@ -7,6 +7,8 @@ import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
 import { runOpsScan } from "./scanners/ops.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
+import { runEdgeScan } from "./scanners/edge.ts";
+import { runGovernanceScan } from "./scanners/governance.ts";
 import { listInsights } from "./store.ts";
 import { enrichOpenInsights } from "./ai.ts";
 import { autoApplySafeInsights } from "./autoapply.ts";
@@ -35,6 +37,8 @@ export async function runInsightsScanOnce(): Promise<{
   sentinelIncidents: number;
   opsFindings: number;
   discoveryFindings: number;
+  edgeFindings: number;
+  governanceFindings: number;
   notifications: { sent: number; deduped: number; scanned: number; skipped: number };
 }> {
   const aggregated = aggregateInsights().createdOrUpdated;
@@ -59,6 +63,18 @@ export async function runInsightsScanOnce(): Promise<{
     discoveryFindings = runDiscoveryScan().findings.length;
   } catch (error) {
     console.error("[insights] discovery scan failed", error);
+  }
+  let edgeFindings = 0;
+  try {
+    edgeFindings = (await runEdgeScan()).findings.length;
+  } catch (error) {
+    console.error("[insights] edge scan failed", error);
+  }
+  let governanceFindings = 0;
+  try {
+    governanceFindings = runGovernanceScan().findings.length;
+  } catch (error) {
+    console.error("[insights] governance scan failed", error);
   }
 
   let notifications = { sent: 0, deduped: 0, scanned: 0, skipped: 0 };
@@ -92,7 +108,7 @@ export async function runInsightsScanOnce(): Promise<{
     writeHealthSample(hs.score);
   } catch { /* ignore */ }
 
-  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, notifications };
+  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, edgeFindings, governanceFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {

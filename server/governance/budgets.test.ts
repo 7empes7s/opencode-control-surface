@@ -4,6 +4,8 @@ import { mkdirSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { checkBudget, upsertBudget, getBudgetSpending } from "./budgets.ts";
 import { getDashboardDb, initDashboardDb, closeDashboardDb } from "../db/dashboard.ts";
+import { runBudgetScan } from "../insights/scanners/budget.ts";
+import { getInsight } from "../insights/store.ts";
 
 const TEST_DB = "/tmp/test-budget-control-surface.db";
 
@@ -114,5 +116,23 @@ describe("budgets", () => {
     const spending = getBudgetSpending("global");
     expect(spending.daily).toBe(10.0);
     expect(spending.monthly).toBe(10.0);
+  });
+
+  it("uses project cost events for project budget warnings", () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO cost_events
+        (id, tenant_id, ts, source, logical_model, provider, tier, project, cost_cents, cost_basis)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("ce-project-1", "mimule", now - 1000, "gateway", "editorial-heavy", "local", "heavy", "project-alpha", 75, "actual");
+
+    upsertBudget("project", { projectId: "project-alpha", dailyCapUsd: 1, monthlyCapUsd: 10, warnPct: 0.5 });
+
+    const spending = getBudgetSpending("project", "project-alpha");
+    expect(spending.daily).toBe(0.75);
+
+    const scan = runBudgetScan();
+    expect(scan.findings.some((finding) => finding.sourceKey === "budget:warn:project:project-alpha")).toBe(true);
+    expect(getInsight("insight_budget_warn_project_project-alpha")?.manualPageHref).toBe("/cost");
   });
 });

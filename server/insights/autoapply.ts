@@ -12,12 +12,16 @@ import type { Insight } from "./types.ts";
 export const SAFE_AUTO_ACTIONS: ReadonlySet<string> = new Set<string>([
   // Re-run model discovery — exactly what model-health-check.timer does every 5h.
   "start-job:model-health:all",
+  // Rotate/truncate the diagnostics log once a detector confirms size pressure.
+  "start-job:infra:doctor-log-rotate",
 ]);
 
 export type RiskTier = "auto" | "review" | "none";
 
 export function isSafeAutoAction(actionId: string | null | undefined): boolean {
-  return !!actionId && SAFE_AUTO_ACTIONS.has(actionId);
+  if (!actionId) return false;
+  if (SAFE_AUTO_ACTIONS.has(actionId)) return true;
+  return actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear");
 }
 
 export function riskTierFor(insight: Pick<Insight, "actionDescriptorId">): RiskTier {

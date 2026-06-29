@@ -16,6 +16,8 @@ interface CostData {
     updated_at: number;
     cap_cents?: number;
     used_cents?: number;
+    daily_used_cents?: number;
+    monthly_used_cents?: number;
     usage_pct?: number;
   }>;
   spend: {
@@ -62,6 +64,13 @@ interface CostData {
     entityId: string | null;
     summary: string;
     payload: unknown;
+  }>;
+  discoveryHistory: Array<{
+    ts: number;
+    event_ts: string;
+    new_models_added: string[];
+    total_model_count: number | null;
+    source: string;
   }>;
 }
 
@@ -124,10 +133,70 @@ function GlobalCapEditor({
   );
 }
 
+function ProjectCapEditor({
+  onSubmit,
+}: {
+  onSubmit: (projectId: string, daily: number, monthly: number, warnPct: number) => void;
+}) {
+  const [projectId, setProjectId] = useState("");
+  const [daily, setDaily] = useState("2");
+  const [monthly, setMonthly] = useState("20");
+  const [warnPct, setWarnPct] = useState("80");
+
+  const dailyNum = parseFloat(daily);
+  const monthlyNum = parseFloat(monthly);
+  const warnNum = parseFloat(warnPct);
+  const cleanProjectId = projectId.trim();
+  const valid = cleanProjectId.length > 0
+    && isFinite(dailyNum) && dailyNum > 0
+    && isFinite(monthlyNum) && monthlyNum > 0
+    && isFinite(warnNum) && warnNum >= 10 && warnNum <= 100;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+        Set a per-project spend cap. Project spend is read from cost attribution events and the change is audited.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Project</label>
+          <input
+            className="modal-input"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            placeholder="project id"
+            style={{ width: 180, minHeight: 44 }}
+          />
+        </div>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Daily cap</label>
+          <input className="modal-input" type="number" min="0.1" step="0.5" value={daily} onChange={(e) => setDaily(e.target.value)} style={{ width: 100, minHeight: 44 }} />
+        </div>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Monthly cap</label>
+          <input className="modal-input" type="number" min="1" step="1" value={monthly} onChange={(e) => setMonthly(e.target.value)} style={{ width: 100, minHeight: 44 }} />
+        </div>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Warn %</label>
+          <input className="modal-input" type="number" min="10" max="100" step="5" value={warnPct} onChange={(e) => setWarnPct(e.target.value)} style={{ width: 88, minHeight: 44 }} />
+        </div>
+        <button
+          className="btn btn-primary"
+          style={{ minHeight: 44 }}
+          disabled={!valid}
+          onClick={() => valid && onSubmit(cleanProjectId, dailyNum, monthlyNum, warnNum / 100)}
+        >
+          Set project cap
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function CostPage() {
   const { data, loading, error, refresh } = useApi<CostData>("/api/cost/summary", 30_000);
   const [timeRange, setTimeRange] = useState<"7d" | "30d" | "90d">("30d");
-  const [capModal, setCapModal] = useState<{ dailyCap: string; monthlyCap: string } | null>(null);
+  const [capModal, setCapModal] = useState<{ scope: "global" | "project"; projectId?: string; dailyCap: string; monthlyCap: string; warnPct?: string } | null>(null);
   const [capLoading, setCapLoading] = useState(false);
   const [capError, setCapError] = useState<string | null>(null);
   const [capSuccess, setCapSuccess] = useState<string | null>(null);
@@ -153,8 +222,14 @@ export function CostPage() {
     if (!capModal) return;
     const dailyCapUsd = parseFloat(capModal.dailyCap);
     const monthlyCapUsd = parseFloat(capModal.monthlyCap);
+    const warnPct = capModal.warnPct ? parseFloat(capModal.warnPct) : 0.8;
     if (!isFinite(dailyCapUsd) || dailyCapUsd <= 0) { setCapError("Invalid daily cap"); return; }
     if (!isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) { setCapError("Invalid monthly cap"); return; }
+    if (!isFinite(warnPct) || warnPct < 0.1 || warnPct > 1) { setCapError("Invalid warn threshold"); return; }
+    const encodedProjectId = capModal.projectId ? encodeURIComponent(capModal.projectId) : "";
+    const actionId = capModal.scope === "project"
+      ? `mutate-policy:budget:project:${encodedProjectId}:set-cap`
+      : "mutate-policy:budget:global:set-cap";
     setCapLoading(true);
     setCapError(null);
     try {
@@ -162,10 +237,10 @@ export function CostPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          actionId: "mutate-policy:budget:global:set-cap",
+          actionId,
           confirmed: true,
           reason,
-          params: { dailyCapUsd, monthlyCapUsd },
+          params: { dailyCapUsd, monthlyCapUsd, warnPct },
         }),
       });
       const json = await res.json() as { ok?: boolean; message?: string; error?: string };
@@ -184,8 +259,10 @@ export function CostPage() {
     <div className="dash-page">
       {capModal && (
         <ConfirmModal
-          title="Set global cost cap"
-          message={`Update the global budget cap to $${capModal.dailyCap}/day and $${capModal.monthlyCap}/month. Gateway calls will be blocked when the cap is reached.`}
+          title={capModal.scope === "project" ? "Set project cost cap" : "Set global cost cap"}
+          message={capModal.scope === "project"
+            ? `Update the ${capModal.projectId} budget cap to $${capModal.dailyCap}/day and $${capModal.monthlyCap}/month. Warn threshold: ${Math.round((parseFloat(capModal.warnPct ?? "0.8") || 0.8) * 100)}%.`
+            : `Update the global budget cap to $${capModal.dailyCap}/day and $${capModal.monthlyCap}/month. Gateway calls will be blocked when the cap is reached.`}
           inputLabel="Reason"
           inputPlaceholder="Why are you changing the cap?"
           loading={capLoading}
@@ -292,10 +369,16 @@ export function CostPage() {
                 </thead>
                 <tbody>
                   {d.budgets.map((budget) => {
-                    const period = budget.daily_cap_usd ? "Daily" : "Monthly";
+                    const period = budget.daily_cap_usd && budget.monthly_cap_usd ? "Daily / Monthly" : budget.daily_cap_usd ? "Daily" : "Monthly";
                     const capCents = budget.cap_cents ?? Math.round((budget.daily_cap_usd ?? budget.monthly_cap_usd ?? 0) * 100);
                     const usedCents = budget.used_cents ?? 0;
                     const usagePct = budget.usage_pct ?? (capCents > 0 ? usedCents / capCents : 0);
+                    const budgetText = budget.daily_cap_usd && budget.monthly_cap_usd
+                      ? `${fmtCurrency(Math.round(budget.daily_cap_usd * 100))} / ${fmtCurrency(Math.round(budget.monthly_cap_usd * 100))}`
+                      : fmtCurrency(capCents);
+                    const usedText = budget.daily_cap_usd && budget.monthly_cap_usd
+                      ? `${fmtCurrency(budget.daily_used_cents ?? 0)} / ${fmtCurrency(budget.monthly_used_cents ?? 0)}`
+                      : fmtCurrency(usedCents);
 
                     let status = "normal";
                     let statusText = "Normal";
@@ -311,8 +394,8 @@ export function CostPage() {
                       <tr key={budget.id}>
                         <td>{budget.scope}{budget.project_id ? ` (${budget.project_id})` : ""}</td>
                         <td>{period}</td>
-                        <td>{fmtCurrency(capCents)}</td>
-                        <td>{fmtCurrency(usedCents)} ({fmtPct(usagePct)})</td>
+                        <td>{budgetText}</td>
+                        <td>{usedText} ({fmtPct(usagePct)})</td>
                         <td>
                           <span className={`pill ${status}`}>
                             {statusText}
@@ -337,9 +420,53 @@ export function CostPage() {
               onSubmit={(daily, monthly) => {
                 setCapSuccess(null);
                 setCapError(null);
-                setCapModal({ dailyCap: String(daily), monthlyCap: String(monthly) });
+                setCapModal({ scope: "global", dailyCap: String(daily), monthlyCap: String(monthly) });
               }}
             />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Set project cap" id="project-cap-editor" defaultOpen={true}>
+          <div className="section-card-body" style={{ padding: "14px 16px" }}>
+            <ProjectCapEditor
+              onSubmit={(projectId, daily, monthly, warnPct) => {
+                setCapSuccess(null);
+                setCapError(null);
+                setCapModal({ scope: "project", projectId, dailyCap: String(daily), monthlyCap: String(monthly), warnPct: String(warnPct) });
+              }}
+            />
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="dash-section">
+        <div className="dash-section-title">Model Discovery History</div>
+        <SectionCard title="Last discovery events" id="model-discovery-history" defaultOpen={false}>
+          <div className="section-card-body table-wrap">
+            {d.discoveryHistory.length === 0 ? (
+              <div className="loading-dim">No model discovery history has been recorded yet.</div>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>New models</th>
+                    <th>Total</th>
+                    <th>Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.discoveryHistory.slice(0, 20).map((event) => (
+                    <tr key={`${event.event_ts}-${event.source}`}>
+                      <td className="mono">{fmtAge(event.ts)}</td>
+                      <td>{event.new_models_added.length > 0 ? event.new_models_added.join(", ") : "—"}</td>
+                      <td>{event.total_model_count ?? "—"}</td>
+                      <td className="mono">{event.source}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </SectionCard>
       </div>

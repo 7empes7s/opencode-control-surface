@@ -24,6 +24,7 @@ interface ParsedActionId {
   targetType: string;
   targetId: string;
   suffix?: string;
+  segments: string[];
 }
 
 function parseActionId(actionId: string): ParsedActionId | null {
@@ -39,6 +40,7 @@ function parseActionId(actionId: string): ParsedActionId | null {
     targetType: segments[1],
     targetId: segments[2] ?? "",
     suffix: segments[3],
+    segments,
   };
 }
 
@@ -207,23 +209,38 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     }
   }
 
-  if (kind === "mutate-policy" && targetType === "budget" && targetId === "global" && suffix === "set-cap") {
+  if (
+    kind === "mutate-policy" &&
+    targetType === "budget" &&
+    ((targetId === "global" && suffix === "set-cap") || (targetId === "project" && parsed.segments[4] === "set-cap"))
+  ) {
+    const scope = targetId === "project" ? "project" : "global";
+    const projectId = scope === "project" ? decodeURIComponent(parsed.segments[3] ?? "") : null;
     const dailyCapUsd = typeof body.params?.dailyCapUsd === "number" ? body.params.dailyCapUsd : 5;
     const monthlyCapUsd = typeof body.params?.monthlyCapUsd === "number" ? body.params.monthlyCapUsd : 50;
+    const warnPct = typeof body.params?.warnPct === "number" ? body.params.warnPct : 0.8;
+    if (scope === "project" && (!projectId || projectId.length > 200)) {
+      return { ok: false, error: "projectId is required for project budgets", code: "BAD_REQUEST" };
+    }
     if (!Number.isFinite(dailyCapUsd) || dailyCapUsd <= 0 || dailyCapUsd > 10000) {
       return { ok: false, error: "dailyCapUsd must be a number between 1 and 10000", code: "BAD_REQUEST" };
     }
     if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0 || monthlyCapUsd > 10000) {
       return { ok: false, error: "monthlyCapUsd must be a number between 1 and 10000", code: "BAD_REQUEST" };
     }
+    if (!Number.isFinite(warnPct) || warnPct < 0.1 || warnPct > 1) {
+      return { ok: false, error: "warnPct must be between 0.1 and 1", code: "BAD_REQUEST" };
+    }
     try {
       const { upsertBudget } = await import("../governance/budgets.ts");
-      const budget = upsertBudget("global", { dailyCapUsd, monthlyCapUsd, warnPct: 0.8 });
+      const budget = upsertBudget(scope, { projectId, dailyCapUsd, monthlyCapUsd, warnPct });
       return {
         ok: true,
         action: "mutate-policy",
         result: { budget },
-        message: `Global budget cap set: $${dailyCapUsd}/day, $${monthlyCapUsd}/month. Gateway calls are now governed by this cap.`,
+        message: scope === "project"
+          ? `Project budget cap set for ${projectId}: $${dailyCapUsd}/day, $${monthlyCapUsd}/month.`
+          : `Global budget cap set: $${dailyCapUsd}/day, $${monthlyCapUsd}/month. Gateway calls are now governed by this cap.`,
       };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };

@@ -62,13 +62,13 @@ type ServiceRestartStorm = {
   lastState: string;
 };
 
-type DoctorLogFinding = {
+export type DoctorLogFinding = {
   path: string;
   sizeBytes: number;
   bucket: NonNullable<PrevSnapshot["doctorLogBucket"]>;
 };
 
-type BackupFreshness = {
+export type BackupFreshness = {
   root: string;
   newestPath: string | null;
   newestMtimeMs: number | null;
@@ -554,7 +554,7 @@ function readNumberEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function getDoctorLogFinding(): DoctorLogFinding | null {
+export function getDoctorLogFinding(): DoctorLogFinding | null {
   const path = process.env.DASHBOARD_DOCTOR_LOG_PATH ?? "/var/lib/mimule/doctor-log.jsonl";
   if (!existsSync(path)) {
     return null;
@@ -575,7 +575,7 @@ function getDoctorLogFinding(): DoctorLogFinding | null {
   }
 }
 
-function getBackupFreshness(): BackupFreshness | null {
+export function getBackupFreshness(): BackupFreshness | null {
   const root = process.env.DASHBOARD_BACKUP_ROOT ?? "/opt/backups";
   if (!existsSync(root)) {
     return null;

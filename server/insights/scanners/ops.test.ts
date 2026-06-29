@@ -8,6 +8,7 @@ import type { ServicePill, HetznerStats } from "../../adapters/system.ts";
 import type { ModelHealth } from "../../adapters/models.ts";
 import type { DoctorStats } from "../../adapters/doctor.ts";
 import type { PipelineState } from "../../adapters/pipeline.ts";
+import type { ApprovalRequest } from "../../governance/approvals.ts";
 import {
   mapServiceFindings,
   mapHetznerFindings,
@@ -15,7 +16,15 @@ import {
   mapPipelineFindings,
   mapModelFindings,
   mapDoctorFindings,
+  mapBackupFreshnessFindings,
+  mapDoctorLogSizeFindings,
+  mapFailedTimerFindings,
+  mapStuckCooldownFindings,
+  mapApprovalAgingFindings,
   runOpsScan,
+  setOpsScanProbeOverridesForTest,
+  type FailedTimer,
+  type StuckCooldown,
 } from "./ops.ts";
 
 const NOW = 1_700_000_000_000;
@@ -45,6 +54,37 @@ function doctorStats(overrides: Partial<DoctorStats> = {}): DoctorStats {
     total: 0, success: 0, errorClasses: [], topFailingModels: [], topFailingStages: [],
     verdictMix: [], rateLimitProviders: [], fallbackCascades: [], lastDecision: null,
     ...overrides,
+  };
+}
+
+function approval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
+  return {
+    id: "ar_test",
+    workflowId: "wf_test",
+    runId: "run_test",
+    tenantId: "mimule",
+    requestedAt: NOW - 2 * 60 * 60 * 1000,
+    requestedBy: "operator",
+    status: "pending",
+    approvals: [],
+    requiredCount: 1,
+    ...overrides,
+  };
+}
+
+function neutralOpsOverrides() {
+  return {
+    getServiceStatuses: () => [{ name: "control-surface", status: "active" as const }],
+    getHetznerStats: () => hetzner(),
+    getGpuUtilFromHealth: () => 42,
+    readPipelineStateSync: () => ({ queue: [], current: null, paused: false, pauseReason: null }),
+    getModelHealth: () => modelHealth(),
+    getDoctorStats: () => doctorStats(),
+    getDoctorLogFinding: () => null,
+    getBackupFreshness: () => ({ root: "/tmp/backups", newestPath: "/tmp/backups/latest", newestMtimeMs: NOW, ageMs: 5_000, bucket: "fresh" as const }),
+    getFailedTimers: () => [] as FailedTimer[],
+    getStuckCooldowns: () => [] as StuckCooldown[],
+    listPendingApprovals: () => [] as ApprovalRequest[],
   };
 }
 
@@ -132,6 +172,61 @@ describe("ops scanner: pure mapping", () => {
     expect(mapDoctorFindings(doctorStats({ total: 20, success: 18 }), NOW)).toHaveLength(0);
     expect(mapDoctorFindings(doctorStats({ total: 4, success: 0 }), NOW)).toHaveLength(0);
   });
+
+  test("stale and missing backups emit ops findings", () => {
+    const stale = mapBackupFreshnessFindings({
+      root: "/opt/backups",
+      newestPath: "/opt/backups/2026-06-28",
+      newestMtimeMs: NOW - 30 * 60 * 60 * 1000,
+      ageMs: 30 * 60 * 60 * 1000,
+      bucket: "stale",
+    }, NOW)[0];
+    expect(stale.sourceKey).toBe("ops:backup-stale");
+    expect(stale.severity).toBe("medium");
+    expect(stale.manualPageHref).toBe("/infra");
+
+    const missing = mapBackupFreshnessFindings({
+      root: "/opt/backups",
+      newestPath: null,
+      newestMtimeMs: null,
+      ageMs: null,
+      bucket: "missing",
+    }, NOW)[0];
+    expect(missing.severity).toBe("high");
+  });
+
+  test("large doctor log emits a rotate action", () => {
+    const out = mapDoctorLogSizeFindings({ path: "/var/lib/mimule/doctor-log.jsonl", sizeBytes: 120 * 1024 * 1024, bucket: "huge" }, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceKey).toBe("ops:doctor-log-large");
+    expect(out[0].severity).toBe("high");
+    expect(out[0].actionDescriptorId).toBe("start-job:infra:doctor-log-rotate");
+  });
+
+  test("failed timers emit per-unit findings", () => {
+    const out = mapFailedTimerFindings([{ unit: "model-health-check.timer", active: "failed", sub: "failed" }], NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceKey).toBe("ops:failed-timer:model-health-check.timer");
+    expect(out[0].manualPageHref).toBe("/infra");
+  });
+
+  test("expired cooldown records emit auto-clear actions", () => {
+    const out = mapStuckCooldownFindings([{ model: "editorial-heavy", expiresAt: NOW - 60_000, startedAt: NOW - 120_000, reason: "rate-limit" }], NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceKey).toBe("ops:cooldown-stuck:editorial-heavy");
+    expect(out[0].actionDescriptorId).toBe("mutate-policy:model:editorial-heavy:cooldown-clear");
+    expect(out[0].manualPageHref).toBe("/models");
+  });
+
+  test("aging approvals emit one governance finding", () => {
+    const warn = mapApprovalAgingFindings([approval()], NOW)[0];
+    expect(warn.sourceKey).toBe("ops:approvals-aging");
+    expect(warn.severity).toBe("medium");
+    expect(warn.manualPageHref).toBe("/governance");
+
+    const critical = mapApprovalAgingFindings([approval({ requestedAt: NOW - 7 * 60 * 60 * 1000 })], NOW)[0];
+    expect(critical.severity).toBe("high");
+  });
 });
 
 describe("ops scanner: runOpsScan integration", () => {
@@ -150,6 +245,7 @@ describe("ops scanner: runOpsScan integration", () => {
   });
 
   afterEach(() => {
+    setOpsScanProbeOverridesForTest(null);
     closeDashboardDb();
     if (prevDb === undefined) delete process.env.DASHBOARD_DB; else process.env.DASHBOARD_DB = prevDb;
     if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH; else process.env.DASHBOARD_DB_PATH = prevDbPath;
@@ -173,5 +269,38 @@ describe("ops scanner: runOpsScan integration", () => {
     const result = runOpsScan();
     expect(result.findings).toHaveLength(0);
     expect(result.resolvedCount).toBe(0);
+  });
+
+  test("new ops detectors persist findings and stale-resolve after triggers clear", () => {
+    setOpsScanProbeOverridesForTest({
+      ...neutralOpsOverrides(),
+      getBackupFreshness: () => ({
+        root: "/opt/backups",
+        newestPath: null,
+        newestMtimeMs: null,
+        ageMs: null,
+        bucket: "missing",
+      }),
+      getDoctorLogFinding: () => ({ path: "/var/lib/mimule/doctor-log.jsonl", sizeBytes: 75 * 1024 * 1024, bucket: "large" }),
+      getFailedTimers: () => [{ unit: "sample-maintenance.timer", active: "failed", sub: "failed" }],
+      getStuckCooldowns: () => [{ model: "editorial-heavy", expiresAt: Date.now() - 60_000, startedAt: Date.now() - 120_000, reason: "rate-limit" }],
+      listPendingApprovals: () => [approval({ requestedAt: Date.now() - 2 * 60 * 60 * 1000 })],
+    });
+
+    const triggered = runOpsScan();
+    expect(triggered.findings.some((f) => f.sourceKey === "ops:backup-stale")).toBe(true);
+    expect(triggered.findings.some((f) => f.sourceKey === "ops:doctor-log-large")).toBe(true);
+    expect(triggered.findings.some((f) => f.sourceKey === "ops:failed-timer:sample-maintenance.timer")).toBe(true);
+    expect(triggered.findings.some((f) => f.sourceKey === "ops:cooldown-stuck:editorial-heavy")).toBe(true);
+    expect(triggered.findings.some((f) => f.sourceKey === "ops:approvals-aging")).toBe(true);
+
+    setOpsScanProbeOverridesForTest(neutralOpsOverrides());
+    const cleared = runOpsScan();
+    expect(cleared.resolvedCount).toBeGreaterThanOrEqual(5);
+    expect(getInsight("insight_ops_backup_stale")?.status).toBe("resolved");
+    expect(getInsight("insight_ops_doctor_log_large")?.status).toBe("resolved");
+    expect(getInsight("insight_ops_failed_timer_sample-maintenance.timer")?.status).toBe("resolved");
+    expect(getInsight("insight_ops_cooldown_stuck_editorial-heavy")?.status).toBe("resolved");
+    expect(getInsight("insight_ops_approvals_aging")?.status).toBe("resolved");
   });
 });

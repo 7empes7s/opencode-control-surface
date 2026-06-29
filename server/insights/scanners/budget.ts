@@ -24,12 +24,13 @@ function add(results: Insight[], input: Parameters<typeof upsertInsight>[0], emi
   }
 }
 
-function findConfiguredBudget(db: ReturnType<typeof getDashboardDb>, tenantClause: string, tenantParams: Array<string | number>): GovernanceBudget | null {
-  if (!db) return null;
-  const rows = db.query(
-    `SELECT * FROM governance_budgets WHERE scope = ? ${tenantClause} LIMIT 1`,
-  ).all("global", ...tenantParams) as GovernanceBudget[];
-  return rows[0] ?? null;
+function findConfiguredBudgets(db: ReturnType<typeof getDashboardDb>, tenantClause: string, tenantParams: Array<string | number>): GovernanceBudget[] {
+  if (!db) return [];
+  return db.query(
+    `SELECT * FROM governance_budgets
+     WHERE (daily_cap_usd IS NOT NULL OR monthly_cap_usd IS NOT NULL) ${tenantClause}
+     ORDER BY scope ASC, project_id ASC`,
+  ).all(...tenantParams) as GovernanceBudget[];
 }
 
 export function runBudgetScan(): ScanResult {
@@ -40,9 +41,9 @@ export function runBudgetScan(): ScanResult {
   if (!db) return { scannedAt, findings, resolvedCount: 0 };
 
   const tenant = whereTenant();
-  const configured = findConfiguredBudget(db, tenant.clause, tenant.params);
+  const configuredBudgets = findConfiguredBudgets(db, tenant.clause, tenant.params);
 
-  if (!configured) {
+  if (configuredBudgets.length === 0) {
     const resolved = resolveStaleInsights(
       "budget:",
       emittedSourceKeys,
@@ -63,54 +64,59 @@ export function runBudgetScan(): ScanResult {
     return { scannedAt, findings, resolvedCount: resolved.length };
   }
 
-  const check = checkBudget("global");
+  for (const configured of configuredBudgets) {
+    const scope = configured.scope === "project" ? "project" : "global";
+    const projectId = configured.project_id ?? undefined;
+    const subject = scope === "project" ? `project ${projectId}` : "global";
+    const keySuffix = scope === "project" ? `project:${projectId}` : "global";
+    const idSuffix = scope === "project" ? `project_${projectId}` : "global";
+    const check = checkBudget(scope, projectId);
 
-  if (!check.allowed) {
-    const cap = check.cap ?? 0;
-    const spent = check.spent ?? 0;
-    const pct = cap > 0 ? Math.round((spent / cap) * 100) : 100;
-    add(findings, {
-      id: "insight_budget_exceeded_global",
-      sourceKey: "budget:exceeded:global",
-      domain: "cost",
-      severity: "high",
-      title: "The global spend cap has been reached",
-      plainSummary: `Spending is at ${pct}% of the ${check.period ?? "daily"} cap ($${spent.toFixed(2)} of $${cap.toFixed(2)}). New gateway calls are being blocked until the cap is raised.`,
-      confidence: 0.95,
-      evidenceRefs: [
-        evidence("Budget row", "db", "governance_budgets"),
-        evidence("Gateway spend", "db", "gateway_calls"),
-        evidence("Gateway page", "api", "/gateway"),
-      ],
-      actionDescriptorId: "mutate-policy:budget:global:set-cap",
-      manualPageHref: "/gateway",
-      createdAt: scannedAt,
-    }, emittedSourceKeys);
-  } else if (check.warn) {
-    const pct = Math.round((check.pctUsed ?? 0) * 100);
-    const cap = check.period === "monthly"
-      ? configured.monthly_cap_usd ?? 0
-      : configured.daily_cap_usd ?? 0;
-    const spent = check.period === "monthly"
-      ? check.spent ?? 0
-      : check.spent ?? 0;
-    add(findings, {
-      id: "insight_budget_warn_global",
-      sourceKey: "budget:warn:global",
-      domain: "cost",
-      severity: "medium",
-      title: `Spending is at ${pct}% of the global cap`,
-      plainSummary: `Spending is at ${pct}% of the ${check.period ?? "daily"} cap ($${(spent ?? 0).toFixed(2)} of $${cap.toFixed(2)}). New gateway calls are still going through — raise the cap or slow spend before it hard-stops.`,
-      confidence: 0.9,
-      evidenceRefs: [
-        evidence("Budget row", "db", "governance_budgets"),
-        evidence("Gateway spend", "db", "gateway_calls"),
-        evidence("Gateway page", "api", "/gateway"),
-      ],
-      actionDescriptorId: null,
-      manualPageHref: "/gateway",
-      createdAt: scannedAt,
-    }, emittedSourceKeys);
+    if (!check.allowed) {
+      const cap = check.cap ?? 0;
+      const spent = check.spent ?? 0;
+      const pct = cap > 0 ? Math.round((spent / cap) * 100) : 100;
+      add(findings, {
+        id: `insight_budget_exceeded_${idSuffix}`,
+        sourceKey: `budget:exceeded:${keySuffix}`,
+        domain: "cost",
+        severity: "high",
+        title: `The ${subject} spend cap has been reached`,
+        plainSummary: `Spending is at ${pct}% of the ${check.period ?? "daily"} cap ($${spent.toFixed(2)} of $${cap.toFixed(2)}). New gateway calls for this scope should be blocked until the cap is raised.`,
+        confidence: 0.95,
+        evidenceRefs: [
+          evidence("Budget row", "db", "governance_budgets"),
+          evidence(scope === "project" ? "Project spend" : "Gateway spend", "db", scope === "project" ? "cost_events" : "gateway_calls"),
+          evidence("Cost page", "api", "/api/cost/summary"),
+        ],
+        actionDescriptorId: scope === "project" && projectId ? `mutate-policy:budget:project:${encodeURIComponent(projectId)}:set-cap` : "mutate-policy:budget:global:set-cap",
+        manualPageHref: scope === "project" ? "/cost" : "/gateway",
+        createdAt: scannedAt,
+      }, emittedSourceKeys);
+    } else if (check.warn) {
+      const pct = Math.round((check.pctUsed ?? 0) * 100);
+      const cap = check.period === "monthly"
+        ? configured.monthly_cap_usd ?? 0
+        : configured.daily_cap_usd ?? 0;
+      const spent = check.spent ?? 0;
+      add(findings, {
+        id: `insight_budget_warn_${idSuffix}`,
+        sourceKey: `budget:warn:${keySuffix}`,
+        domain: "cost",
+        severity: "medium",
+        title: `Spending is at ${pct}% of the ${subject} cap`,
+        plainSummary: `Spending is at ${pct}% of the ${check.period ?? "daily"} cap ($${(spent ?? 0).toFixed(2)} of $${cap.toFixed(2)}). Calls are still going through — raise the cap or slow spend before it hard-stops.`,
+        confidence: 0.9,
+        evidenceRefs: [
+          evidence("Budget row", "db", "governance_budgets"),
+          evidence(scope === "project" ? "Project spend" : "Gateway spend", "db", scope === "project" ? "cost_events" : "gateway_calls"),
+          evidence("Cost page", "api", "/api/cost/summary"),
+        ],
+        actionDescriptorId: null,
+        manualPageHref: scope === "project" ? "/cost" : "/gateway",
+        createdAt: scannedAt,
+      }, emittedSourceKeys);
+    }
   }
 
   const resolved = resolveStaleInsights(
