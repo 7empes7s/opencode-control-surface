@@ -32,6 +32,7 @@ import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import type { StepResult } from "../orchestrator/types.ts";
 import { isNonGatewayCliLane, recordRunnerUsage } from "./runnerAccounting.ts";
 import { getBuildValidationCommand, getValidationProfileStartBlockers } from "./validation-profile.ts";
+import { getPlanSanityStartBlockers } from "./plan-sanity.ts";
 
 const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
 const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
@@ -1715,11 +1716,16 @@ export async function startWorkflowRun(
   }
   const validationProfileBlockers = getValidationProfileStartBlockers(workflow.projectRoot, {
     mode: workflow.mode,
+    trigger,
     maxPasses: workflow.config.riskPolicy?.maxPasses,
     agentCount: workflow.config.agentOrder.length,
   });
   if (validationProfileBlockers.length > 0) {
     throw new Error(`project-local validation profile required: ${validationProfileBlockers.join("; ")}`);
+  }
+  const planSanityBlockers = getPlanSanityStartBlockers(workflow.planFile);
+  if (planSanityBlockers.length > 0) {
+    throw new Error(`plan sanity check failed: ${planSanityBlockers.join("; ")}`);
   }
   const STARTABLE_STATUSES = new Set(["ready", "draft", "paused", "done", "failed", "blocked"]);
   if (!STARTABLE_STATUSES.has(workflow.status)) {

@@ -989,6 +989,28 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     );
     CREATE INDEX IF NOT EXISTS idx_ai_analysis_insight
       ON ai_analysis (insight_id, generated_at);
+
+    CREATE TABLE IF NOT EXISTS discovered_assets (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      source_probe TEXT NOT NULL,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unregistered' CHECK (status IN ('unregistered', 'registered', 'ignored')),
+      fingerprint_json TEXT NOT NULL,
+      registered_name TEXT,
+      owner TEXT,
+      criticality TEXT CHECK (criticality IS NULL OR criticality IN ('low', 'medium', 'high', 'critical')),
+      attached_service TEXT,
+      ignored_reason TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_discovered_assets_tenant_signature
+      ON discovered_assets (tenant_id, kind, signature, source_probe);
+    CREATE INDEX IF NOT EXISTS idx_discovered_assets_tenant_status
+      ON discovered_assets (tenant_id, status, last_seen);
   `);
 
   // Add columns to tables created above (must run after CREATE TABLE)

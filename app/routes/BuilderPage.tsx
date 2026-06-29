@@ -22,6 +22,7 @@ import type {
   BuilderRunsResponse,
   BuilderWorkflowResponse,
   BuilderWorkflowsResponse,
+  BuilderRepairBaselineResponse,
   BuilderRunSummaryResponse,
   PlanProgressResponse,
   PlanNextStep,
@@ -55,6 +56,14 @@ function statusColor(status: string | boolean | null | undefined): string {
 function fmtTs(ts: number | null): string {
   if (!ts) return "-";
   return new Date(ts).toISOString().slice(0, 19).replace("T", " ") + " UTC";
+}
+
+function fmtDuration(ms: number | null): string {
+  if (ms == null) return "-";
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function AgentPill({ label, status }: { label: string; status: string }) {
@@ -1203,7 +1212,147 @@ function RunAnalyticsCard({ summary }: { summary: BuilderRunSummaryResponse | nu
         {summary.filesEdited.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files edited</span> <strong>{summary.filesEdited.length}</strong></div>}
         {summary.filesCreated.length > 0 && <div><span style={{ color: "var(--text-dim)" }}>files created</span> <strong>{summary.filesCreated.length}</strong></div>}
         {summary.unresolvedErrors != null && <div><span style={{ color: "var(--text-dim)" }}>unresolved errors</span> <strong style={{ color: summary.unresolvedErrors > 0 ? "var(--text-red, red)" : undefined }}>{summary.unresolvedErrors}</strong></div>}
+        <div><span style={{ color: "var(--text-dim)" }}>validation failures</span> <strong style={{ color: summary.validationFailures.length > 0 ? "var(--text-red, red)" : undefined }}>{summary.validationFailures.length}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>timeouts</span> <strong>{summary.timeoutCount}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>stalls</span> <strong>{summary.stallCount}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>dirty files</span> <strong>{summary.dirtyFileCount ?? "—"}</strong></div>
+        <div><span style={{ color: "var(--text-dim)" }}>preview</span> <strong><Pill color={statusColor(summary.previewStatus.status)}>{summary.previewStatus.label}</Pill></strong></div>
       </div>
+    </div>
+  );
+}
+
+function ModelQualityTelemetryTable({ summary }: { summary: BuilderRunSummaryResponse | null | undefined }) {
+  const rows = summary?.modelQuality ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="builder-detail-section">
+      <div className="builder-detail-section-title">model quality telemetry</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>model</th><th>passes</th><th>timeout rate</th><th>validation pass</th><th>file write</th><th>stdout interval</th><th>last</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.model}>
+                <td className="mono trunc" title={row.model}>{row.model}</td>
+                <td>{row.successPasses}/{row.passCount}</td>
+                <td>{Math.round(row.timeoutRate * 100)}%</td>
+                <td>{row.validationPassRate == null ? "—" : `${Math.round(row.validationPassRate * 100)}%`}</td>
+                <td><Pill color={row.fileWriteProbe === "passed" ? "green" : row.fileWriteProbe === "missing" ? "amber" : "gray"}>{row.fileWriteProbe}</Pill></td>
+                <td>{row.averageUsefulStdoutIntervalMs == null ? "—" : `${Math.round(row.averageUsefulStdoutIntervalMs / 1000)}s`}</td>
+                <td><Pill color={statusColor(row.lastStatus)}>{row.lastStatus}</Pill></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RunHealthCard({ summary }: { summary: BuilderRunSummaryResponse | null | undefined }) {
+  if (!summary) return null;
+  const latestFailure = summary.validationFailures[0] ?? null;
+  const timeline = summary.validationFailureTimeline ?? summary.validationFailures;
+  const timeoutEvents = summary.timeoutStallEvents ?? [];
+  const previewColor = summary.previewStatus.status === "ok"
+    ? "green"
+    : summary.previewStatus.status === "failed"
+      ? "red"
+      : summary.previewStatus.status === "not-recorded"
+        ? "gray"
+        : "amber";
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", marginBottom: 12, background: "var(--bg-card-start)" }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Run health</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "8px 16px", fontSize: 12 }}>
+        <div>
+          <span style={{ color: "var(--text-dim)", display: "block" }}>validation failures</span>
+          <strong style={{ color: summary.validationFailures.length > 0 ? "var(--text-red, red)" : undefined }}>{summary.validationFailures.length}</strong>
+        </div>
+        <div>
+          <span style={{ color: "var(--text-dim)", display: "block" }}>timeouts / stalls</span>
+          <strong>{summary.timeoutCount} / {summary.stallCount}</strong>
+        </div>
+        <div>
+          <span style={{ color: "var(--text-dim)", display: "block" }}>dirty files before pass</span>
+          <strong>{summary.dirtyFileCount ?? "not recorded"}</strong>
+          {summary.dirtyFileSnapshot && (
+            <div className="mono dim" style={{ marginTop: 2, fontSize: 10 }}>
+              pass {summary.dirtyFileSnapshot.passSequence ?? "-"} at {fmtTs(summary.dirtyFileSnapshot.at)}
+            </div>
+          )}
+        </div>
+        <div>
+          <span style={{ color: "var(--text-dim)", display: "block" }}>latest preview</span>
+          <strong><Pill color={previewColor}>{summary.previewStatus.label}</Pill></strong>
+          {summary.previewStatus.at && (
+            <div className="mono dim" style={{ marginTop: 2, fontSize: 10 }}>{fmtTs(summary.previewStatus.at)}</div>
+          )}
+        </div>
+      </div>
+      {timeline.length > 0 && (
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8 }}>Validation failure timeline</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {timeline.slice(0, 8).map((failure) => (
+              <div key={failure.id} style={{ display: "grid", gridTemplateColumns: "72px minmax(0, 1fr) auto", gap: 10, alignItems: "start", fontSize: 11 }}>
+                <div className="mono dim">pass {failure.passSequence ?? "-"}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                    <Pill color={statusColor(failure.status)}>{failure.status}</Pill>
+                    <span className="mono" style={{ wordBreak: "break-word" }}>{failure.kind}</span>
+                  </div>
+                  {failure.command && (
+                    <div className="mono dim" style={{ marginTop: 3, wordBreak: "break-word" }}>{failure.command}</div>
+                  )}
+                  {(failure.error || failure.outputTail) && (
+                    <div style={{ marginTop: 3, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {(failure.error || failure.outputTail || "").slice(0, 180)}
+                    </div>
+                  )}
+                </div>
+                <div className="mono dim" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <div>{fmtTs(failure.finishedAt ?? failure.startedAt)}</div>
+                  <div>{fmtDuration(failure.durationMs)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {timeoutEvents.length > 0 && (
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8 }}>Timeout and stall events</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {timeoutEvents.slice(0, 6).map((event) => (
+              <div key={event.passId} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 11 }}>
+                <Pill color={event.kind.includes("timeout") ? "red" : "amber"}>{event.kind}</Pill>
+                <span className="mono dim">pass {event.sequence}</span>
+                <span className="mono dim">{event.agent ?? "-"} / {event.model ?? "-"}</span>
+                <span className="mono dim">{fmtTs(event.finishedAt ?? event.startedAt)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {latestFailure && (
+        <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 8, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
+          <div><strong>Latest failed validation:</strong> <span className="mono">{latestFailure.kind}</span> <Pill color={statusColor(latestFailure.status)}>{latestFailure.status}</Pill></div>
+          {latestFailure.command && <div className="mono" style={{ marginTop: 4, wordBreak: "break-word" }}>{latestFailure.command}</div>}
+          {(latestFailure.error || latestFailure.outputTail) && (
+            <div style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {(latestFailure.error || latestFailure.outputTail || "").slice(0, 320)}
+            </div>
+          )}
+        </div>
+      )}
+      {summary.previewStatus.detail && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          {summary.previewStatus.detail.slice(0, 240)}
+        </div>
+      )}
     </div>
   );
 }
@@ -1531,6 +1680,43 @@ function ConvertToBuildButton({ workflow }: { workflow: BuilderWorkflow }) {
   );
 }
 
+function RepairBaselineButton({ run, onCreated }: { run: BuilderRun; onCreated: () => void }) {
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<BuilderRepairBaselineResponse | null>(null);
+
+  async function handleCreate() {
+    setCreating(true);
+    try {
+      const response = await authFetch(`/api/builder/runs/${run.id}/repair-baseline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await response.json().catch(() => null) as { data?: BuilderRepairBaselineResponse; error?: string } | null;
+      if (!response.ok) throw new Error(body?.error ?? `The request couldn't be completed (${response.status}).`);
+      if (body?.data) setCreated(body.data);
+      onCreated();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+      <button className="btn btn-xs btn-ghost" onClick={handleCreate} disabled={creating}>
+        <RefreshCw size={12} /> {creating ? "creating repair workflow..." : "repair build baseline"}
+      </button>
+      {created && (
+        <span className="mono dim" style={{ fontSize: 11 }}>
+          created {created.workflow?.name ?? "repair workflow"} at {created.repairPlanFile}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function LivePassPanel({ runId, currentPassId, isRunning }: { runId: string; currentPassId: string | null; isRunning: boolean }) {
   const [lines, setLines] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
@@ -1586,12 +1772,14 @@ function RunDetailPanel({
   error,
   onClose,
   onOpen,
+  onRepairCreated,
 }: {
   runDetail: BuilderRunResponse | undefined;
   loading: boolean;
   error: string | null;
   onClose: () => void;
   onOpen: () => void;
+  onRepairCreated: () => void;
 }) {
   const run = runDetail?.run;
   const workflow = runDetail?.workflow;
@@ -1655,11 +1843,16 @@ function RunDetailPanel({
           <div className="builder-detail-body">
             <SessionSummaryCard summary={summary} />
             <RunAnalyticsCard summary={summary} />
+            <RunHealthCard summary={summary} />
+            <ModelQualityTelemetryTable summary={summary} />
             <PlanProgressWidget workflowId={workflow?.id} planFile={workflow?.planFile} />
             <NextStepsPanel workflowId={workflow?.id} planFile={workflow?.planFile} />
             <PlanFileContentView workflowId={workflow?.id} planFile={workflow?.planFile} />
             {workflow && workflow.mode === "plan" && (
               <ConvertToBuildButton workflow={workflow} />
+            )}
+            {run && run.status === "failed" && (
+              <RepairBaselineButton run={run} onCreated={onRepairCreated} />
             )}
             {run && (run.status === "running" || passes.some((p: BuilderPass) => p.status === "running")) && (
               <LivePassPanel runId={run.id} currentPassId={run.currentPassId ?? null} isRunning={true} />
@@ -3265,6 +3458,10 @@ export function BuilderPage() {
             workflowsApi.refresh();
           }}
           onOpen={() => setViewingRunDetail(true)}
+          onRepairCreated={() => {
+            runsApi.refresh();
+            workflowsApi.refresh();
+          }}
         />
       )}
 

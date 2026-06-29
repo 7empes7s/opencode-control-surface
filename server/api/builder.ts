@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync as fsExistsSync, mkdirSync, readFileSync as fsReadFileSync, writeFileSync as fsWriteFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createBrainstormSession, runBrainstormLoop } from "../builder/brainstorm-orchestrator.ts";
 import { startPreview, stopPreview, getPreview, getPreviewLog, type PreviewTarget } from "../builder/preview-server.ts";
 import {
@@ -649,7 +650,7 @@ export async function builderStartWorkflowHandler(workflowId: string, req: Reque
       resultStatus: "failed",
       error: message,
     });
-    const status = message.includes("project-local validation profile") || message.includes("validation profile required")
+    const status = message.includes("project-local validation profile") || message.includes("validation profile required") || message.includes("plan sanity check failed")
       ? 409
       : 400;
     return apiError(message, status);
@@ -1047,7 +1048,248 @@ export type BuilderRunSummaryResponse = {
   filesEdited: string[];
   filesCreated: string[];
   unresolvedErrors: number | null;
+  validationFailures: Array<{
+    id: string;
+    passId: string | null;
+    passSequence: number | null;
+    kind: string;
+    status: string;
+    command: string | null;
+    error: string | null;
+    outputTail: string | null;
+    startedAt: number | null;
+    finishedAt: number | null;
+    durationMs: number | null;
+  }>;
+  validationFailureTimeline: Array<{
+    id: string;
+    passId: string | null;
+    passSequence: number | null;
+    kind: string;
+    status: string;
+    command: string | null;
+    error: string | null;
+    outputTail: string | null;
+    startedAt: number | null;
+    finishedAt: number | null;
+    durationMs: number | null;
+  }>;
+  timeoutCount: number;
+  stallCount: number;
+  timeoutStallEvents: Array<{
+    passId: string;
+    sequence: number;
+    kind: "timeout" | "stall" | "timeout+stall";
+    agent: string | null;
+    model: string | null;
+    startedAt: number | null;
+    finishedAt: number | null;
+    summary: string | null;
+    error: string | null;
+  }>;
+  dirtyFileCount: number | null;
+  dirtyFileSnapshot: {
+    count: number;
+    path: string;
+    passId: string | null;
+    passSequence: number | null;
+    at: number;
+  } | null;
+  previewStatus: {
+    status: "not-recorded" | "ok" | "failed" | "running" | "unknown";
+    label: string;
+    source: string | null;
+    detail: string | null;
+    at: number | null;
+  };
+  modelQuality: BuilderModelQualityTelemetry[];
 };
+
+export type BuilderModelQualityTelemetry = {
+  model: string;
+  passCount: number;
+  successPasses: number;
+  failedPasses: number;
+  timeoutRate: number;
+  validationPassRate: number | null;
+  fileWriteProbe: "passed" | "missing" | "unknown";
+  averageUsefulStdoutIntervalMs: number | null;
+  lastStatus: string;
+  lastSeenAt: number | null;
+};
+
+function isValidationSuccess(status: string): boolean {
+  return /^(ok|pass|passed|success|succeeded|skipped)$/i.test(status);
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function newestFirst<T>(items: T[], timestamp: (item: T) => number | null | undefined): T[] {
+  return [...items].sort((a, b) => (timestamp(b) ?? 0) - (timestamp(a) ?? 0));
+}
+
+function buildPreviewStatus(workflow: BuilderWorkflow | null, validations: BuilderValidation[], artifacts: BuilderArtifact[] = []): BuilderRunSummaryResponse["previewStatus"] {
+  if (workflow) {
+    const preview = getPreview(workflow.id);
+    if (preview) {
+      return {
+        status: preview.status === "ready" ? "ok" : preview.status === "error" ? "failed" : preview.status === "starting" ? "running" : "unknown",
+        label: `${preview.target}: ${preview.status}`,
+        source: preview.publicUrl ?? preview.apiUrl ?? preview.expUrl ?? preview.logFile,
+        detail: preview.error,
+        at: preview.startedAt,
+      };
+    }
+  }
+
+  const previewValidation = newestFirst(
+    validations.filter((validation) => /\bpreview\b/i.test([validation.kind, validation.command ?? "", validation.url ?? ""].join(" "))),
+    (validation) => validation.finishedAt ?? validation.startedAt,
+  )[0];
+  if (previewValidation) {
+    const okStatus = isValidationSuccess(previewValidation.status);
+    const runningStatus = /^(running|queued|pending)$/i.test(previewValidation.status);
+    return {
+      status: okStatus ? "ok" : runningStatus ? "running" : "failed",
+      label: `${previewValidation.kind}: ${previewValidation.status}`,
+      source: previewValidation.command ?? previewValidation.url,
+      detail: previewValidation.error ?? previewValidation.outputTail,
+      at: previewValidation.finishedAt ?? previewValidation.startedAt,
+    };
+  }
+
+  const previewArtifact = newestFirst(
+    artifacts.filter((artifact) => /\bpreview\b/i.test(`${artifact.kind} ${artifact.path}`)),
+    (artifact) => artifact.createdAt,
+  )[0];
+  if (previewArtifact) {
+    const metadata = metadataRecord(previewArtifact.metadata);
+    const rawStatus = typeof metadata?.status === "string" ? metadata.status : "unknown";
+    return {
+      status: isValidationSuccess(rawStatus) ? "ok" : /^(failed|error)$/i.test(rawStatus) ? "failed" : "unknown",
+      label: `${previewArtifact.kind}: ${rawStatus}`,
+      source: previewArtifact.path,
+      detail: typeof metadata?.error === "string" ? metadata.error : null,
+      at: previewArtifact.createdAt,
+    };
+  }
+
+  return {
+    status: "not-recorded",
+    label: "No preview status recorded",
+    source: null,
+    detail: null,
+    at: null,
+  };
+}
+
+function validationDurationMs(validation: BuilderValidation): number | null {
+  if (validation.startedAt == null || validation.finishedAt == null) return null;
+  return Math.max(0, validation.finishedAt - validation.startedAt);
+}
+
+function classifyTimeoutStallPass(pass: BuilderPass): BuilderRunSummaryResponse["timeoutStallEvents"][number] | null {
+  const text = [pass.failureClass ?? "", pass.error ?? "", pass.summary ?? ""].join(" ");
+  const timedOut = /timeout|timed out/i.test(text);
+  const stalled = /stalled|stall|no useful stdout|no-progress|no progress/i.test(text);
+  if (!timedOut && !stalled) return null;
+  return {
+    passId: pass.id,
+    sequence: pass.sequence,
+    kind: timedOut && stalled ? "timeout+stall" : timedOut ? "timeout" : "stall",
+    agent: pass.agent,
+    model: pass.model,
+    startedAt: pass.startedAt,
+    finishedAt: pass.finishedAt,
+    summary: pass.summary,
+    error: pass.error,
+  };
+}
+
+function parsePassAnalytics(pass: BuilderPass): Record<string, unknown> | null {
+  if (!pass.analyticsJson) return null;
+  try {
+    return metadataRecord(JSON.parse(pass.analyticsJson));
+  } catch {
+    return null;
+  }
+}
+
+function stringArrayFrom(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function usefulStdoutIntervalMs(pass: BuilderPass, artifacts: BuilderArtifact[]): number | null {
+  if (pass.startedAt == null || pass.finishedAt == null || pass.finishedAt <= pass.startedAt) return null;
+  const stdout = artifacts.find((artifact) => artifact.passId === pass.id && artifact.kind === "stdout");
+  if (!stdout || !fsExistsSync(stdout.path)) return null;
+  try {
+    const usefulLines = fsReadFileSync(stdout.path, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("[builder]") && !line.startsWith("[builder-warn]"));
+    if (usefulLines.length === 0) return null;
+    return Math.round((pass.finishedAt - pass.startedAt) / usefulLines.length);
+  } catch {
+    return null;
+  }
+}
+
+function buildModelQualityTelemetry(
+  passes: BuilderPass[],
+  validations: BuilderValidation[],
+  artifacts: BuilderArtifact[],
+): BuilderModelQualityTelemetry[] {
+  const byModel = new Map<string, {
+    passes: BuilderPass[];
+    validations: BuilderValidation[];
+    writeProbePasses: number;
+    intervals: number[];
+  }>();
+
+  for (const pass of passes) {
+    const model = pass.model ?? pass.provider ?? pass.agent ?? "unknown";
+    const entry = byModel.get(model) ?? { passes: [], validations: [], writeProbePasses: 0, intervals: [] };
+    entry.passes.push(pass);
+    const analytics = parsePassAnalytics(pass);
+    const writes = stringArrayFrom(analytics?.filesEdited).length + stringArrayFrom(analytics?.filesCreated).length;
+    if (writes > 0) entry.writeProbePasses += 1;
+    const interval = usefulStdoutIntervalMs(pass, artifacts);
+    if (interval != null) entry.intervals.push(interval);
+    byModel.set(model, entry);
+  }
+
+  for (const validation of validations) {
+    if (!validation.passId) continue;
+    const pass = passes.find((candidate) => candidate.id === validation.passId);
+    const model = pass?.model ?? pass?.provider ?? pass?.agent;
+    if (!model) continue;
+    byModel.get(model)?.validations.push(validation);
+  }
+
+  return Array.from(byModel.entries()).map(([model, entry]) => {
+    const timeoutPasses = entry.passes.filter((pass) => /timeout|timed out/i.test([pass.failureClass ?? "", pass.error ?? ""].join(" "))).length;
+    const validationPasses = entry.validations.filter((validation) => isValidationSuccess(validation.status)).length;
+    const lastPass = [...entry.passes].sort((a, b) => (b.finishedAt ?? b.startedAt ?? 0) - (a.finishedAt ?? a.startedAt ?? 0))[0];
+    return {
+      model,
+      passCount: entry.passes.length,
+      successPasses: entry.passes.filter((pass) => pass.status === "success").length,
+      failedPasses: entry.passes.filter((pass) => pass.status === "failed").length,
+      timeoutRate: Number((timeoutPasses / Math.max(1, entry.passes.length)).toFixed(2)),
+      validationPassRate: entry.validations.length > 0 ? Number((validationPasses / entry.validations.length).toFixed(2)) : null,
+      fileWriteProbe: (entry.writeProbePasses > 0 ? "passed" : entry.passes.length > 0 ? "missing" : "unknown") as BuilderModelQualityTelemetry["fileWriteProbe"],
+      averageUsefulStdoutIntervalMs: entry.intervals.length > 0
+        ? Math.round(entry.intervals.reduce((sum, value) => sum + value, 0) / entry.intervals.length)
+        : null,
+      lastStatus: lastPass?.status ?? "unknown",
+      lastSeenAt: lastPass?.finishedAt ?? lastPass?.startedAt ?? null,
+    };
+  }).sort((a, b) => b.passCount - a.passCount || a.model.localeCompare(b.model));
+}
 
 export function builderRunSummaryHandler(runId: string): Response {
   const reason = dbUnavailable();
@@ -1062,7 +1304,11 @@ export function builderRunSummaryHandler(runId: string): Response {
   }
 
   const passes = readBuilderPasses(runId);
+  const validations = readBuilderValidations(runId);
+  const artifacts = readBuilderArtifacts(runId) ?? [];
+  const workflow = readBuilderWorkflow(run.workflowId);
   const lastPass = passes.length > 0 ? passes[passes.length - 1] : null;
+  const passById = new Map(passes.map((pass) => [pass.id, pass]));
 
   let planItemsDone: number | null = null;
   let planItemsRemaining: number | null = null;
@@ -1070,6 +1316,8 @@ export function builderRunSummaryHandler(runId: string): Response {
   const filesEdited: string[] = [];
   const filesCreated: string[] = [];
   let unresolvedErrors: number | null = null;
+  let dirtyFileCount: number | null = null;
+  let dirtyFileSnapshot: BuilderRunSummaryResponse["dirtyFileSnapshot"] = null;
 
   // Aggregate analytics from passes (analyticsJson is written to DB by runner.ts but not yet typed on BuilderPass)
   for (const pass of passes) {
@@ -1087,6 +1335,45 @@ export function builderRunSummaryHandler(runId: string): Response {
     }
   }
 
+  for (const artifact of artifacts) {
+    if (artifact.kind !== "pre-pass-dirty-state" && artifact.kind !== "pre-pass-patch") continue;
+    const dirtyFiles = metadataRecord(artifact.metadata)?.dirtyFiles;
+    if (typeof dirtyFiles !== "number") continue;
+    dirtyFileCount = Math.max(dirtyFileCount ?? 0, dirtyFiles);
+    if (!dirtyFileSnapshot) {
+      const pass = artifact.passId ? passById.get(artifact.passId) : null;
+      dirtyFileSnapshot = {
+        count: dirtyFiles,
+        path: artifact.path,
+        passId: artifact.passId,
+        passSequence: pass?.sequence ?? null,
+        at: artifact.createdAt,
+      };
+    }
+  }
+
+  const validationFailureTimeline = validations
+    .filter((validation) => !isValidationSuccess(validation.status))
+    .map((validation) => ({
+      id: validation.id,
+      passId: validation.passId,
+      passSequence: validation.passId ? passById.get(validation.passId)?.sequence ?? null : null,
+      kind: validation.kind,
+      status: validation.status,
+      command: validation.command ?? validation.url,
+      error: validation.error,
+      outputTail: validation.outputTail,
+      startedAt: validation.startedAt,
+      finishedAt: validation.finishedAt,
+      durationMs: validationDurationMs(validation),
+    }))
+    .sort((a, b) => (a.startedAt ?? a.finishedAt ?? 0) - (b.startedAt ?? b.finishedAt ?? 0));
+  const validationFailures = [...validationFailureTimeline].sort((a, b) => (b.finishedAt ?? b.startedAt ?? 0) - (a.finishedAt ?? a.startedAt ?? 0));
+  const timeoutStallEvents = passes
+    .map(classifyTimeoutStallPass)
+    .filter((event): event is NonNullable<typeof event> => Boolean(event));
+  const timeoutCount = timeoutStallEvents.filter((event) => event.kind === "timeout" || event.kind === "timeout+stall").length;
+  const stallCount = timeoutStallEvents.filter((event) => event.kind === "stall" || event.kind === "timeout+stall").length;
   const durationMs = run.startedAt && run.finishedAt ? run.finishedAt - run.startedAt : null;
 
   const summary: BuilderRunSummaryResponse = {
@@ -1107,9 +1394,147 @@ export function builderRunSummaryHandler(runId: string): Response {
     filesEdited,
     filesCreated,
     unresolvedErrors,
+    validationFailures,
+    validationFailureTimeline,
+    timeoutCount,
+    stallCount,
+    timeoutStallEvents,
+    dirtyFileCount,
+    dirtyFileSnapshot,
+    previewStatus: buildPreviewStatus(workflow, validations, artifacts),
+    modelQuality: buildModelQualityTelemetry(passes, validations, artifacts),
   };
 
   return json(ok(summary, { builder: "ok" }));
+}
+
+export type BuilderRepairBaselineResponse = {
+  sourceRun: BuilderRun;
+  workflow: BuilderWorkflow | null;
+  repairPlanFile: string;
+  degraded: boolean;
+  reason?: string;
+};
+
+const REPAIR_PLAN_DIR = "/var/lib/control-surface/builder-repair-plans";
+
+function safeRepairId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+}
+
+function buildRepairPlan(run: BuilderRun, workflow: BuilderWorkflow, validations: BuilderValidation[], passes: BuilderPass[]): string {
+  const failures = validations.filter((validation) => !isValidationSuccess(validation.status));
+  const compileFailures = failures.filter((validation) => (
+    /build|compile|typecheck|tsc|lint/i.test([validation.kind, validation.command ?? "", validation.error ?? ""].join(" "))
+  ));
+  const selected = (compileFailures.length > 0 ? compileFailures : failures).slice(0, 8);
+  const lastFailedPass = [...passes].reverse().find((pass) => pass.status === "failed");
+  const lines = [
+    "# Repair Build Baseline",
+    "",
+    `Source workflow: ${workflow.name}`,
+    `Source run: ${run.id}`,
+    `Project root: ${workflow.projectRoot}`,
+    "",
+    "## Goal",
+    "",
+    "Restore the compile/build baseline before implementing roadmap or feature work.",
+    "",
+    "## Instructions",
+    "",
+    "- Reproduce the current compile or build failure with the command below.",
+    "- Make the smallest code changes needed to return the baseline to green.",
+    "- Do not implement unrelated plan items during this repair workflow.",
+    "- Run the workflow validation commands before writing PASS_RESULT.json.",
+    "",
+  ];
+
+  if (selected.length > 0) {
+    lines.push("## Current Failures", "");
+    for (const failure of selected) {
+      lines.push(`### ${failure.kind}: ${failure.status}`, "");
+      if (failure.command) lines.push(`Command: \`${failure.command}\``);
+      if (failure.url) lines.push(`URL: ${failure.url}`);
+      const detail = (failure.error ?? failure.outputTail ?? "").trim();
+      if (detail) lines.push("", "```text", detail.slice(-2500), "```");
+      lines.push("");
+    }
+  } else if (lastFailedPass) {
+    lines.push("## Current Failure", "", `Pass ${lastFailedPass.sequence} failed with ${lastFailedPass.failureClass ?? "unknown failure"}.`);
+    if (lastFailedPass.error) lines.push("", "```text", lastFailedPass.error.slice(-2500), "```");
+  } else {
+    lines.push("## Current Failure", "", "No stored validation failure was found. Inspect the latest pass logs and repair the first build/typecheck failure.");
+  }
+
+  return lines.join("\n");
+}
+
+export async function builderRepairBaselineHandler(runId: string, req: Request): Promise<Response> {
+  const reason = dbUnavailable();
+  if (reason) return apiError("db unavailable", 503);
+
+  const run = readBuilderRun(runId);
+  if (!run) return apiError("run not found", 404);
+  const workflow = readBuilderWorkflow(run.workflowId);
+  if (!workflow) return apiError("workflow not found", 404);
+
+  try {
+    await req.json().catch(() => ({}));
+    const validations = readBuilderValidations(runId);
+    const passes = readBuilderPasses(runId);
+    mkdirSync(REPAIR_PLAN_DIR, { recursive: true });
+    const repairPlanFile = join(REPAIR_PLAN_DIR, `${safeRepairId(runId)}-repair-build-baseline.md`);
+    fsWriteFileSync(repairPlanFile, buildRepairPlan(run, workflow, validations, passes), { encoding: "utf8" });
+
+    const repairWorkflow = createBuilderWorkflow({
+      name: `Repair build baseline - ${workflow.name}`.slice(0, 120),
+      projectRoot: workflow.projectRoot,
+      planFile: repairPlanFile,
+      mode: "once",
+      status: "ready",
+      config: {
+        ...workflow.config,
+        projectRoot: workflow.projectRoot,
+        riskPolicy: { ...workflow.config.riskPolicy, maxPasses: 1 },
+        gitPolicy: { ...workflow.config.gitPolicy, commit: "manual", push: "never" },
+      },
+    });
+
+    writeActionAudit({
+      actionKind: "builder.workflow.repair-baseline",
+      actionId: `builder-run:repair-baseline:${runId}`,
+      targetType: "builder-run",
+      targetId: runId,
+      risk: "medium",
+      request: { sourceWorkflowId: workflow.id },
+      result: `created repair workflow ${repairWorkflow.id}`,
+      resultStatus: "success",
+      evidence: [
+        { label: "Builder run", kind: "db", ref: `builder_runs:${runId}` },
+        { label: "Repair plan", kind: "file", ref: repairPlanFile },
+      ],
+      rollbackHint: "Delete the generated repair workflow from /builder if it is not needed.",
+    });
+
+    return json(ok<BuilderRepairBaselineResponse>({
+      sourceRun: run,
+      workflow: repairWorkflow,
+      repairPlanFile,
+      degraded: false,
+    }, { builder: "ok" }), 201);
+  } catch (error) {
+    writeActionAudit({
+      actionKind: "builder.workflow.repair-baseline",
+      actionId: `builder-run:repair-baseline:${runId}`,
+      targetType: "builder-run",
+      targetId: runId,
+      risk: "medium",
+      result: errorMessage(error),
+      resultStatus: "failure",
+      evidence: [{ label: "Builder run", kind: "db", ref: `builder_runs:${runId}` }],
+    });
+    return apiError(errorMessage(error), 500);
+  }
 }
 
 export type PlanProgressSection = {

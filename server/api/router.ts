@@ -81,6 +81,7 @@ import {
   builderArtifactContentHandler,
   builderPassDiagnosisHandler,
   builderRunSummaryHandler,
+  builderRepairBaselineHandler,
   builderWorkflowPlanProgressHandler,
   builderPassLiveHandler,
   traceListDatesHandler,
@@ -203,6 +204,12 @@ import {
   adminAutoFixFeedHandler,
 } from "./admin.ts";
 import { promptsHandler } from "./prompts.ts";
+import {
+  discoveryListAssetsHandler,
+  discoveryRegisterAssetHandler,
+  discoveryIgnoreAssetHandler,
+  discoveryRescanHandler,
+} from "./discovery.ts";
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
 import {
@@ -765,6 +772,12 @@ if (method === "GET" && pathname === "/api/stream") {
   const builderRunSummaryMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/summary$/);
   if (method === "GET" && builderRunSummaryMatch) {
     return builderRunSummaryHandler(builderRunSummaryMatch[1]);
+  }
+  const builderRunRepairMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/repair-baseline$/);
+  if (method === "POST" && builderRunRepairMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return builderRepairBaselineHandler(builderRunRepairMatch[1], req);
   }
   const builderPassDiagnosisMatch = pathname.match(/^\/api\/builder\/passes\/([^/]+)\/diagnosis$/);
   if (method === "GET" && builderPassDiagnosisMatch) {
@@ -1447,6 +1460,14 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/cost/fallbacks") return getFallbacks(req);
   if (method === "POST" && pathname === "/api/cost/recommendations") return getRecommendations(req);
   if (method === "GET" && pathname === "/api/cost/summary") return getCostSummary(req);
+
+  // ── AI Discovery & Inventory (Phase 4a) ─────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/discovery/assets") return discoveryListAssetsHandler(req, url);
+  if (method === "POST" && pathname === "/api/discovery/rescan") return discoveryRescanHandler(req);
+  const discoveryAssetRegMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/register$/);
+  if (method === "POST" && discoveryAssetRegMatch) return discoveryRegisterAssetHandler(req, decodeURIComponent(discoveryAssetRegMatch[1]));
+  const discoveryAssetIgnoreMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/ignore$/);
+  if (method === "POST" && discoveryAssetIgnoreMatch) return discoveryIgnoreAssetHandler(req, decodeURIComponent(discoveryAssetIgnoreMatch[1]));
 
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/compliance/dpa") return complianceDpaHandler(req);

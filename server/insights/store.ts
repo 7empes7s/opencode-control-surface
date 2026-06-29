@@ -167,6 +167,21 @@ export function countOpenInsights(): number {
   return row?.count ?? 0;
 }
 
+export function resolveDiscoveryInsightsForAsset(assetId: string, resolution: string): number {
+  const db = getDashboardDb();
+  if (!db) return 0;
+  const tenant = whereTenant();
+  const now = Date.now();
+  const result = db.query(`
+    UPDATE insights
+    SET status = 'resolved', resolved_at = ?, resolution = ?
+    WHERE status = 'open'
+      AND source_key LIKE ?
+      ${tenant.clause}
+  `).run(now, resolution, `discovery:%:${assetId}`, ...tenant.params);
+  return (result as { changes: number }).changes;
+}
+
 export function resolveStaleInsights(sourceKeyPrefix: string, activeSourceKeys: string[], resolution: string): Insight[] {
   const db = getDashboardDb();
   if (!db) return [];

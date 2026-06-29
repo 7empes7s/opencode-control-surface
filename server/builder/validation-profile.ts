@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
+import { spawnSync } from "node:child_process";
 
 export type ValidationProfileCommands = {
   install: string | null;
@@ -16,6 +17,14 @@ export type ValidationProfileCommands = {
   warnings: string[];
   hasLocalProfile: boolean;
   localProfilePath: string | null;
+};
+
+type ExternalServiceRule = {
+  id: string;
+  label: string;
+  pattern: RegExp;
+  isAvailable: (env: NodeJS.ProcessEnv) => boolean;
+  missing: string;
 };
 
 export type ValidationProfileStartContext = string | {
@@ -35,6 +44,48 @@ type NxProject = {
 };
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "coverage"]);
+const NON_REQUIREMENT_RE = /\b(reject|downgrade|unavailable external service|avoid|do not|don't|non-goal|not required|document|detect generated apps)\b/i;
+const ACTIONABLE_RE = /\b(require|requires|required|must|need|needs|configure|set up|setup|upload|submit|deploy|validate|test|run|build|enable|integrate|purchase)\b/i;
+
+const EXTERNAL_SERVICE_RULES: ExternalServiceRule[] = [
+  {
+    id: "eas-credentials",
+    label: "EAS credentials",
+    pattern: /\b(eas credentials?|eas build|eas submit|expo application services)\b/i,
+    isAvailable: (env) => Boolean(env.EAS_TOKEN || env.EXPO_TOKEN),
+    missing: "set EAS_TOKEN or EXPO_TOKEN",
+  },
+  {
+    id: "testflight",
+    label: "TestFlight/App Store Connect",
+    pattern: /\b(testflight|app store connect)\b/i,
+    isAvailable: (env) => Boolean(
+      env.APP_STORE_CONNECT_API_KEY_ID &&
+      env.APP_STORE_CONNECT_ISSUER_ID &&
+      (env.APP_STORE_CONNECT_API_PRIVATE_KEY || env.APP_STORE_CONNECT_API_PRIVATE_KEY_PATH),
+    ),
+    missing: "set APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_ISSUER_ID, and APP_STORE_CONNECT_API_PRIVATE_KEY or APP_STORE_CONNECT_API_PRIVATE_KEY_PATH",
+  },
+  {
+    id: "google-play-billing",
+    label: "Google Play Billing sandbox",
+    pattern: /\b(google play billing|play billing sandbox|billing sandbox|in-app purchase|iap)\b/i,
+    isAvailable: (env) => Boolean(env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || env.GOOGLE_APPLICATION_CREDENTIALS),
+    missing: "set GOOGLE_PLAY_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS",
+  },
+  {
+    id: "real-ios-simulator",
+    label: "real iOS simulator",
+    pattern: /\b(real ios simulator|ios simulator|simctl|xcodebuild)\b/i,
+    isAvailable: (env) => {
+      if (env.REAL_IOS_SIMULATOR_AVAILABLE === "1") return true;
+      if (process.platform !== "darwin") return false;
+      const result = spawnSync("xcrun", ["simctl", "list", "devices"], { encoding: "utf8", timeout: 5_000 });
+      return result.status === 0;
+    },
+    missing: "run on a macOS host with xcrun simctl available, or set REAL_IOS_SIMULATOR_AVAILABLE=1 for a verified remote simulator",
+  },
+];
 
 function readJson<T>(path: string): T | null {
   try {
@@ -42,6 +93,56 @@ function readJson<T>(path: string): T | null {
   } catch {
     return null;
   }
+}
+
+function getCandidatePlanLines(planText: string): string[] {
+  const lines = planText.split(/\r?\n/);
+  const unchecked = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^\s*[-*]\s+\[ \]/.test(line));
+  if (unchecked.length === 0) return lines;
+
+  const candidates: string[] = [];
+  for (const item of unchecked) {
+    candidates.push(item.line);
+    const indent = item.line.match(/^\s*/)?.[0].length ?? 0;
+    for (let index = item.index + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (/^\s*[-*]\s+\[[ xX]\]/.test(line) && (line.match(/^\s*/)?.[0].length ?? 0) <= indent) break;
+      candidates.push(line);
+    }
+  }
+  return candidates;
+}
+
+function isActionableRequirementLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || NON_REQUIREMENT_RE.test(trimmed)) return false;
+  return /^\s*[-*]\s+\[ \]/.test(line) || ACTIONABLE_RE.test(trimmed);
+}
+
+export function getUnavailableExternalServicePlanBlockers(
+  planFile: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (!planFile || !existsSync(planFile)) return [];
+  let planText = "";
+  try {
+    planText = readFileSync(planFile, "utf8");
+  } catch {
+    return [];
+  }
+
+  const blockers = new Map<string, string>();
+  for (const line of getCandidatePlanLines(planText)) {
+    if (!isActionableRequirementLine(line)) continue;
+    for (const rule of EXTERNAL_SERVICE_RULES) {
+      if (rule.pattern.test(line) && !rule.isAvailable(env)) {
+        blockers.set(rule.id, `${rule.label} unavailable for plan item "${line.trim().slice(0, 140)}": ${rule.missing}`);
+      }
+    }
+  }
+  return [...blockers.values()];
 }
 
 export function detectPackageManager(projectRoot: string): ValidationProfileCommands["packageManager"] {
@@ -259,15 +360,17 @@ export function getValidationProfileStartBlockers(
   projectRoot: string,
   context: ValidationProfileStartContext,
   urls: { internalUrl?: string | null; publicUrl?: string | null } = {},
+  planFile?: string | null,
 ): string[] {
   if (!isMajorValidationContext(context)) return [];
   const profile = deriveProjectValidationProfile(projectRoot, urls);
   const missing = missingLocalValidationProfileFields(profile);
-  if (missing.length === 0) return [];
+  const blockers = getUnavailableExternalServicePlanBlockers(planFile);
+  if (missing.length === 0) return blockers;
   if (!profile.hasLocalProfile) {
-    return [`project-local validation profile missing at ${profile.localProfilePath}`];
+    return [`project-local validation profile missing at ${profile.localProfilePath}`, ...blockers];
   }
-  return [`project-local validation profile incomplete at ${profile.localProfilePath}: missing ${missing.join(", ")}`];
+  return [`project-local validation profile incomplete at ${profile.localProfilePath}: missing ${missing.join(", ")}`, ...blockers];
 }
 
 export function getProjectValidationProfile(projectRoot: string): {

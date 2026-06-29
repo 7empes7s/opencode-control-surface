@@ -1,11 +1,13 @@
 import { execSync } from "node:child_process";
+import { discoverSystemdUnits, discoverContainers } from "../discovery/reconcile.ts";
 
 export interface ServicePill {
   name: string;
   status: "active" | "inactive" | "failed" | "unknown";
 }
 
-const CRITICAL_SERVICES = [
+// Seed hints — always surfaced even if momentarily down or not discovered.
+const CRITICAL_SERVICES_SEEDS = [
   "newsbites",
   "newsbites-autopipeline",
   "litellm",
@@ -15,48 +17,80 @@ const CRITICAL_SERVICES = [
   "cloudflared",
 ];
 
-const DOCKER_CONTAINERS = ["openclaw_gateway", "paperclip", "paperclip_db", "goblin_game"];
+const DOCKER_CONTAINERS_SEEDS = ["openclaw_gateway", "paperclip", "paperclip_db", "goblin_game"];
+
+function probe(name: string, args: string[], timeoutMs = 5000): string {
+  try {
+    return execSync(`${name} ${args.join(" ")}`, { encoding: "utf8", timeout: timeoutMs });
+  } catch {
+    return "";
+  }
+}
+
+function buildServiceNames(): string[] {
+  const names = new Set<string>(CRITICAL_SERVICES_SEEDS);
+  // Live discovery — fail-isolated; falls back to seeds only on error.
+  try {
+    for (const asset of discoverSystemdUnits()) {
+      const stripped = asset.signature.replace(/\.service$/, "");
+      names.add(stripped);
+    }
+  } catch {}
+  return Array.from(names);
+}
+
+function buildContainerNames(): string[] {
+  const names = new Set<string>(DOCKER_CONTAINERS_SEEDS);
+  // Live discovery — fail-isolated.
+  try {
+    for (const asset of discoverContainers()) {
+      const fp = asset.fingerprint;
+      const n = typeof fp.name === "string" && fp.name ? fp.name : null;
+      if (n) names.add(n);
+    }
+  } catch {}
+  return Array.from(names);
+}
 
 export function getServiceStatuses(): ServicePill[] {
   const results: ServicePill[] = [];
+  const serviceNames = buildServiceNames();
 
-  try {
-    const raw = execSync(
-      `systemctl is-active ${CRITICAL_SERVICES.join(" ")} 2>/dev/null || true`,
-      { encoding: "utf8", timeout: 5000 }
-    );
+  if (serviceNames.length > 0) {
+    const raw = probe("systemctl", ["is-active", ...serviceNames, "2>/dev/null", "||", "true"]);
     const statuses = raw.trim().split("\n");
-    for (let i = 0; i < CRITICAL_SERVICES.length; i++) {
+    for (let i = 0; i < serviceNames.length; i++) {
       const s = (statuses[i] || "unknown").trim();
       results.push({
-        name: CRITICAL_SERVICES[i],
+        name: serviceNames[i],
         status: s === "active" ? "active" : s === "failed" ? "failed" : s === "inactive" ? "inactive" : "unknown",
       });
     }
-  } catch {
-    for (const name of CRITICAL_SERVICES) {
-      results.push({ name, status: "unknown" });
-    }
   }
 
-  try {
-    const raw = execSync(
-      `docker inspect --format='{{.Name}} {{.State.Status}}' ${DOCKER_CONTAINERS.join(" ")} 2>/dev/null || true`,
-      { encoding: "utf8", timeout: 5000 }
+  const containerNames = buildContainerNames();
+  if (containerNames.length > 0) {
+    const raw = probe(
+      "docker",
+      ["inspect", "--format='{{.Name}} {{.State.Status}}'", ...containerNames, "2>/dev/null", "||", "true"],
     );
+    const seen = new Set<string>();
     for (const line of raw.trim().split("\n")) {
       if (!line.trim()) continue;
       const parts = line.trim().split(/\s+/);
-      const name = parts[0].replace(/^\//, "");
-      const status = parts[1] || "unknown";
+      const name = parts[0].replace(/^\//, "").replace(/^'/, "");
+      const status = parts[1]?.replace(/'$/, "") || "unknown";
+      seen.add(name);
       results.push({
         name,
         status: status === "running" ? "active" : status === "exited" ? "inactive" : "unknown",
       });
     }
-  } catch {
-    for (const name of DOCKER_CONTAINERS) {
-      results.push({ name, status: "unknown" });
+    // Surface seed containers even if docker inspect returned nothing for them.
+    for (const name of containerNames) {
+      if (!seen.has(name)) {
+        results.push({ name, status: "unknown" });
+      }
     }
   }
 
@@ -115,7 +149,8 @@ export interface TimerInfo {
   lastResult: string | null;
 }
 
-const KNOWN_TIMERS = [
+// Seed hints for timers.
+const KNOWN_TIMERS_SEEDS = [
   "model-health-check",
   "paperclip-action-notify",
   "newsbites-agent-watch",
@@ -125,8 +160,24 @@ const KNOWN_TIMERS = [
   "vast-watchdog",
 ];
 
+function buildTimerNames(): string[] {
+  const names = new Set<string>(KNOWN_TIMERS_SEEDS);
+  // Live discovery via systemctl.
+  try {
+    const raw = execSync("systemctl list-units --type=timer --all --no-legend --no-pager 2>/dev/null || true", {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    for (const line of raw.split("\n")) {
+      const match = line.trim().match(/^(\S+\.timer)\s/);
+      if (match) names.add(match[1].replace(/\.timer$/, ""));
+    }
+  } catch {}
+  return Array.from(names);
+}
+
 export function getTimers(): TimerInfo[] {
-  return KNOWN_TIMERS.map((name) => {
+  return buildTimerNames().map((name) => {
     const timerUnit = `${name}.timer`;
     try {
       const raw = execSync(

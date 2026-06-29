@@ -14,6 +14,7 @@ import {
   builderProvisionHandler,
   builderProjectsHandler,
   builderRunHandler,
+  builderRunSummaryHandler,
   builderResumeWorkflowHandler,
   builderRunnerDisabledHandler,
   builderStartWorkflowHandler,
@@ -22,6 +23,7 @@ import {
   type BuilderProvisionResponse,
   type BuilderProjectsResponse,
   type BuilderRunResponse,
+  type BuilderRunSummaryResponse,
   type BuilderWorkflowResponse,
   type BuilderWorkflowsResponse,
 } from "./builder.ts";
@@ -112,6 +114,135 @@ test("builder model inventory returns stable summary fields", async () => {
   expect(envelope.data).toHaveProperty("bestCloudFast");
   expect(Array.isArray(envelope.data.fallbackTargets)).toBe(true);
   expect(Array.isArray(envelope.data.opencode)).toBe(true);
+});
+
+test("builder run summary exposes run-detail health signals", async () => {
+  enableDb();
+  const db = getDashboardDb()!;
+  const now = Date.now();
+
+  db.query(`
+    INSERT INTO builder_runs (id, workflow_id, trigger, status, started_at, finished_at, current_pass_id, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("br_health", "bw_health", "manual", "failed", now - 120_000, now, "bp_health", "validation failed");
+  db.query(`
+    INSERT INTO builder_passes (
+      id, run_id, workflow_id, sequence, phase, status, started_at, finished_at,
+      job_ids_json, validation_ids_json, artifact_ids_json, summary, failure_class, error, analytics_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bp_health",
+    "br_health",
+    "bw_health",
+    1,
+    "implement",
+    "failed",
+    now - 110_000,
+    now - 10_000,
+    "[]",
+    JSON.stringify(["bv_fail", "bv_preview"]),
+    JSON.stringify(["ba_dirty"]),
+    "Pass timed out after no useful stdout.",
+    "timeout",
+    "stalled waiting for output",
+    JSON.stringify({ filesEdited: ["app/page.tsx"], planItemsRemaining: 2 }),
+  );
+  db.query(`
+    INSERT INTO builder_validations (
+      id, workflow_id, run_id, pass_id, kind, status, command, url, started_at,
+      finished_at, output_tail, artifact_id, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bv_fail",
+    "bw_health",
+    "br_health",
+    "bp_health",
+    "web-build",
+    "failed",
+    "npm run build:web",
+    null,
+    now - 90_000,
+    now - 80_000,
+    "Type error in app/page.tsx",
+    null,
+    "build failed",
+  );
+  db.query(`
+    INSERT INTO builder_validations (
+      id, workflow_id, run_id, pass_id, kind, status, command, url, started_at,
+      finished_at, output_tail, artifact_id, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bv_preview_old",
+    "bw_health",
+    "br_health",
+    "bp_health",
+    "preview-old",
+    "skipped",
+    "curl -fsS http://127.0.0.1:5172/",
+    "http://127.0.0.1:5172/",
+    now - 79_000,
+    now - 78_000,
+    "older preview skipped",
+    null,
+    null,
+  );
+  db.query(`
+    INSERT INTO builder_validations (
+      id, workflow_id, run_id, pass_id, kind, status, command, url, started_at,
+      finished_at, output_tail, artifact_id, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "bv_preview",
+    "bw_health",
+    "br_health",
+    "bp_health",
+    "preview-web",
+    "ok",
+    "curl -fsS http://127.0.0.1:5173/",
+    "http://127.0.0.1:5173/",
+    now - 70_000,
+    now - 60_000,
+    "ok",
+    null,
+    null,
+  );
+  db.query(`
+    INSERT INTO builder_artifacts (id, workflow_id, run_id, pass_id, kind, path, sha256, created_at, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "ba_dirty",
+    "bw_health",
+    "br_health",
+    "bp_health",
+    "pre-pass-dirty-state",
+    "/tmp/pre-pass.patch",
+    null,
+    now - 100_000,
+    JSON.stringify({ dirtyFiles: 3 }),
+  );
+
+  const response = builderRunSummaryHandler("br_health");
+  expect(response.status).toBe(200);
+  const envelope = await response.json() as ApiEnvelope<BuilderRunSummaryResponse>;
+
+  expect(envelope.data.validationFailures).toHaveLength(1);
+  expect(envelope.data.validationFailures[0].kind).toBe("web-build");
+  expect(envelope.data.validationFailureTimeline).toHaveLength(1);
+  expect(envelope.data.validationFailureTimeline[0].passSequence).toBe(1);
+  expect(envelope.data.validationFailureTimeline[0].durationMs).toBe(10_000);
+  expect(envelope.data.timeoutStallEvents).toHaveLength(1);
+  expect(envelope.data.timeoutStallEvents[0].kind).toBe("timeout+stall");
+  expect(envelope.data.timeoutCount).toBe(1);
+  expect(envelope.data.stallCount).toBe(1);
+  expect(envelope.data.dirtyFileCount).toBe(3);
+  expect(envelope.data.dirtyFileSnapshot?.passSequence).toBe(1);
+  expect(envelope.data.previewStatus.status).toBe("ok");
+  expect(envelope.data.previewStatus.label).toContain("preview-web");
 });
 
 test("opencode agent model selection uses native provider/model ids", () => {
@@ -570,6 +701,281 @@ test("builder workflow start rejects major runs without a project-local validati
   const rejected = await startResponse.json() as { error?: string };
   expect(rejected.error).toContain("project-local validation profile required");
   expect(readBuilderRuns(workflowId)).toHaveLength(0);
+});
+
+test("builder workflow start rejects major runs when next plan items require unavailable services", async () => {
+  enableDb();
+  const projectRoot = join(tempDir, "ios-generated-app");
+  mkdirSync(join(projectRoot, ".opencode"), { recursive: true });
+  const planFile = join(projectRoot, "PLAN.md");
+  writeFileSync(planFile, [
+    "# Generated iOS App Plan",
+    "",
+    "- [ ] Run real iOS simulators for release validation",
+    "- [ ] Restore build validation baseline",
+  ].join("\n"), { encoding: "utf8" });
+  writeFileSync(join(projectRoot, ".opencode", "validation-profile.json"), JSON.stringify({
+    installCommand: "npm ci",
+    apiBuildCommand: "npm run build:api",
+    webBuildCommand: "npm run build:web",
+    apiSmokeCommand: "curl -fsS http://127.0.0.1:3000/health",
+    webSmokeCommand: "curl -fsS http://127.0.0.1:3000/health",
+    internal: ["npm run build:web"],
+  }), { encoding: "utf8" });
+  getDashboardDb()!.query(`
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `project:${projectRoot}`,
+    "iOS Generated App",
+    projectRoot,
+    JSON.stringify({ label: "iOS Generated App", risk: "medium", writable: true }),
+    Date.now(),
+    Date.now(),
+    "mimule",
+  );
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "iOS generated app workflow",
+      projectRoot,
+      planFile,
+      mode: "once",
+      status: "draft",
+      config: {
+        projectRoot,
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: [] },
+        validationProfile: { commands: ["npm run build:web"], internal: ["npm run build:web"] },
+        gitPolicy: { commit: "manual", push: "never" },
+        backupPolicy: { enabled: false, beforeRun: false },
+        riskPolicy: { liveDeploys: "disabled", maxPasses: 2 },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflowId = created.data.workflow!.id;
+
+  const startResponse = await builderStartWorkflowHandler(workflowId, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  expect(startResponse.status).toBe(409);
+  const rejected = await startResponse.json() as { error?: string };
+  expect(rejected.error).toContain("plan sanity check failed");
+  expect(rejected.error).toContain("real iOS simulator access");
+  expect(readBuilderRuns(workflowId)).toHaveLength(0);
+});
+
+test("builder workflow start rejects major runs with unavailable external-service plan items", async () => {
+  enableDb();
+  const projectRoot = join(tempDir, "mobile-app");
+  mkdirSync(join(projectRoot, ".opencode"), { recursive: true });
+  const planFile = join(projectRoot, "PLAN.md");
+  writeFileSync(planFile, [
+    "# Mobile App Plan",
+    "",
+    "- [ ] Submit the beta through TestFlight using EAS",
+    "  - requires App Store Connect upload",
+    "- [ ] Run regular web validation",
+  ].join("\n"), { encoding: "utf8" });
+  writeFileSync(join(projectRoot, ".opencode", "validation-profile.json"), JSON.stringify({
+    installCommand: "npm ci",
+    apiBuildCommand: "npm run build:api",
+    webBuildCommand: "npm run build:web",
+    apiSmokeCommand: "curl -fsS http://127.0.0.1:3000/health",
+    webSmokeCommand: "curl -fsS http://127.0.0.1:3000/",
+  }), { encoding: "utf8" });
+  getDashboardDb()!.query(`
+    INSERT INTO builder_projects (id, name, root, config_json, created_at, updated_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `project:${projectRoot}`,
+    "Mobile App",
+    projectRoot,
+    JSON.stringify({ label: "Mobile App", risk: "medium", writable: true }),
+    Date.now(),
+    Date.now(),
+    "mimule",
+  );
+
+  const previousEasToken = process.env.EAS_TOKEN;
+  const previousExpoToken = process.env.EXPO_TOKEN;
+  const previousAscKey = process.env.APP_STORE_CONNECT_API_KEY;
+  const previousAscKeyPath = process.env.APP_STORE_CONNECT_API_KEY_PATH;
+  const previousAscPrivateKey = process.env.APP_STORE_CONNECT_PRIVATE_KEY;
+  delete process.env.EAS_TOKEN;
+  delete process.env.EXPO_TOKEN;
+  delete process.env.APP_STORE_CONNECT_API_KEY;
+  delete process.env.APP_STORE_CONNECT_API_KEY_PATH;
+  delete process.env.APP_STORE_CONNECT_PRIVATE_KEY;
+  try {
+    const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Major mobile workflow",
+        projectRoot,
+        planFile,
+        mode: "once",
+        status: "draft",
+        config: {
+          projectRoot,
+          agentOrder: ["codex"],
+          modelPolicy: { fallbackTargets: [] },
+          validationProfile: { commands: ["npm run build:web"] },
+          gitPolicy: { commit: "manual", push: "never" },
+          backupPolicy: { enabled: false, beforeRun: false },
+          riskPolicy: { liveDeploys: "disabled", maxPasses: 2 },
+        },
+      }),
+      headers: { "Content-Type": "application/json" },
+    }));
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+    const workflowId = created.data.workflow!.id;
+
+    const startResponse = await builderStartWorkflowHandler(workflowId, new Request("http://localhost", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    expect(startResponse.status).toBe(409);
+    const rejected = await startResponse.json() as { error?: string };
+    expect(rejected.error).toContain("plan sanity check failed");
+    expect(rejected.error).toContain("TestFlight/EAS credentials");
+    expect(readBuilderRuns(workflowId)).toHaveLength(0);
+  } finally {
+    if (previousEasToken === undefined) delete process.env.EAS_TOKEN;
+    else process.env.EAS_TOKEN = previousEasToken;
+    if (previousExpoToken === undefined) delete process.env.EXPO_TOKEN;
+    else process.env.EXPO_TOKEN = previousExpoToken;
+    if (previousAscKey === undefined) delete process.env.APP_STORE_CONNECT_API_KEY;
+    else process.env.APP_STORE_CONNECT_API_KEY = previousAscKey;
+    if (previousAscKeyPath === undefined) delete process.env.APP_STORE_CONNECT_API_KEY_PATH;
+    else process.env.APP_STORE_CONNECT_API_KEY_PATH = previousAscKeyPath;
+    if (previousAscPrivateKey === undefined) delete process.env.APP_STORE_CONNECT_PRIVATE_KEY;
+    else process.env.APP_STORE_CONNECT_PRIVATE_KEY = previousAscPrivateKey;
+  }
+});
+
+test("builder run summary includes detail-page health timeline fields", async () => {
+  enableDb();
+  const now = Date.now();
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Health detail workflow",
+      projectRoot: "/opt/opencode-control-surface",
+      planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+      mode: "once",
+      status: "draft",
+      config: {
+        projectRoot: "/opt/opencode-control-surface",
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: [] },
+        validationProfile: { commands: ["bun run typecheck"] },
+        gitPolicy: { commit: "manual", push: "never" },
+        backupPolicy: { enabled: false, beforeRun: false },
+        riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+  const workflowId = created.data.workflow!.id;
+  const db = getDashboardDb()!;
+  const runId = "run_health_detail";
+  const pass1 = "pass_health_1";
+  const pass2 = "pass_health_2";
+
+  db.query(`
+    INSERT INTO builder_runs (id, workflow_id, trigger, status, started_at, finished_at, result_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(runId, workflowId, "manual", "failed", now - 20_000, now, "{}");
+  db.query(`
+    INSERT INTO builder_passes
+      (id, run_id, workflow_id, sequence, phase, status, agent, model, started_at, finished_at,
+        job_ids_json, validation_ids_json, artifact_ids_json, summary, failure_class, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    pass1,
+    runId,
+    workflowId,
+    1,
+    "build",
+    "failed",
+    "codex",
+    "gpt-5",
+    now - 19_000,
+    now - 12_000,
+    "[]",
+    "[]",
+    "[]",
+    "Typecheck failed",
+    "validation-failed",
+    "tsc failed",
+  );
+  db.query(`
+    INSERT INTO builder_passes
+      (id, run_id, workflow_id, sequence, phase, status, agent, model, started_at, finished_at,
+        job_ids_json, validation_ids_json, artifact_ids_json, summary, failure_class, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    pass2,
+    runId,
+    workflowId,
+    2,
+    "repair",
+    "failed",
+    "opencode",
+    "kimi",
+    now - 11_000,
+    now - 1_000,
+    "[]",
+    "[]",
+    "[]",
+    "Pass timed out after no useful stdout",
+    "timeout",
+    "stalled with no progress",
+  );
+  db.query(`
+    INSERT INTO builder_validations
+      (id, workflow_id, run_id, pass_id, kind, status, command, started_at, finished_at, output_tail, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("val_typecheck", workflowId, runId, pass1, "typecheck", "failed", "bun run typecheck", now - 18_000, now - 17_000, "TS2322", "type error");
+  db.query(`
+    INSERT INTO builder_validations
+      (id, workflow_id, run_id, pass_id, kind, status, command, started_at, finished_at, output_tail, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("val_preview", workflowId, runId, pass2, "preview smoke", "failed", "curl preview", now - 3_000, now - 2_000, "HTTP 500", "preview failed");
+  db.query(`
+    INSERT INTO builder_artifacts (id, workflow_id, run_id, pass_id, kind, path, created_at, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("artifact_dirty", workflowId, runId, pass2, "pre-pass-patch", "/tmp/pre-pass.patch", now - 10_000, JSON.stringify({ dirtyFiles: 7 }));
+
+  const response = builderRunSummaryHandler(runId);
+  expect(response.status).toBe(200);
+  const envelope = await response.json() as ApiEnvelope<BuilderRunSummaryResponse>;
+  const summary = envelope.data;
+
+  expect(summary.validationFailures[0].id).toBe("val_preview");
+  expect(summary.validationFailureTimeline.map((failure) => failure.id)).toEqual(["val_typecheck", "val_preview"]);
+  expect(summary.validationFailureTimeline[0].passSequence).toBe(1);
+  expect(summary.validationFailureTimeline[0].durationMs).toBe(1000);
+  expect(summary.timeoutCount).toBe(1);
+  expect(summary.stallCount).toBe(1);
+  expect(summary.timeoutStallEvents[0]).toMatchObject({ passId: pass2, sequence: 2, kind: "timeout+stall" });
+  expect(summary.dirtyFileCount).toBe(7);
+  expect(summary.dirtyFileSnapshot).toMatchObject({ count: 7, passId: pass2, passSequence: 2, path: "/tmp/pre-pass.patch" });
+  expect(summary.previewStatus.status).toBe("failed");
+  expect(summary.previewStatus.label).toBe("preview smoke: failed");
 });
 
 test("builder child helpers execute disposable child and record lifecycle evidence", async () => {

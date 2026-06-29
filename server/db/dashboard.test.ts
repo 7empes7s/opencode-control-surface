@@ -36,6 +36,7 @@ const expectedTables = [
   "report_archive",
   "content_health_findings",
   "insights",
+  "discovered_assets",
   "source_stats",
   "runbooks",
   "builder_projects",

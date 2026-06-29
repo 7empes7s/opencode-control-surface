@@ -3,12 +3,13 @@ import { Link } from "wouter";
 import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink,
   RefreshCw, ShieldCheck, Sparkles, XCircle, Filter, X, RotateCcw,
-  Activity,
+  Activity, Database, ScanSearch, Eye, EyeOff,
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
 import type { Insight, InsightStatus } from "../../server/insights/types";
+import type { DiscoveredAsset, DiscoveredAssetStatus } from "../../server/discovery/reconcile";
 
 type AiAnalysis = {
   summary: string;
@@ -227,11 +228,367 @@ function AutoFixActivity() {
   );
 }
 
+// ── AI Inventory ─────────────────────────────────────────────────────────────
+
+const KIND_LABEL: Record<string, string> = {
+  process: "Process",
+  port: "Port/Endpoint",
+  systemd: "Systemd Unit",
+  container: "Container",
+  backend: "Backend URL",
+  cli: "CLI Tool",
+  credential: "API Key",
+};
+
+const STATUS_COLOR: Record<DiscoveredAssetStatus, string> = {
+  unregistered: "amber",
+  registered: "green",
+  ignored: "gray",
+};
+
+function ExposureBadge({ asset }: { asset: DiscoveredAsset }) {
+  if (asset.kind === "port" && asset.fingerprint.exposure === "public-listener") {
+    return <span className="pill red" style={{ fontSize: 10 }}>Public listener</span>;
+  }
+  if (asset.kind === "credential") {
+    return <span className="pill amber" style={{ fontSize: 10 }}>Env key present</span>;
+  }
+  return null;
+}
+
+type RegisterForm = {
+  name: string;
+  owner: string;
+  criticality: string;
+  attachedService: string;
+};
+
+function AiInventory() {
+  const { data, loading, error, refresh } = useApi<DiscoveredAsset[]>("/api/discovery/assets");
+  const [statusFilter, setStatusFilterLocal] = useState<DiscoveredAssetStatus | "all">("all");
+  const [message, setMessage] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [registerForm, setRegisterForm] = useState<RegisterForm>({
+    name: "", owner: "", criticality: "medium", attachedService: "",
+  });
+  const [ignoreReason, setIgnoreReason] = useState("");
+  const [pendingAction, setPendingAction] = useState<{ id: string; kind: "register" | "ignore" } | null>(null);
+
+  const assets = data ?? [];
+  const filtered = statusFilter === "all" ? assets : assets.filter((a) => a.status === statusFilter);
+
+  async function rescan() {
+    setBusyId("rescan");
+    setMessage(null);
+    try {
+      const res = await authFetch("/api/discovery/rescan", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { data?: { assetsFound?: number } };
+      setMessage(`Re-scan complete — ${body.data?.assetsFound ?? 0} asset(s) found.`);
+      refresh();
+    } catch (e) {
+      setMessage(`Re-scan failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function register(assetId: string) {
+    setBusyId(assetId);
+    setMessage(null);
+    try {
+      const res = await authFetch(`/api/discovery/assets/${encodeURIComponent(assetId)}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: registerForm.name || undefined,
+          owner: registerForm.owner || undefined,
+          criticality: registerForm.criticality || undefined,
+          attachedService: registerForm.attachedService || undefined,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { data?: { insightsResolved?: number } };
+      setMessage(`Asset registered. ${body.data?.insightsResolved ?? 0} insight(s) resolved.`);
+      setPendingAction(null);
+      setExpandedId(null);
+      refresh();
+    } catch (e) {
+      setMessage(`Register failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function ignore(assetId: string) {
+    setBusyId(assetId);
+    setMessage(null);
+    try {
+      const res = await authFetch(`/api/discovery/assets/${encodeURIComponent(assetId)}/ignore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: ignoreReason || undefined }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { data?: { insightsResolved?: number } };
+      setMessage(`Asset ignored. ${body.data?.insightsResolved ?? 0} insight(s) resolved.`);
+      setPendingAction(null);
+      setExpandedId(null);
+      refresh();
+    } catch (e) {
+      setMessage(`Ignore failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function openAction(asset: DiscoveredAsset, kind: "register" | "ignore") {
+    setPendingAction({ id: asset.id, kind });
+    setExpandedId(asset.id);
+    if (kind === "register") {
+      setRegisterForm({
+        name: (asset.registeredName ?? asset.fingerprint.name ?? asset.fingerprint.unit ?? "") as string,
+        owner: asset.owner ?? "",
+        criticality: asset.criticality ?? "medium",
+        attachedService: asset.attachedService ?? "",
+      });
+    } else {
+      setIgnoreReason(asset.ignoredReason ?? "");
+    }
+  }
+
+  function cancelAction() {
+    setPendingAction(null);
+    setExpandedId(null);
+  }
+
+  return (
+    <div style={{ padding: "0 0 32px" }}>
+      {/* ── Toolbar ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>AI Inventory</span>
+        <span className="pill gray" style={{ fontSize: 10 }}>{assets.length} total</span>
+        <div style={{ flex: 1 }} />
+        {(["all", "unregistered", "registered", "ignored"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            className={`filter-chip${statusFilter === s ? " active" : ""}`}
+            onClick={() => setStatusFilterLocal(s)}
+          >
+            {s.charAt(0).toUpperCase() + s.slice(1)}
+            {s !== "all" && (
+              <span className={`pill ${STATUS_COLOR[s as DiscoveredAssetStatus]}`} style={{ fontSize: 9, padding: "1px 5px" }}>
+                {assets.filter((a) => a.status === s).length}
+              </span>
+            )}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="btn"
+          disabled={busyId === "rescan"}
+          onClick={rescan}
+          style={{ minHeight: 44 }}
+          title="Run a fresh discovery scan now"
+        >
+          <ScanSearch size={14} />
+          {busyId === "rescan" ? "Scanning…" : "Re-scan now"}
+        </button>
+      </div>
+
+      {message && (
+        <div className="insights-message" style={{ marginBottom: 12 }}>
+          <CheckCircle2 size={15} /> {message}
+        </div>
+      )}
+
+      {loading && !data && <div className="loading-panel">Scanning AI inventory…</div>}
+      {error && !data && <div className="loading-panel error">Could not load inventory. Try refreshing.</div>}
+
+      {!loading && data && filtered.length === 0 && (
+        <div className="empty-state">
+          <Database size={24} />
+          <strong>{statusFilter === "all" ? "No AI assets discovered yet." : `No ${statusFilter} assets.`}</strong>
+          {statusFilter === "all" && <span>Run a scan to discover AI processes, ports, containers, CLIs, and credentials.</span>}
+        </div>
+      )}
+
+      <div className="insight-card-list">
+        {filtered.map((asset) => {
+          const isExpanded = expandedId === asset.id;
+          const action = isExpanded && pendingAction?.id === asset.id ? pendingAction.kind : null;
+          const displayName = (asset.registeredName ?? asset.fingerprint.name ?? asset.fingerprint.unit ?? asset.signature) as string;
+
+          return (
+            <article key={asset.id} className={`insight-card${asset.status === "unregistered" ? " severity-medium" : ""}`} style={{ minHeight: 44 }}>
+              <div className="insight-card-head">
+                <div>
+                  <div className="insight-title-row">
+                    <span className={`pill ${STATUS_COLOR[asset.status]}`} style={{ fontSize: 10 }}>{asset.status}</span>
+                    <span className="pill blue" style={{ fontSize: 10 }}>{KIND_LABEL[asset.kind] ?? asset.kind}</span>
+                    <ExposureBadge asset={asset} />
+                    {asset.criticality && (
+                      <span className={`pill ${asset.criticality === "critical" || asset.criticality === "high" ? "red" : asset.criticality === "medium" ? "amber" : "gray"}`} style={{ fontSize: 10 }}>
+                        {asset.criticality}
+                      </span>
+                    )}
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>{displayName}</span>
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text-dim)", margin: "4px 0 0", wordBreak: "break-all" }}>
+                    <span style={{ opacity: 0.7 }}>Source:</span> {asset.sourceProbe} &nbsp;·&nbsp;
+                    <span style={{ opacity: 0.7 }}>Signature:</span> {asset.signature.slice(0, 80)}{asset.signature.length > 80 ? "…" : ""}
+                  </p>
+                  {asset.owner && <p style={{ fontSize: 11, margin: "2px 0 0" }}>Owner: <strong>{asset.owner}</strong></p>}
+                  {asset.ignoredReason && <p style={{ fontSize: 11, margin: "2px 0 0", opacity: 0.6 }}>Ignored: {asset.ignoredReason}</p>}
+                </div>
+              </div>
+
+              {/* ── Action forms ── */}
+              {isExpanded && action === "register" && (
+                <div style={{ padding: "12px 0 4px", borderTop: "1px solid var(--muted-border)", marginTop: 8 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                    <div style={{ flex: "1 1 140px" }}>
+                      <label style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Name</label>
+                      <input
+                        value={registerForm.name}
+                        onChange={(e) => setRegisterForm((f) => ({ ...f, name: e.target.value }))}
+                        placeholder="e.g. Ollama local"
+                        style={{ width: "100%", minHeight: 36 }}
+                      />
+                    </div>
+                    <div style={{ flex: "1 1 120px" }}>
+                      <label style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Owner</label>
+                      <input
+                        value={registerForm.owner}
+                        onChange={(e) => setRegisterForm((f) => ({ ...f, owner: e.target.value }))}
+                        placeholder="team / person"
+                        style={{ width: "100%", minHeight: 36 }}
+                      />
+                    </div>
+                    <div style={{ flex: "1 1 100px" }}>
+                      <label style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Criticality</label>
+                      <select
+                        value={registerForm.criticality}
+                        onChange={(e) => setRegisterForm((f) => ({ ...f, criticality: e.target.value }))}
+                        style={{ width: "100%", minHeight: 36 }}
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+                    <div style={{ flex: "1 1 140px" }}>
+                      <label style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Attach to service</label>
+                      <input
+                        value={registerForm.attachedService}
+                        onChange={(e) => setRegisterForm((f) => ({ ...f, attachedService: e.target.value }))}
+                        placeholder="optional"
+                        style={{ width: "100%", minHeight: 36 }}
+                      />
+                    </div>
+                  </div>
+                  <div className="insight-actions">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busyId === asset.id}
+                      onClick={() => register(asset.id)}
+                      style={{ minHeight: 44 }}
+                    >
+                      <CheckCircle2 size={14} />
+                      {busyId === asset.id ? "Registering…" : "Confirm register"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={cancelAction}
+                      style={{ minHeight: 44 }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {isExpanded && action === "ignore" && (
+                <div style={{ padding: "12px 0 4px", borderTop: "1px solid var(--muted-border)", marginTop: 8 }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <label style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Reason (optional)</label>
+                    <input
+                      value={ignoreReason}
+                      onChange={(e) => setIgnoreReason(e.target.value)}
+                      placeholder="e.g. dev machine only, not a managed service"
+                      style={{ width: "100%", minHeight: 36 }}
+                    />
+                  </div>
+                  <div className="insight-actions">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busyId === asset.id}
+                      onClick={() => ignore(asset.id)}
+                      style={{ minHeight: 44 }}
+                    >
+                      <EyeOff size={14} />
+                      {busyId === asset.id ? "Ignoring…" : "Confirm ignore"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={cancelAction}
+                      style={{ minHeight: 44 }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Per-row action buttons (when no form open) ── */}
+              {!isExpanded && (
+                <div className="insight-actions" style={{ paddingTop: 8 }}>
+                  {asset.status !== "registered" && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => openAction(asset, "register")}
+                      style={{ minHeight: 44 }}
+                      title="Register this asset in the managed AI inventory"
+                    >
+                      <Eye size={14} />
+                      Register
+                    </button>
+                  )}
+                  {asset.status !== "ignored" && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => openAction(asset, "ignore")}
+                      style={{ minHeight: 44 }}
+                      title="Ignore this asset with a reason"
+                    >
+                      <EyeOff size={14} />
+                      Ignore
+                    </button>
+                  )}
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main InsightsPage ────────────────────────────────────────────────────────
 
 export function InsightsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
-  const [activeTab, setActiveTab] = useState<"inbox" | "autofeed">("inbox");
+  const [activeTab, setActiveTab] = useState<"inbox" | "autofeed" | "inventory">("inbox");
 
   // Persistent filter chips
   const [savedFilters, setSavedFiltersState] = useState<SavedFilters>(loadSavedFilters);
@@ -465,11 +822,20 @@ export function InsightsPage() {
         >
           <Activity size={13} /> Auto-fix Activity
         </button>
+        <button
+          type="button"
+          className={`insights-tab${activeTab === "inventory" ? " active" : ""}`}
+          onClick={() => setActiveTab("inventory")}
+        >
+          <Database size={13} /> AI Inventory
+        </button>
       </div>
 
       {message && <div className="insights-message"><CheckCircle2 size={15} />{message}</div>}
 
       {activeTab === "autofeed" && <AutoFixActivity />}
+
+      {activeTab === "inventory" && <AiInventory />}
 
       {activeTab === "inbox" && (
         <>
