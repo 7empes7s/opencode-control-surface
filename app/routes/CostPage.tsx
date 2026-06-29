@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { SectionCard } from "../components/SectionCard";
+import { ConfirmModal } from "../components/ConfirmModal";
+import { authFetch } from "../lib/authFetch";
 
 interface CostData {
   budgets: Array<{
@@ -63,9 +65,72 @@ interface CostData {
   }>;
 }
 
+function GlobalCapEditor({
+  defaultDaily,
+  defaultMonthly,
+  onSubmit,
+}: {
+  defaultDaily: number;
+  defaultMonthly: number;
+  onSubmit: (daily: number, monthly: number) => void;
+}) {
+  const [daily, setDaily] = useState(String(defaultDaily));
+  const [monthly, setMonthly] = useState(String(defaultMonthly));
+
+  const dailyNum = parseFloat(daily);
+  const monthlyNum = parseFloat(monthly);
+  const valid = isFinite(dailyNum) && dailyNum > 0 && isFinite(monthlyNum) && monthlyNum > 0;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+        Set the global AI spend cap. Gateway calls are blocked when the cap is reached. Change is audited.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Daily cap (USD)</label>
+          <input
+            className="modal-input"
+            type="number"
+            min="0.1"
+            step="0.5"
+            value={daily}
+            onChange={(e) => setDaily(e.target.value)}
+            style={{ width: 100, minHeight: 44 }}
+          />
+        </div>
+        <div>
+          <label className="modal-input-label" style={{ display: "block", marginBottom: 4, fontSize: 11 }}>Monthly cap (USD)</label>
+          <input
+            className="modal-input"
+            type="number"
+            min="1"
+            step="1"
+            value={monthly}
+            onChange={(e) => setMonthly(e.target.value)}
+            style={{ width: 100, minHeight: 44 }}
+          />
+        </div>
+        <button
+          className="btn btn-primary"
+          style={{ minHeight: 44 }}
+          disabled={!valid}
+          onClick={() => valid && onSubmit(dailyNum, monthlyNum)}
+        >
+          Update cap
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function CostPage() {
   const { data, loading, error, refresh } = useApi<CostData>("/api/cost/summary", 30_000);
   const [timeRange, setTimeRange] = useState<"7d" | "30d" | "90d">("30d");
+  const [capModal, setCapModal] = useState<{ dailyCap: string; monthlyCap: string } | null>(null);
+  const [capLoading, setCapLoading] = useState(false);
+  const [capError, setCapError] = useState<string | null>(null);
+  const [capSuccess, setCapSuccess] = useState<string | null>(null);
 
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -84,8 +149,51 @@ export function CostPage() {
     return `${(value * 100).toFixed(0)}%`;
   };
 
+  async function applyCapChange(reason: string) {
+    if (!capModal) return;
+    const dailyCapUsd = parseFloat(capModal.dailyCap);
+    const monthlyCapUsd = parseFloat(capModal.monthlyCap);
+    if (!isFinite(dailyCapUsd) || dailyCapUsd <= 0) { setCapError("Invalid daily cap"); return; }
+    if (!isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) { setCapError("Invalid monthly cap"); return; }
+    setCapLoading(true);
+    setCapError(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId: "mutate-policy:budget:global:set-cap",
+          confirmed: true,
+          reason,
+          params: { dailyCapUsd, monthlyCapUsd },
+        }),
+      });
+      const json = await res.json() as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || !json.ok) { setCapError(json.error ?? `HTTP ${res.status}`); return; }
+      setCapSuccess(json.message ?? "Cap updated");
+      setCapModal(null);
+      refresh();
+    } catch (e) {
+      setCapError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCapLoading(false);
+    }
+  }
+
   return (
     <div className="dash-page">
+      {capModal && (
+        <ConfirmModal
+          title="Set global cost cap"
+          message={`Update the global budget cap to $${capModal.dailyCap}/day and $${capModal.monthlyCap}/month. Gateway calls will be blocked when the cap is reached.`}
+          inputLabel="Reason"
+          inputPlaceholder="Why are you changing the cap?"
+          loading={capLoading}
+          error={capError}
+          onCancel={() => { setCapModal(null); setCapError(null); }}
+          onConfirm={(reason) => applyCapChange(reason ?? "")}
+        />
+      )}
       <div className="page-header">
         <div className="page-title">Cost Management</div>
         <div className="page-actions">
@@ -170,7 +278,7 @@ export function CostPage() {
         >
           <div className="section-card-body table-wrap">
             {d.budgets.length === 0 ? (
-              <div className="loading-dim">No budgets defined</div>
+              <div className="loading-dim">No budgets defined — use the editor below to set a global cap.</div>
             ) : (
               <table className="data-table">
                 <thead>
@@ -216,6 +324,22 @@ export function CostPage() {
                 </tbody>
               </table>
             )}
+          </div>
+        </SectionCard>
+
+        {/* Cost cap editor */}
+        <SectionCard title="Set global cap" id="cap-editor" defaultOpen={true}>
+          <div className="section-card-body" style={{ padding: "14px 16px" }}>
+            {capSuccess && <div className="action-feedback ok" style={{ marginBottom: 10, fontSize: 12 }}>{capSuccess}</div>}
+            <GlobalCapEditor
+              defaultDaily={d.budgets.find((b) => b.scope === "global")?.daily_cap_usd ?? 5}
+              defaultMonthly={d.budgets.find((b) => b.scope === "global")?.monthly_cap_usd ?? 50}
+              onSubmit={(daily, monthly) => {
+                setCapSuccess(null);
+                setCapError(null);
+                setCapModal({ dailyCap: String(daily), monthlyCap: String(monthly) });
+              }}
+            />
           </div>
         </SectionCard>
       </div>

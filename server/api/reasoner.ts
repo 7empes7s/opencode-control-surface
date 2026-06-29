@@ -343,7 +343,8 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
   const tenantId = getCurrentTenantContext().tenantId;
   const row = db.query(`
     SELECT id, cluster_key, failure_class, title, first_seen, last_seen,
-           occurrence_count, representative_pass_id, representative_diagnosis_id, status
+           occurrence_count, representative_pass_id, representative_diagnosis_id, status,
+           acknowledged_at, acknowledged_by, mitigated_at, mitigated_by
     FROM reasoner_incidents
     WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
   `).get(id, tenantId) as {
@@ -357,6 +358,10 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
     representative_pass_id: string;
     representative_diagnosis_id: string;
     status: string;
+    acknowledged_at: number | null;
+    acknowledged_by: string | null;
+    mitigated_at: number | null;
+    mitigated_by: string | null;
   } | null;
   if (!row) return json({ error: "not found" }, 404);
 
@@ -388,6 +393,10 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
     representativePassId: row.representative_pass_id,
     representativeDiagnosisId: row.representative_diagnosis_id,
     status: row.status,
+    acknowledgedAt: row.acknowledged_at ?? null,
+    acknowledgedBy: row.acknowledged_by ?? null,
+    mitigatedAt: row.mitigated_at ?? null,
+    mitigatedBy: row.mitigated_by ?? null,
     members: members.map((m) => ({
       id: m.id,
       passId: m.pass_id,

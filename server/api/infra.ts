@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { getServiceStatuses, getHetznerStats, getTimers } from "../adapters/system.ts";
 import { getVastInstance, getVastAccount } from "../adapters/vast.ts";
+import { ALLOWED_TIMERS } from "./actions.ts";
 import { ok, type ApiEnvelope, type InfraDetail } from "./types.ts";
 
 function readJson<T>(path: string): T | null {
@@ -66,7 +67,7 @@ export async function infraHandler(): Promise<Response> {
       checkedAgo: gpuRaw?.checked_at ? Math.round((Date.now() - gpuRaw.checked_at * 1000) / 1000) : -1,
     },
     services: services ?? [],
-    timers: timers ?? [],
+    timers: (timers ?? []).map((t) => ({ ...t, runnable: ALLOWED_TIMERS.includes(t.name) })),
   };
 
   const envelope: ApiEnvelope<InfraDetail> = ok(data, {

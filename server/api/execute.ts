@@ -4,7 +4,7 @@ import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
-import { modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
+import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 
@@ -51,6 +51,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   }
   if (kind === "mutate-policy") return { confirm: true, reasonRequired: true };
   if (kind === "acknowledge") return { confirm: false, reasonRequired: false };
+  if (kind === "mitigate") return { confirm: true, reasonRequired: true };
   if (kind === "resolve") return { confirm: true, reasonRequired: true };
   if (kind === "mute") return { confirm: true, reasonRequired: true };
   return { confirm: false, reasonRequired: false };
@@ -190,11 +191,16 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
   }
 
   if (kind === "mutate-policy" && targetType === "model") {
-    if (!suffix || !["block", "unblock", "probation-clear"].includes(suffix)) {
+    if (!suffix || !["block", "unblock", "probation-clear", "cooldown-clear"].includes(suffix)) {
       return { ok: false, error: "invalid mutate-policy suffix", code: "BAD_REQUEST" };
     }
     try {
-      setModelQualityStatus(targetId, suffix === "block" ? "blocked" : "healthy", modelQualityPath());
+      if (suffix === "cooldown-clear") {
+        const cooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH || "/var/lib/mimule/model-cooldowns.json";
+        clearModelCooldown(targetId, cooldownsPath);
+      } else {
+        setModelQualityStatus(targetId, suffix === "block" ? "blocked" : "healthy", modelQualityPath());
+      }
       return { ok: true, action: "mutate-policy", message: targetId + " → " + suffix };
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
@@ -224,12 +230,75 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     }
   }
 
+  if (kind === "start-job" && targetType === "infra") {
+    if (targetId === "vast-reconcile") {
+      try {
+        execSync("/usr/local/sbin/vast-reconcile.sh", { timeout: 60_000 });
+        return { ok: true, action: "start-job", message: "vast-reconcile completed" };
+      } catch {
+        return { ok: false, error: "vast-reconcile failed", code: "EXEC_ERROR" };
+      }
+    }
+    if (targetId === "doctor-log-rotate") {
+      try {
+        const ts = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+        const src = "/var/lib/mimule/doctor-log.jsonl";
+        const dst = `/var/lib/mimule/doctor-log.${ts}.jsonl.gz`;
+        execSync(`/bin/sh -c 'gzip -c "${src}" > "${dst}" && truncate -s 0 "${src}"'`, { timeout: 30_000 });
+        return { ok: true, action: "start-job", message: `doctor log rotated → ${dst}` };
+      } catch {
+        return { ok: false, error: "doctor-log rotation failed", code: "EXEC_ERROR" };
+      }
+    }
+    if (targetId === "litellm-reload") {
+      try {
+        execSync("systemctl restart litellm", { timeout: 30_000 });
+        return { ok: true, action: "start-job", message: "litellm restarted with new config" };
+      } catch {
+        return { ok: false, error: "litellm reload failed", code: "EXEC_ERROR" };
+      }
+    }
+    return { ok: false, error: "unknown infra action: " + targetId, code: "NOT_FOUND" };
+  }
+
   if (kind === "acknowledge" && targetType === "incident") {
-    return { ok: false, error: "incident lifecycle not yet implemented", code: "NOT_IMPLEMENTED" };
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const now = Date.now();
+      const ctx = getCurrentTenantContext();
+      const actor = ctx.actor ?? "operator";
+      db.query(
+        `UPDATE reasoner_incidents SET acknowledged_at = ?, acknowledged_by = ? WHERE id = ? AND acknowledged_at IS NULL`
+      ).run(now, actor, targetId);
+      return { ok: true, action: "acknowledge", message: `incident ${targetId} acknowledged` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "mitigate" && targetType === "incident") {
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const now = Date.now();
+      const ctx = getCurrentTenantContext();
+      const actor = ctx.actor ?? "operator";
+      db.query(
+        `UPDATE reasoner_incidents SET mitigated_at = ?, mitigated_by = ? WHERE id = ?`
+      ).run(now, actor, targetId);
+      return { ok: true, action: "mitigate", message: `incident ${targetId} marked mitigating` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
   }
 
   if ((kind === "resolve" || kind === "mute") && targetType === "incident") {
-    return { ok: false, error: "incident lifecycle not yet implemented", code: "NOT_IMPLEMENTED" };
+    return { ok: false, error: "use /api/reasoner/incidents/:id POST to resolve", code: "NOT_IMPLEMENTED" };
   }
 
   return { ok: false, error: "action not supported: " + kind, code: "NOT_FOUND" };

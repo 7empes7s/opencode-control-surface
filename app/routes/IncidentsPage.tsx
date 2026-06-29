@@ -19,6 +19,10 @@ interface ReasonerIncident {
 }
 
 interface IncidentDetail extends ReasonerIncident {
+  acknowledgedAt: number | null;
+  acknowledgedBy: string | null;
+  mitigatedAt: number | null;
+  mitigatedBy: string | null;
   members: Array<{
     id: string;
     passId: string;
@@ -93,7 +97,7 @@ function ExpandedIncidentCard({
   incidentId: string;
   onResolve: () => void;
 }) {
-  const { data: detail } = useApi<IncidentDetail>(`/api/reasoner/incidents/${incidentId}`, 0);
+  const { data: detail, refresh: refreshDetail } = useApi<IncidentDetail>(`/api/reasoner/incidents/${incidentId}`, 0);
   const repPassId = detail?.representativePassId ?? "";
   const { data: diag } = useApi<ReasonerDiagnosis>(
     repPassId ? `/api/reasoner/diagnoses/${repPassId}` : `/api/reasoner/diagnoses/__none__`,
@@ -102,20 +106,47 @@ function ExpandedIncidentCard({
   const { data: playbooks } = useApi<Playbook[]>("/api/reasoner/playbooks", 0);
   const [applying, setApplying] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [acknowledging, setAcknowledging] = useState(false);
+  const [mitigating, setMitigating] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
 
   const matchingPlaybook = playbooks?.find((p) => p.failureClass === detail?.failureClass);
 
-  async function applyPlaybook() {
-    if (!matchingPlaybook || !detail) return;
-    setApplying(true);
+  async function callExecutor(actionId: string, reason?: string): Promise<boolean> {
+    const res = await authFetch("/api/actions/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actionId, confirmed: true, reason }),
+    });
+    const json = await res.json() as { ok?: boolean; error?: string };
+    if (!res.ok || !json.ok) {
+      setLifecycleError(json.error ?? `HTTP ${res.status}`);
+      return false;
+    }
+    return true;
+  }
+
+  async function acknowledgeIncident() {
+    if (!detail) return;
+    setAcknowledging(true);
+    setLifecycleError(null);
     try {
-      await authFetch(`/api/reasoner/playbooks/${matchingPlaybook.id}/apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ incidentId: detail.id }),
-      });
+      const ok = await callExecutor(`acknowledge:incident:${detail.id}`);
+      if (ok) refreshDetail();
     } finally {
-      setApplying(false);
+      setAcknowledging(false);
+    }
+  }
+
+  async function mitigateIncident() {
+    if (!detail) return;
+    setMitigating(true);
+    setLifecycleError(null);
+    try {
+      const ok = await callExecutor(`mitigate:incident:${detail.id}`, "Operator marked as mitigating");
+      if (ok) refreshDetail();
+    } finally {
+      setMitigating(false);
     }
   }
 
@@ -134,6 +165,18 @@ function ExpandedIncidentCard({
 
   return (
     <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--bg-sub)" }}>
+      {/* Lifecycle badges */}
+      {(detail.acknowledgedAt || detail.mitigatedAt) && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, fontSize: 11 }}>
+          {detail.acknowledgedAt && (
+            <Pill color="blue">acked by {detail.acknowledgedBy ?? "operator"} · {relTime(detail.acknowledgedAt)}</Pill>
+          )}
+          {detail.mitigatedAt && (
+            <Pill color="amber">mitigating since {relTime(detail.mitigatedAt)}</Pill>
+          )}
+        </div>
+      )}
+
       {diag && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -165,27 +208,43 @@ function ExpandedIncidentCard({
       {matchingPlaybook && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
           <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Playbook: <strong>{matchingPlaybook.name}</strong></span>
-          <button
-            className="btn btn-sm"
-            onClick={applyPlaybook}
-            disabled={applying}
-            style={{ fontSize: 11 }}
-          >
-            {applying ? "Applying…" : "Apply"}
-          </button>
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <Link href={`/builder?pass=${detail.representativePassId}`} className="btn btn-sm btn-ghost" style={{ fontSize: 11 }}>
+      {lifecycleError && (
+        <div className="action-feedback err" style={{ marginBottom: 8, fontSize: 11 }}>{lifecycleError}</div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Link href={`/builder?pass=${detail.representativePassId}`} className="btn btn-sm btn-ghost" style={{ fontSize: 11, minHeight: 44 }}>
           View pass →
         </Link>
+        {detail.status === "open" && !detail.acknowledgedAt && (
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={acknowledgeIncident}
+            disabled={acknowledging}
+            style={{ fontSize: 11, minHeight: 44 }}
+          >
+            {acknowledging ? "Acking…" : "Acknowledge"}
+          </button>
+        )}
+        {detail.status === "open" && !detail.mitigatedAt && (
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={mitigateIncident}
+            disabled={mitigating}
+            style={{ fontSize: 11, minHeight: 44 }}
+          >
+            {mitigating ? "…" : "Mark mitigating"}
+          </button>
+        )}
         {detail.status === "open" && (
           <button
             className="btn btn-sm btn-ghost"
             onClick={resolveIncident}
             disabled={resolving}
-            style={{ fontSize: 11 }}
+            style={{ fontSize: 11, minHeight: 44 }}
           >
             {resolving ? "Resolving…" : "Resolve"}
           </button>

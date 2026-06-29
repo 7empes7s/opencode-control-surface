@@ -379,7 +379,7 @@ export interface InfraDetail {
   gpu: { status: string; gpuUtil: number | null; loadedModels: string[]; checkedAgo: number };
   services: { name: string; status: string }[];
   timers: {
-    name: string; active: boolean;
+    name: string; active: boolean; runnable?: boolean;
     lastTrigger: string | null; nextElapse: string | null; lastResult: string | null;
   }[];
 }

@@ -30,6 +30,7 @@ type Modal =
   | { type: "block"; model: string }
   | { type: "unblock"; model: string }
   | { type: "probation-clear"; model: string }
+  | { type: "cooldown-clear"; model: string }
   | { type: "run-check" };
 
 export type ModelsSortKey = "logicalName" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
@@ -98,6 +99,7 @@ export function ModelsPage() {
             modal.type === "block" ? `Block ${modal.model}?` :
             modal.type === "unblock" ? `Unblock ${modal.model}?` :
             modal.type === "probation-clear" ? `Clear probation for ${modal.model}?` :
+            modal.type === "cooldown-clear" ? `Clear cooldown for ${modal.model}?` :
             "Run model health check?"
           }
           message={
@@ -107,12 +109,15 @@ export function ModelsPage() {
               ? `${modal.model} will be restored to healthy status.`
               : modal.type === "probation-clear"
               ? `${modal.model} will be cleared from probation and restored to healthy status.`
+              : modal.type === "cooldown-clear"
+              ? `The active cooldown for ${modal.model} will be removed immediately.`
               : "Triggers the model-health-check.service immediately."
           }
           confirmLabel={
             modal.type === "block" ? "Block" :
             modal.type === "unblock" ? "Unblock" :
-            modal.type === "probation-clear" ? "Clear" :
+            modal.type === "probation-clear" ? "Clear probation" :
+            modal.type === "cooldown-clear" ? "Clear cooldown" :
             "Run"
           }
           danger={modal.type === "block"}
@@ -124,6 +129,7 @@ export function ModelsPage() {
             if (modal.type === "block") body = { action: "block", model: modal.model };
             else if (modal.type === "unblock") body = { action: "unblock", model: modal.model };
             else if (modal.type === "probation-clear") body = { action: "probation-clear", model: modal.model };
+            else if (modal.type === "cooldown-clear") body = { action: "clear-cooldown", model: modal.model };
             else body = { action: "run-quick-check" };
             const ok = await action.run(body);
             if (ok) { setModal(null); refresh(); }
@@ -256,13 +262,22 @@ export function ModelsPage() {
             <div className="loading-dim">no active cooldowns</div>
           ) : (
             <table className="data-table">
-              <thead><tr><th>model</th><th>expires</th><th>reason</th></tr></thead>
+              <thead><tr><th>model</th><th>expires</th><th>reason</th><th></th></tr></thead>
               <tbody>
                 {d.cooldowns.map((c) => (
                   <tr key={c.model}>
                     <td className="mono">{c.model}</td>
                     <td className="mono dim">{new Date(c.expiresAt).toISOString().slice(0, 19).replace("T", " ")} UTC</td>
                     <td className="dim">{c.reason ?? "—"}</td>
+                    <td>
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        style={{ minHeight: 44 }}
+                        onClick={() => setModal({ type: "cooldown-clear", model: c.model })}
+                      >
+                        clear
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

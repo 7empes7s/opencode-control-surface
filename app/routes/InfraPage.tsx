@@ -3,6 +3,7 @@ import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
+import { authFetch } from "../lib/authFetch";
 import type { InfraDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
@@ -23,11 +24,30 @@ function PctBar({ pct, warn = 80, crit = 95 }: { pct: number; warn?: number; cri
 
 type Modal =
   | { type: "service-restart"; service: string }
-  | { type: "run-timer"; timer: string };
+  | { type: "run-timer"; timer: string }
+  | { type: "exec-action"; actionId: string; title: string; message: string; danger?: boolean };
+
+async function execAction(actionId: string, reason: string): Promise<{ ok: boolean; message?: string; error?: string }> {
+  try {
+    const res = await authFetch("/api/actions/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actionId, confirmed: true, reason }),
+    });
+    const json = await res.json() as { ok?: boolean; message?: string; error?: string };
+    if (!res.ok) return { ok: false, error: json.error ?? `HTTP ${res.status}` };
+    return { ok: true, message: json.message };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 export function InfraPage() {
   const { data, loading, error, refresh } = useApi<InfraDetail>("/api/infra", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
+  const [execLoading, setExecLoading] = useState(false);
+  const [execError, setExecError] = useState<string | null>(null);
+  const [execSuccess, setExecSuccess] = useState<string | null>(null);
   const svcAction = useAction("/api/infra/service-restart");
   const timerAction = useAction("/api/infra/run-timer");
 
@@ -49,29 +69,125 @@ export function InfraPage() {
       {modal && (
         <ConfirmModal
           title={
-            modal.type === "service-restart" ? `Restart ${modal.service}?` : `Run ${modal.timer} now?`
+            modal.type === "service-restart" ? `Restart ${modal.service}?` :
+            modal.type === "run-timer" ? `Run ${modal.timer} now?` :
+            modal.title
           }
           message={
             modal.type === "service-restart"
               ? `This will restart the ${modal.service} service. Brief downtime expected.`
-              : `This will immediately trigger the ${modal.timer} timer service.`
+              : modal.type === "run-timer"
+              ? `This will immediately trigger the ${modal.timer} timer service.`
+              : modal.message
           }
-          confirmLabel={modal.type === "service-restart" ? "Restart" : "Run now"}
-          danger={modal.type === "service-restart"}
-          loading={svcAction.loading || timerAction.loading}
-          error={svcAction.error ?? timerAction.error}
-          onCancel={() => { setModal(null); svcAction.reset(); timerAction.reset(); }}
-          onConfirm={async () => {
+          confirmLabel={
+            modal.type === "service-restart" ? "Restart" :
+            modal.type === "run-timer" ? "Run now" :
+            "Confirm"
+          }
+          danger={modal.type === "service-restart" || (modal.type === "exec-action" && modal.danger)}
+          inputLabel={modal.type === "exec-action" ? "Reason" : undefined}
+          inputPlaceholder="Why is this action needed?"
+          loading={svcAction.loading || timerAction.loading || execLoading}
+          error={svcAction.error ?? timerAction.error ?? execError}
+          onCancel={() => {
+            setModal(null);
+            svcAction.reset();
+            timerAction.reset();
+            setExecError(null);
+          }}
+          onConfirm={async (reason) => {
             let ok = false;
             if (modal.type === "service-restart") {
               ok = await svcAction.run({ service: modal.service });
-            } else {
+            } else if (modal.type === "run-timer") {
               ok = await timerAction.run({ timer: modal.timer });
+            } else if (modal.type === "exec-action") {
+              setExecLoading(true);
+              setExecError(null);
+              const result = await execAction(modal.actionId, reason ?? "");
+              setExecLoading(false);
+              if (result.ok) {
+                setExecSuccess(result.message ?? "done");
+                ok = true;
+              } else {
+                setExecError(result.error ?? "failed");
+              }
             }
             if (ok) { setModal(null); refresh(); }
           }}
         />
       )}
+
+      {/* Operations */}
+      <SectionCard title="operations" id="ops" defaultOpen={true}>
+        <div className="section-card-body" style={{ padding: "12px 14px" }}>
+          {execSuccess && (
+            <div className="action-feedback ok" style={{ marginBottom: 8, fontSize: 12 }}>{execSuccess}</div>
+          )}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ minHeight: 44 }}
+              onClick={() => {
+                setExecSuccess(null);
+                setModal({
+                  type: "exec-action",
+                  actionId: "start-job:infra:vast-reconcile",
+                  title: "Run vast-reconcile?",
+                  message: "Runs /usr/local/sbin/vast-reconcile.sh to reconcile the Vast GPU tunnel state.",
+                });
+              }}
+            >
+              Vast reconcile
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ minHeight: 44 }}
+              onClick={() => {
+                setExecSuccess(null);
+                setModal({
+                  type: "exec-action",
+                  actionId: "start-job:infra:doctor-log-rotate",
+                  title: "Rotate doctor log?",
+                  message: "Compresses the current doctor-log.jsonl and resets it. Useful when the log exceeds the retention limit.",
+                });
+              }}
+            >
+              Rotate doctor log
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ minHeight: 44 }}
+              onClick={() => {
+                setExecSuccess(null);
+                setModal({
+                  type: "exec-action",
+                  actionId: "start-job:infra:litellm-reload",
+                  title: "Reload LiteLLM config?",
+                  message: "Restarts the LiteLLM service so it picks up config changes. Brief (~10s) gateway downtime expected.",
+                  danger: true,
+                });
+              }}
+            >
+              LiteLLM reload
+            </button>
+            <button
+              className="btn btn-sm btn-danger"
+              style={{ minHeight: 44 }}
+              onClick={() => {
+                setExecSuccess(null);
+                setModal({
+                  type: "service-restart",
+                  service: "cloudflared",
+                });
+              }}
+            >
+              Cloudflared restart
+            </button>
+          </div>
+        </div>
+      </SectionCard>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginBottom: 16 }}>
 
@@ -174,6 +290,7 @@ export function InfraPage() {
                 </span>
                 <button
                   className="btn btn-sm btn-danger"
+                  style={{ minHeight: 44 }}
                   onClick={() => setModal({ type: "service-restart", service: s.name })}
                 >
                   restart
@@ -204,13 +321,16 @@ export function InfraPage() {
                     ) : "—"}
                   </td>
                   <td>
-                    {(t.name === "model-health-check" || t.name === "mimule-backup") && (
+                    {t.runnable ? (
                       <button
                         className="btn btn-sm btn-ghost"
+                        style={{ minHeight: 44 }}
                         onClick={() => setModal({ type: "run-timer", timer: t.name })}
                       >
                         run now
                       </button>
+                    ) : (
+                      <span className="dim" style={{ fontSize: 10 }}>not allowed</span>
                     )}
                   </td>
                 </tr>

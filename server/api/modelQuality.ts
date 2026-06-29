@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 export type ModelQualityStatus = "healthy" | "probation" | "degraded" | "blocked";
 
@@ -40,6 +40,16 @@ export function getModelQualityEntry(
   modelId?: string | null,
 ): ModelQualityEntry | undefined {
   return (modelId ? quality.models[modelId] : undefined) ?? quality.models[logicalName];
+}
+
+export function clearModelCooldown(model: string, cooldownsPath?: string): void {
+  const path = cooldownsPath ?? (process.env.DASHBOARD_MODEL_COOLDOWNS_PATH || "/var/lib/mimule/model-cooldowns.json");
+  let cooldowns: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try { cooldowns = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>; } catch {}
+  }
+  delete cooldowns[model];
+  writeFileSync(path, JSON.stringify(cooldowns, null, 2));
 }
 
 export function setModelQualityStatus(

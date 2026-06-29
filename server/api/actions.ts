@@ -1,6 +1,6 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
+import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
 import {
@@ -17,7 +17,15 @@ export const ALLOWED_SERVICES = [
   "control-surface", "vast-tunnel", "cloudflared",
 ];
 export const ALLOWED_CONTAINERS = ["openclaw_gateway", "paperclip", "goblin_game"];
-export const ALLOWED_TIMERS = ["model-health-check", "mimule-backup"];
+export const ALLOWED_TIMERS = [
+  "model-health-check",
+  "mimule-backup",
+  "paperclip-action-notify",
+  "newsbites-agent-watch",
+  "newsbites-brief",
+  "morning-brief",
+  "vast-watchdog",
+];
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -189,6 +197,41 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
         targetType: "model",
         targetId: model,
         risk: "high",
+        reason: reasonFromBody(body),
+        request: body,
+        resultStatus: "failed",
+        error: errorMessage(e),
+      });
+      return json({ error: String(e) }, 500);
+    }
+  }
+
+  if (action === "clear-cooldown") {
+    if (!model) return json({ error: "model required" }, 400);
+    const cooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH || "/var/lib/mimule/model-cooldowns.json";
+    try {
+      clearModelCooldown(model, cooldownsPath);
+      audit({
+        actionKind: "models.cooldown",
+        actionId: `mutate-policy:model:${model}:cooldown-clear`,
+        targetType: "model",
+        targetId: model,
+        risk: "medium",
+        reason: reasonFromBody(body),
+        request: body,
+        evidence: [{ label: "Model cooldowns", kind: "file", ref: cooldownsPath }],
+        result: `${model} cooldown cleared`,
+        resultStatus: "success",
+        rollbackHint: "The cooldown was cleared manually. Monitor for repeated failures that triggered it.",
+      });
+      return json({ ok: true, message: `${model} cooldown cleared` });
+    } catch (e) {
+      audit({
+        actionKind: "models.cooldown",
+        actionId: `mutate-policy:model:${model}:cooldown-clear`,
+        targetType: "model",
+        targetId: model,
+        risk: "medium",
         reason: reasonFromBody(body),
         request: body,
         resultStatus: "failed",
