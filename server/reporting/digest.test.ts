@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
@@ -10,7 +10,9 @@ import {
   DIGEST_INTERVAL_MS,
   DIGEST_MARKER_KEY,
   generateOperatorDigest,
+  maybeGenerateDailyDigest,
   renderDigestText,
+  shouldSendDailyDigest,
   shouldSendWeeklyDigest,
 } from "./digest.ts";
 import { seedDefaultAgents } from "../agents/registry.ts";
@@ -21,6 +23,8 @@ let prevDbPath: string | undefined;
 let prevToken: string | undefined;
 let prevTelegramToken: string | undefined;
 let prevTelegramChat: string | undefined;
+let prevVaultDir: string | undefined;
+let prevFetch: typeof fetch | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -30,9 +34,12 @@ beforeEach(() => {
   prevToken = process.env.OPERATOR_TOKEN;
   prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
   prevTelegramChat = process.env.TELEGRAM_CHAT_ID;
+  prevVaultDir = process.env.DASHBOARD_AI_VAULT_DIR;
+  prevFetch = globalThis.fetch;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
+  process.env.DASHBOARD_AI_VAULT_DIR = join(tempDir, "vault");
   delete process.env.TELEGRAM_BOT_TOKEN;
   delete process.env.TELEGRAM_CHAT_ID;
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
@@ -50,6 +57,9 @@ afterEach(() => {
   else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
   if (prevTelegramChat === undefined) delete process.env.TELEGRAM_CHAT_ID;
   else process.env.TELEGRAM_CHAT_ID = prevTelegramChat;
+  if (prevVaultDir === undefined) delete process.env.DASHBOARD_AI_VAULT_DIR;
+  else process.env.DASHBOARD_AI_VAULT_DIR = prevVaultDir;
+  globalThis.fetch = prevFetch;
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -138,6 +148,28 @@ function seedModelEval(now: number): void {
   ).run(now - 200, "model-eval", "openrouter/gemma-31b", JSON.stringify({ score: 6, latencyMs: 1800, ts: now - 200, dateKey: "2026-06-10", error: null }), "mimule");
 }
 
+function seedHealthTrend(now: number): void {
+  const d = db();
+  d.query(
+    `INSERT INTO metric_samples (ts, source, key, value_json, tenant_id) VALUES (?, ?, ?, ?, ?)`,
+  ).run(now - 60_000, "health", "admin_health_score", JSON.stringify(91), "mimule");
+  d.query(
+    `INSERT INTO metric_samples (ts, source, key, value_json, tenant_id) VALUES (?, ?, ?, ?, ?)`,
+  ).run(now - 30_000, "health", "admin_health_score", JSON.stringify(94), "mimule");
+}
+
+function seedBudgetAndAutofix(now: number): void {
+  const d = db();
+  d.query(
+    `INSERT INTO governance_budgets (id, tenant_id, scope, project_id, daily_cap_usd, monthly_cap_usd, warn_pct, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("budget-global", "mimule", "global", null, 1, 30, 0.8, now - 10_000, now - 10_000);
+  d.query(
+    `INSERT INTO action_audit (ts, actor, actor_source, action_kind, action, action_id, target_type, target_id, result, result_status, tenant_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(now - 500, "system", "scheduler", "insights.auto-apply", "insights.auto-apply", "mutate-policy:model:test:cooldown-clear", "insight", "ins-auto", "auto-cleared expired cooldown", "success", "mimule");
+}
+
 describe("generateOperatorDigest", () => {
   test("text contains real numbers and stays under 3000 chars", async () => {
     await withMimuleTenant(async () => {
@@ -147,18 +179,26 @@ describe("generateOperatorDigest", () => {
       seedReasonerIncidents(now);
       seedAgentsAndAudit(now);
       seedModelEval(now);
+      seedHealthTrend(now);
+      seedBudgetAndAutofix(now);
 
       const result = await generateOperatorDigest({ force: true });
       expect(result.text.length).toBeGreaterThan(0);
       expect(result.text.length).toBeLessThanOrEqual(3000);
       expect(result.sent).toBe(false);
+      expect(result.text).toContain("Daily operator digest");
+      expect(result.text).toContain("The system handled routine checks");
+      expect(result.text).toContain("Health trend: Admin Health");
       expect(result.text).toContain("Trust score:");
       expect(result.text).toContain("/100");
       expect(result.text).toContain("Cost: 4 event(s)");
       expect(result.text).toContain("total $0.12");
       expect(result.text).toContain("75% free-tier");
+      expect(result.text).toContain("Cost vs cap:");
       expect(result.text).toContain("Insights: 6 opened, 2 auto-resolved, 1 applied.");
-      expect(result.text).toContain("Reasoner incidents (7d): 2");
+      expect(result.text).toContain("Auto-fixes applied: 1");
+      expect(result.text).toContain("Top open findings:");
+      expect(result.text).toContain("Reasoner incidents");
       expect(result.text).toMatch(/Top agents by audit activity:/);
       expect(result.text).toMatch(/OpenCode Runner/);
       expect(result.text).toContain("Best model (latest eval): openrouter/nemotron (score 8).");
@@ -179,11 +219,14 @@ describe("generateOperatorDigest", () => {
       expect(result.text.length).toBeGreaterThan(0);
 
       const archiveRow = db()
-        .query(`SELECT kind, path, summary FROM report_archive WHERE kind = 'weekly-digest' ORDER BY id DESC LIMIT 1`)
+        .query(`SELECT kind, path, summary FROM report_archive WHERE kind = 'daily-digest' ORDER BY id DESC LIMIT 1`)
         .get() as { kind: string; path: string; summary: string } | null;
       expect(archiveRow).not.toBeNull();
-      expect(archiveRow!.kind).toBe("weekly-digest");
+      expect(archiveRow!.kind).toBe("daily-digest");
       expect(archiveRow!.summary.length).toBeGreaterThan(0);
+      const vaultPath = join(tempDir, "vault", "daily", `${new Date().toISOString().slice(0, 10)}.md`);
+      expect(existsSync(vaultPath)).toBe(true);
+      expect(readFileSync(vaultPath, "utf8")).toContain("Daily operator digest");
 
       const auditRow = db()
         .query(`SELECT action_kind, result_status FROM action_audit WHERE action_kind = 'reports.digest' ORDER BY id DESC LIMIT 1`)
@@ -192,16 +235,17 @@ describe("generateOperatorDigest", () => {
       expect(auditRow!.action_kind).toBe("reports.digest");
 
       const marker = db()
-        .query(`SELECT value_json, tenant_id FROM operator_state WHERE key = ?`)
-        .get(DIGEST_MARKER_KEY) as { value_json: string; tenant_id: string } | null;
+        .query(`SELECT value_json, updated_by FROM system_configs WHERE key = ?`)
+        .get(DIGEST_MARKER_KEY) as { value_json: string; updated_by: string } | null;
       expect(marker).not.toBeNull();
-      const parsed = JSON.parse(marker!.value_json) as { lastSent: number };
-      expect(parsed.lastSent).toBeGreaterThanOrEqual(before);
-      expect(marker!.tenant_id).toBe("mimule");
+      const parsed = JSON.parse(marker!.value_json) as { lastDigestAt: number; tenantId: string };
+      expect(parsed.lastDigestAt).toBeGreaterThanOrEqual(before);
+      expect(parsed.tenantId).toBe("mimule");
+      expect(marker!.updated_by).toBe("digest-scheduler");
     });
   });
 
-  test("marker prevents resend within 7d; force=true still runs", async () => {
+  test("marker prevents resend within 24h; force=true still runs", async () => {
     await withMimuleTenant(async () => {
       const now = Date.now();
       seedCostEvents(now);
@@ -212,6 +256,7 @@ describe("generateOperatorDigest", () => {
 
       const first = await generateOperatorDigest({ force: true });
       expect(first.text.length).toBeGreaterThan(0);
+      expect(shouldSendDailyDigest(false)).toBe(false);
       expect(shouldSendWeeklyDigest(false)).toBe(false);
 
       const second = await generateOperatorDigest();
@@ -223,10 +268,60 @@ describe("generateOperatorDigest", () => {
       expect(third.text).toContain("Trust score:");
 
       const marker = db()
-        .query(`SELECT value_json FROM operator_state WHERE key = ?`)
+        .query(`SELECT value_json FROM system_configs WHERE key = ?`)
         .get(DIGEST_MARKER_KEY) as { value_json: string } | null;
-      const parsed = JSON.parse(marker!.value_json) as { lastSent: number };
-      expect(Date.now() - parsed.lastSent).toBeLessThan(5_000);
+      const parsed = JSON.parse(marker!.value_json) as { lastDigestAt: number };
+      expect(Date.now() - parsed.lastDigestAt).toBeLessThan(5_000);
+    });
+  });
+
+  test("daily gate skips first boot, sends once when due, and does not send twice", async () => {
+    await withMimuleTenant(async () => {
+      const now = Date.now();
+      seedCostEvents(now);
+      seedInsights(now);
+      seedBudgetAndAutofix(now);
+
+      const firstBoot = await maybeGenerateDailyDigest({ firstBootTick: true });
+      expect(firstBoot.ran).toBe(false);
+      expect(firstBoot.reason).toBe("first-boot");
+
+      const notDue = await maybeGenerateDailyDigest();
+      expect(notDue.ran).toBe(false);
+      expect(notDue.reason).toBe("not-due");
+
+      db().query(
+        `UPDATE system_configs SET value_json = ?, updated_at = ? WHERE key = ?`,
+      ).run(JSON.stringify({ lastDigestAt: Date.now() - DIGEST_INTERVAL_MS - 1000, tenantId: "mimule" }), Date.now(), DIGEST_MARKER_KEY);
+
+      const due = await maybeGenerateDailyDigest();
+      expect(due.ran).toBe(true);
+      expect(due.text).toContain("Daily operator digest");
+
+      const repeat = await maybeGenerateDailyDigest();
+      expect(repeat.ran).toBe(false);
+      expect(repeat.reason).toBe("not-due");
+
+      const archiveCount = db().query(`SELECT COUNT(*) AS count FROM report_archive WHERE kind = 'daily-digest'`)
+        .get() as { count: number };
+      expect(archiveCount.count).toBe(1);
+    });
+  });
+
+  test("telegram failure is swallowed after vault append and audit", async () => {
+    await withMimuleTenant(async () => {
+      process.env.TELEGRAM_BOT_TOKEN = "digest-test-token";
+      process.env.TELEGRAM_CHAT_ID = "digest-chat";
+      globalThis.fetch = (async () => {
+        throw new Error("network unavailable in test");
+      }) as unknown as typeof fetch;
+      const result = await generateOperatorDigest({ force: true });
+      expect(result.sent).toBe(false);
+      expect(result.text).toContain("Daily operator digest");
+      const auditRow = db().query(`SELECT result_json FROM action_audit WHERE action_kind = 'reports.digest' ORDER BY id DESC LIMIT 1`)
+        .get() as { result_json: string } | null;
+      expect(auditRow).not.toBeNull();
+      expect(auditRow!.result_json).toContain('"sent":false');
     });
   });
 
@@ -280,6 +375,9 @@ describe("generateOperatorDigest", () => {
       expect(stats.bestModel).not.toBeNull();
       expect(stats.bestModel!.model).toBe("openrouter/nemotron");
       expect(stats.bestModel!.score).toBe(8);
+      expect(stats.healthScore).toBeGreaterThanOrEqual(0);
+      expect(stats.topOpenFindings.length).toBe(3);
+      expect(stats.costVsCap.spentCents).toBe(12);
     });
   });
 
@@ -292,7 +390,7 @@ describe("generateOperatorDigest", () => {
     });
   });
 
-  test("DIGEST_INTERVAL_MS is 7 days", () => {
-    expect(DIGEST_INTERVAL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  test("DIGEST_INTERVAL_MS is 24 hours", () => {
+    expect(DIGEST_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
   });
 });

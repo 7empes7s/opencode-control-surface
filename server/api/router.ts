@@ -278,6 +278,7 @@ import { ok, type ApiEnvelope } from "./types.ts";
 import { getActiveLicense } from "../licensing/index.ts";
 import { getTelemetryConsent, setTelemetryConsent, collectTelemetryPayload } from "../telemetry/index.ts";
 import { onboardingStatusHandler, onboardingStepHandler } from "./onboarding.ts";
+import { installStatusHandler } from "./install.ts";
 import { docsTutorialsHandler } from "./docs.ts";
 import { cloudTierStatusHandler } from "./cloud-tier.ts";
 import {
@@ -617,6 +618,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/admin/autofixes") {
     if (!checkToken(req)) return unauthorized();
     return adminAutoFixFeedHandler();
+  }
+  if (method === "GET" && pathname === "/api/install/status") {
+    if (!checkToken(req)) return unauthorized();
+    return installStatusHandler();
   }
   if (method === "GET" && pathname === "/api/home") return homeHandler();
   if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();

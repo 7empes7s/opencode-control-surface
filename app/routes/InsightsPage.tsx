@@ -9,6 +9,7 @@ import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
 import type { Insight, InsightStatus } from "../../server/insights/types";
+import { lookupInsightRunbook, type InsightRunbook } from "../../server/insights/runbooks";
 import type { DiscoveredAsset, DiscoveredAssetStatus } from "../../server/discovery/reconcile";
 
 type AiAnalysis = {
@@ -137,6 +138,17 @@ function EvidenceDrawer({ evidenceRefs }: { evidenceRefs: EvidenceRef[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+export function RunbookPanel({ runbook }: { runbook: InsightRunbook }) {
+  return (
+    <details className="insight-detector insight-runbook">
+      <summary>Runbook</summary>
+      <p><strong>What this means:</strong> {runbook.what}</p>
+      <p><strong>What Apply does:</strong> {runbook.apply}</p>
+      <p><strong>How to revert:</strong> {runbook.revert}</p>
+    </details>
   );
 }
 
@@ -1174,6 +1186,11 @@ export function InsightsPage() {
                   {insights.map((insight) => {
                     const isFocused = focusKey && (insight.id === focusKey || insight.sourceKey === focusKey);
                     const canApply = Boolean(insight.actionDescriptorId && insight.riskTier !== "none");
+                    const runbook = lookupInsightRunbook({
+                      domain: insight.domain,
+                      actionDescriptorId: insight.actionDescriptorId,
+                      sourceKey: insight.sourceKey,
+                    });
                     return (
                       <article
                         key={insight.id}
@@ -1244,6 +1261,7 @@ export function InsightsPage() {
                           <summary>Detector signal</summary>
                           <p>{insight.plainSummary}</p>
                         </details>
+                        <RunbookPanel runbook={runbook} />
                         <EvidenceDrawer evidenceRefs={insight.evidenceRefs} />
                         {insight.sourceKey && (
                           <div className="insight-source-key">

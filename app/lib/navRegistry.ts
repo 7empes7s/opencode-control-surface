@@ -43,7 +43,7 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/compliance": { status: "core" },
   "/projects": { status: "advanced", experimental: true },
   "/about": { status: "labs", experimental: true },
-  "/install": { status: "labs", experimental: true },
+  "/install": { status: "advanced" },
   "/finance-intel": { status: "advanced", experimental: true },
   "/litellm": { status: "advanced", experimental: true },
   "/scout": { status: "advanced", experimental: true },

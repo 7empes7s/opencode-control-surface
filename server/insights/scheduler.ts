@@ -15,21 +15,19 @@ import { enrichOpenInsights } from "./ai.ts";
 import { autoApplySafeInsights } from "./autoapply.ts";
 import { notifyCriticalFindings } from "../notifications/notifier.ts";
 import { startModelEvalScheduler, stopModelEvalScheduler } from "../evals/modelEval.ts";
-import { generateOperatorDigest, shouldSendWeeklyDigest } from "../reporting/digest.ts";
+import { maybeGenerateDailyDigest } from "../reporting/digest.ts";
 
 let insightsTimer: ReturnType<typeof setInterval> | null = null;
-let digestTimer: ReturnType<typeof setInterval> | null = null;
 
-async function maybeRunWeeklyDigest(): Promise<void> {
+async function runDailyDigestGate(firstBootTick = false): Promise<void> {
   try {
-    if (!shouldSendWeeklyDigest(false)) return;
-    await generateOperatorDigest();
+    await maybeGenerateDailyDigest({ firstBootTick });
   } catch (err) {
-    console.error("[insights] weekly digest failed", err instanceof Error ? err.message : err);
+    console.error("[insights] daily digest failed", err instanceof Error ? err.message : err);
   }
 }
 
-export async function runInsightsScanOnce(): Promise<{
+export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; digestGate?: boolean } = {}): Promise<{
   aggregated: number;
   securityFindings: number;
   registryFindings: number;
@@ -116,12 +114,16 @@ export async function runInsightsScanOnce(): Promise<{
     writeHealthSample(hs.score);
   } catch { /* ignore */ }
 
+  if (opts.digestGate) {
+    await runDailyDigestGate(!!opts.firstBootTick);
+  }
+
   return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {
   try {
-    runInsightsScanOnce();
+    runInsightsScanOnce({ firstBootTick: true, digestGate: true });
   } catch (error) {
     console.error("[insights] initial scan failed", error);
   }
@@ -129,28 +131,17 @@ export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {
   if (insightsTimer) clearInterval(insightsTimer);
   insightsTimer = setInterval(() => {
     try {
-      runInsightsScanOnce();
+      runInsightsScanOnce({ digestGate: true });
     } catch (error) {
       console.error("[insights] scheduled scan failed", error);
     }
   }, intervalMs);
   insightsTimer.unref?.();
-
-  if (digestTimer) clearInterval(digestTimer);
-  maybeRunWeeklyDigest();
-  digestTimer = setInterval(() => {
-    void maybeRunWeeklyDigest();
-  }, 60 * 60 * 1000);
-  digestTimer.unref?.();
 }
 
 export function stopInsightsScanScheduler(): void {
   if (insightsTimer) {
     clearInterval(insightsTimer);
     insightsTimer = null;
-  }
-  if (digestTimer) {
-    clearInterval(digestTimer);
-    digestTimer = null;
   }
 }

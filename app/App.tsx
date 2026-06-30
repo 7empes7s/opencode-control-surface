@@ -26,7 +26,7 @@ import { WorkflowsPage } from "./routes/WorkflowsPage";
 import { ProjectsPage } from "./routes/ProjectsPage";
 import { AboutPage } from "./routes/AboutPage";
 import { MarketplacePage } from "./routes/MarketplacePage";
-import { InstallWizardPage } from "./routes/InstallWizardPage";
+import { InstallPage } from "./routes/InstallPage";
 import { CompliancePage } from "./routes/CompliancePage";
 import { FinanceIntelPage } from "./routes/FinanceIntelPage";
 import { DossierInspectorPage } from "./routes/DossierInspectorPage";
@@ -193,7 +193,7 @@ export function App() {
           <DashLayout><MarketplacePage /></DashLayout>
         </Route>
         <Route path="/install">
-          <DashLayout><InstallWizardPage /></DashLayout>
+          <DashLayout><InstallPage /></DashLayout>
         </Route>
         <Route path="/cost">
           <DashLayout><CostPage /></DashLayout>

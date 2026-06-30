@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
-import { readActionAudit, readOperatorState, writeOperatorState } from "../db/writer.ts";
+import { readActionAudit, readOperatorState, writeActionAudit, writeOperatorState } from "../db/writer.ts";
 import { tenantStore } from "../tenancy/middleware.ts";
 import { testTenantContext } from "../tenancy/context.ts";
 import { notifyCriticalFindings, __test_only } from "./notifier.ts";
@@ -16,6 +16,7 @@ let prevDbPath: string | undefined;
 let prevToken: string | undefined;
 let prevChat: string | undefined;
 let prevFetch: typeof fetch | null | undefined;
+let prevBaseUrl: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -25,10 +26,12 @@ beforeEach(() => {
   prevToken = process.env.TELEGRAM_BOT_TOKEN;
   prevChat = process.env.TELEGRAM_CHAT_ID;
   prevFetch = globalThis.fetch;
+  prevBaseUrl = process.env.CONTROL_SURFACE_BASE_URL;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.TELEGRAM_BOT_TOKEN = "notifier-test-token";
   process.env.TELEGRAM_CHAT_ID = "notifier-chat";
+  process.env.CONTROL_SURFACE_BASE_URL = "https://control.test.local/app";
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
 });
 
@@ -42,6 +45,8 @@ afterEach(() => {
   else process.env.TELEGRAM_BOT_TOKEN = prevToken;
   if (prevChat === undefined) delete process.env.TELEGRAM_CHAT_ID;
   else process.env.TELEGRAM_CHAT_ID = prevChat;
+  if (prevBaseUrl === undefined) delete process.env.CONTROL_SURFACE_BASE_URL;
+  else process.env.CONTROL_SURFACE_BASE_URL = prevBaseUrl;
   if (prevFetch === undefined) {
     (globalThis as { __notifierTestFetch?: typeof fetch }).__notifierTestFetch = undefined;
   } else {
@@ -67,6 +72,12 @@ function installTelegramMock(capture: { calls: Array<{ url: string; body: string
       headers: { "Content-Type": "application/json" },
     });
   }) as unknown as typeof fetch;
+}
+
+function capturedTelegramText(capture: { calls: Array<{ body: string }> }, index = 0): string {
+  const raw = capture.calls[index]?.body ?? "{}";
+  const parsed = JSON.parse(raw) as { text?: string };
+  return parsed.text ?? "";
 }
 
 describe("notifyCriticalFindings — dedupe behavior", () => {
@@ -114,6 +125,9 @@ describe("notifyCriticalFindings — dedupe behavior", () => {
     expect(first.sent).toBe(1);
     expect(first.deduped).toBe(0);
     expect(capture.calls.length).toBe(1);
+    const messageText = capturedTelegramText(capture);
+    expect(messageText).toContain("https://control.test.local/insights?focus=test%3Ahigh-1");
+    expect(messageText).toContain("Auto-fix activity:");
 
     const auditRows = readActionAudit({ actionKind: "notify.telegram" });
     expect(auditRows.length).toBe(1);
@@ -182,6 +196,59 @@ describe("notifyCriticalFindings — dedupe behavior", () => {
     const second = await withTenant("mimule", () => notifyCriticalFindings(15 * 60 * 1000));
     expect(second.sent).toBe(0);
     expect(second.deduped).toBe(1);
+  });
+
+  test("message includes auto-apply activity summary from existing audit rows", async () => {
+    const capture = { calls: [] as Array<{ url: string; body: string }> };
+    installTelegramMock(capture);
+
+    withTenant("mimule", () => {
+      const now = Date.now();
+      writeActionAudit({
+        actor: "system",
+        actorSource: "scheduler",
+        actionKind: "insights.auto-apply",
+        actionId: "mutate-policy:model:old-model:cooldown-clear",
+        targetType: "insight",
+        targetId: "auto-1",
+        resultStatus: "success",
+        result: "auto-cleared cooldown",
+      });
+      upsertInsight({
+        id: "insight_autoapply_flapping_test",
+        domain: "security",
+        severity: "high",
+        title: "Auto-apply circuit breaker tripped",
+        plainSummary: "Auto-apply failed repeatedly and was left for review.",
+        confidence: 0.9,
+        evidenceRefs: [],
+        actionDescriptorId: null,
+        manualPageHref: "/insights",
+        createdAt: now,
+        sourceKey: "security:autoapply-flapping:test",
+      });
+      upsertInsight({
+        id: "ins_high_activity",
+        domain: "ops",
+        severity: "high",
+        title: "High finding with handled activity",
+        plainSummary: "The system detected this after auto-fixes ran.",
+        confidence: 0.9,
+        evidenceRefs: [],
+        actionDescriptorId: null,
+        manualPageHref: "/insights",
+        createdAt: now,
+        sourceKey: "ops:activity:1",
+      });
+    });
+
+    const result = await withTenant("mimule", () => notifyCriticalFindings(15 * 60 * 1000));
+    expect(result.sent).toBe(2);
+    const combinedText = capture.calls.map((_, index) => capturedTelegramText(capture, index)).join("\n---\n");
+    expect(combinedText).toContain("Auto-fix activity handled:");
+    expect(combinedText).toContain("auto-cleared 1 expired cooldown");
+    expect(combinedText).toContain("1 flapping finding sent to review");
+    expect(combinedText).toContain("https://control.test.local/insights?focus=ops%3Aactivity%3A1");
   });
 
   test("returns ruleEnabled=false and short-circuits when rule disabled", async () => {
