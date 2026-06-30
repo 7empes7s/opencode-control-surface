@@ -6,6 +6,7 @@ import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboa
 import { getAiAnalysis } from "./ai.ts";
 import { runBuildScan } from "./scanners/build.ts";
 import { getInsight } from "./store.ts";
+import { aggregateInsights } from "./aggregate.ts";
 import { seedPlaybooks } from "../reasoner/playbooks.ts";
 
 let tempDir: string;
@@ -62,15 +63,43 @@ describe("build scanner", () => {
     const result = runBuildScan();
     expect(result.findings.length).toBe(1);
 
-    const insight = getInsight("insight_build_diagnosis_diag-build");
+    const insight = getInsight("insight_build_run_build");
     expect(insight?.domain).toBe("build");
     expect(insight?.sourceKey).toBe("build:run-build");
     expect(insight?.severity).toBe("high");
     expect(insight?.actionDescriptorId).toMatch(/^reasoner-remediate:pass-timeout:/);
 
-    const ai = getAiAnalysis("insight_build_diagnosis_diag-build");
+    const ai = getAiAnalysis("insight_build_run_build");
     expect(ai?.summary).toContain("Retry with continuation context");
     expect(ai?.model).toBe("reasoner-diagnosis");
+  });
+
+  test("multiple diagnoses sharing one run collapse to a single insight (no UNIQUE crash)", () => {
+    seedFailedBuildDiagnosis();
+    const db = getDashboardDb()!;
+    const now = Date.now();
+    // A second, newer diagnosis for the SAME run — same sourceKey (build:run-build),
+    // different diagnosis id. Before the fix this threw UNIQUE(tenant_id, source_key).
+    db.query(`
+      INSERT INTO reasoner_diagnoses
+        (id, pass_id, run_id, workflow_id, failure_class, root_cause, evidence_json,
+         suggested_actions_json, confidence, diagnosed_at, tenant_id)
+      VALUES ('diag-build-2', 'pass-build-2', 'run-build', 'wf-build', 'pass-timeout',
+        'A later timeout on the same run', '["stdout tail 2"]',
+        '["Retry again"]', 'high', ?, 'mimule')
+    `).run(now + 1000);
+
+    // Must not throw, and must produce exactly one finding for build:run-build.
+    const result = runBuildScan();
+    const forRun = result.findings.filter((f) => f.sourceKey === "build:run-build");
+    expect(forRun.length).toBe(1);
+    expect(getInsight("insight_build_run_build")?.domain).toBe("build");
+
+    // A second scan (the newer diagnosis is now "first") must also not throw and
+    // must keep the same stable id — this is the cross-scan crash the fix prevents.
+    expect(() => runBuildScan()).not.toThrow();
+    // The full aggregation path (run at startup) must not throw either.
+    expect(() => aggregateInsights()).not.toThrow();
   });
 
   test("resolved builder run clears stale build insight", () => {
@@ -80,7 +109,7 @@ describe("build scanner", () => {
     getDashboardDb()!.query("UPDATE builder_runs SET status = 'succeeded' WHERE id = 'run-build'").run();
     const result = runBuildScan();
 
-    expect(result.resolved.map((row) => row.id)).toContain("insight_build_diagnosis_diag-build");
-    expect(getInsight("insight_build_diagnosis_diag-build")?.status).toBe("resolved");
+    expect(result.resolved.map((row) => row.id)).toContain("insight_build_run_build");
+    expect(getInsight("insight_build_run_build")?.status).toBe("resolved");
   });
 });

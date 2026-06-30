@@ -103,6 +103,17 @@ export function upsertInsight(input: InsightInput): Insight | null {
   const status = input.status ?? "open";
   const evidenceJson = JSON.stringify(input.evidenceRefs);
 
+  // (tenant_id, source_key) is UNIQUE, but this upsert keys on the id PK. If a row
+  // already exists for the same sourceKey under a DIFFERENT id — a scanner changed
+  // its id derivation, or a partial write left residue — the INSERT below would
+  // throw UNIQUE and (at startup) crash-loop the whole service. Reconcile first so
+  // sourceKey stays the effective identity and upsert self-heals.
+  if (input.sourceKey) {
+    db.query(
+      `DELETE FROM insights WHERE tenant_id = ? AND source_key = ? AND id != ?`,
+    ).run(tenantId, input.sourceKey, input.id);
+  }
+
   db.query(`
     INSERT INTO insights
       (id, domain, severity, title, plain_summary, confidence, evidence_refs_json,

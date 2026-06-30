@@ -132,7 +132,11 @@ export function mapReasonerBuildFindings(now = Date.now()): InsightInput[] {
     const recommendedAction = suggestedActionText(row.suggested_actions_json);
     const sourceKey = `build:${row.run_id || row.failure_class}`;
     inputs.push({
-      id: `insight_build_diagnosis_${safeId(row.id)}`,
+      // id derives from sourceKey (not the diagnosis id) so the same run maps to
+      // one stable row across scans — insights has UNIQUE(tenant_id, source_key)
+      // but upsertInsight only conflict-handles the id PK, so a new diagnosis id
+      // reusing an existing sourceKey would otherwise throw and crash startup.
+      id: `insight_${sourceKey.replace(/[^a-z0-9]+/gi, "_")}`,
       sourceKey,
       domain: "build",
       severity: severityForFailureClass(row.failure_class),
@@ -174,7 +178,9 @@ export function mapReasonerBuildFindings(now = Date.now()): InsightInput[] {
     const recommendedAction = suggestedActionText(row.suggested_actions_json);
     const sourceKey = `build:failure:${row.failure_class}`;
     inputs.push({
-      id: `insight_build_incident_${safeId(row.id)}`,
+      // id derives from sourceKey (see diagnosis note) — multiple incidents of the
+      // same failure class collapse to one stable row.
+      id: `insight_${sourceKey.replace(/[^a-z0-9]+/gi, "_")}`,
       sourceKey,
       domain: "build",
       severity: severityForFailureClass(row.failure_class, row.occurrence_count),
@@ -198,8 +204,16 @@ export function runBuildScan(): { findings: Insight[]; resolved: Insight[] } {
   const inputs = mapReasonerBuildFindings();
   const findings: Insight[] = [];
   const emittedSourceKeys: string[] = [];
+  const seenSourceKeys = new Set<string>();
 
   for (const input of inputs) {
+    // Defense-in-depth: never upsert two findings with the same sourceKey in one
+    // scan (they would collide on the UNIQUE(tenant_id, source_key) index).
+    // Inputs are ordered most-relevant-first, so the first one per key wins.
+    if (input.sourceKey) {
+      if (seenSourceKeys.has(input.sourceKey)) continue;
+      seenSourceKeys.add(input.sourceKey);
+    }
     const row = upsertInsight(input);
     if (!row) continue;
     findings.push(row);
