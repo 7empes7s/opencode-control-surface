@@ -128,6 +128,9 @@ import {
   governancePoliciesHandler,
   governancePoliciesReloadHandler,
   governanceRbacMeHandler,
+  governanceUsersHandler,
+  governanceUserRoleHandler,
+  rbacMatrixHandler,
   governanceApprovalsListHandler,
   governanceApprovalDecideHandler,
   governanceSecretsListHandler,
@@ -1032,6 +1035,12 @@ if (method === "GET" && pathname === "/api/stream") {
     return governancePoliciesReloadHandler();
   }
   if (method === "GET" && pathname === "/api/governance/rbac/me") return governanceRbacMeHandler(req);
+  if (method === "GET" && pathname === "/api/governance/users") return governanceUsersHandler(req);
+  const govUserRoleMatch = pathname.match(/^\/api\/governance\/users\/([^/]+)\/role$/);
+  if (method === "POST" && govUserRoleMatch) {
+    return governanceUserRoleHandler(req, decodeURIComponent(govUserRoleMatch[1]));
+  }
+  if (method === "GET" && pathname === "/api/rbac/matrix") return rbacMatrixHandler(req);
   if (method === "GET" && pathname === "/api/governance/approvals") return governanceApprovalsListHandler(req);
   const govApprovalMatch = pathname.match(/^\/api\/governance\/approvals\/([^/]+)\/(approve|reject)$/);
   if (method === "POST" && govApprovalMatch) {

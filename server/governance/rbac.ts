@@ -256,7 +256,7 @@ export function viewerRole(): RbacRole {
   return "viewer";
 }
 
-const ROLE_PERMISSIONS: Record<RbacRole, string[]> = {
+export const ROLE_PERMISSIONS: Record<RbacRole, string[]> = {
   owner: ["*"],
   operator: [
     "workflow.start", "workflow.stop", "workflow.pause", "workflow.resume",
@@ -300,4 +300,8 @@ export function checkPermission(role: RbacRole, action: string): boolean {
 
 export function getAllowedActions(role: RbacRole): string[] {
   return ROLE_PERMISSIONS[role] ?? [];
+}
+
+export function permissionsForRole(role: RbacRole): string[] {
+  return getAllowedActions(role);
 }

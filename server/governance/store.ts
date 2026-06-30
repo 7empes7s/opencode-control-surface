@@ -84,16 +84,30 @@ export function writeRoleBinding(userId: string, role: string, ctx?: TenantConte
   if (!db) return;
 
   const tenantCtx = ctx ?? getCurrentTenantContext();
-  const row = withTenantInsert(tenantCtx, {
-    user_id: userId,
-    role,
-  });
+  upsertRoleBinding(userId, role, tenantCtx.tenantId);
+}
 
+export function upsertRoleBinding(userId: string, role: string, tenantId?: string): void {
+  const db = getDashboardDb();
+  if (!db) return;
+  const effectiveTenantId = tenantId ?? getCurrentTenantContext().tenantId;
   db.query(
-    `INSERT INTO governance_role_bindings (user_id, role, tenant_id)
-     VALUES (?, ?, ?)
+    `INSERT INTO governance_role_bindings (id, user_id, role, tenant_id, created_at)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(user_id, tenant_id) DO UPDATE SET role = excluded.role`,
-  ).run(row.user_id, row.role, row.tenant_id);
+  ).run(randomUUID(), userId, role, effectiveTenantId, Date.now());
+}
+
+export function getRoleBinding(userId: string, tenantId?: string): RoleBindingRow | null {
+  const db = getDashboardDb();
+  if (!db) return null;
+  const effectiveTenantId = tenantId ?? getCurrentTenantContext().tenantId;
+  return db.query(
+    `SELECT user_id, role, tenant_id
+     FROM governance_role_bindings
+     WHERE user_id = ? AND tenant_id = ?
+     LIMIT 1`,
+  ).get(userId, effectiveTenantId) as RoleBindingRow | null;
 }
 
 export function getRoleBindings(ctx?: TenantContext): RoleBindingRow[] {

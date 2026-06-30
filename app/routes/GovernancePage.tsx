@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useApi } from "../hooks/useApi";
 import { useAuthApi } from "../hooks/useAuthApi";
+import { useAction } from "../hooks/useAction";
 import { authFetch } from "../lib/authFetch";
-import { Shield, RefreshCw, Trash2, Plus } from "lucide-react";
+import { Building2, KeyRound, RefreshCw, Shield, Trash2, Plus, UserRound } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 
@@ -50,10 +50,43 @@ interface BudgetSpending {
   monthly: number;
 }
 
-type Tab = "policies" | "secrets" | "approvals" | "budgets";
+type RbacRole = "owner" | "operator" | "auditor" | "viewer";
+
+interface GovernanceUser {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+  role: RbacRole;
+  tenantId: string;
+  lastSeen: number | null;
+  createdAt: number | null;
+}
+
+interface GovernanceUsersData {
+  users: GovernanceUser[];
+  currentRole: RbacRole;
+}
+
+interface RbacMatrixData {
+  roles: RbacRole[];
+  matrix: Record<RbacRole, string[]>;
+}
+
+interface TenantInfo {
+  id: string;
+  name: string;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  projectCount?: number;
+}
+
+type Tab = "users" | "policies" | "secrets" | "approvals" | "budgets";
+
+const ROLE_OPTIONS: RbacRole[] = ["viewer", "auditor", "operator", "owner"];
 
 export function GovernancePage() {
-  const [tab, setTab] = useState<Tab>("policies");
+  const [tab, setTab] = useState<Tab>("users");
   const [showAddSecret, setShowAddSecret] = useState(false);
   const [showSetBudget, setShowSetBudget] = useState(false);
   const [newSecretName, setNewSecretName] = useState("");
@@ -71,6 +104,9 @@ export function GovernancePage() {
   const { data: secretsData, loading: secretsLoading, error: secretsError, refresh: reloadSecrets } = useAuthApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
   const { data: approvalsData, loading: approvalsLoading, error: approvalsError, refresh: reloadApprovals } = useAuthApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
   const { data: budgetsData, loading: budgetsLoading, error: budgetsError, refresh: reloadBudgets } = useAuthApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
+  const { data: usersData, loading: usersLoading, error: usersError, refresh: reloadUsers } = useAuthApi<GovernanceUsersData>("/api/governance/users", 30_000);
+  const { data: matrixData, loading: matrixLoading, error: matrixError, refresh: reloadMatrix } = useAuthApi<RbacMatrixData>("/api/rbac/matrix", 60_000);
+  const { data: tenantsData, loading: tenantsLoading, error: tenantsError, refresh: reloadTenants } = useAuthApi<{ tenants: TenantInfo[] }>("/api/tenants", 60_000);
 
   const policiesCtrl = useTableControls<PolicyInfo, "name" | "version" | "ruleCount">({
     rows: policiesData?.policies ?? [],
@@ -113,6 +149,20 @@ export function GovernancePage() {
       }
     },
     defaultSort: { key: "scope", dir: "asc" },
+  });
+
+  const usersCtrl = useTableControls<GovernanceUser, "displayName" | "role" | "tenantId">({
+    rows: usersData?.users ?? [],
+    pageSize: 25,
+    filterText: (row) => [row.displayName ?? "", row.email ?? "", row.id, row.role, row.tenantId].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "role": return row.role;
+        case "tenantId": return row.tenantId;
+        default: return row.displayName ?? row.email ?? row.id;
+      }
+    },
+    defaultSort: { key: "displayName", dir: "asc" },
   });
 
   async function handleReloadPolicies() {
@@ -184,6 +234,7 @@ export function GovernancePage() {
   }
 
   const TABS: { id: Tab; label: string }[] = [
+    { id: "users", label: "Users & Roles" },
     { id: "policies", label: "Policies" },
     { id: "secrets", label: "Secrets" },
     { id: "approvals", label: "Approvals" },
@@ -206,6 +257,140 @@ export function GovernancePage() {
           </button>
         ))}
       </div>
+
+      {tab === "users" ? (
+        <div className="governance-access-grid">
+          <section className="section-card governance-access-main">
+            <div className="section-card-header">
+              <h2>User Directory</h2>
+              <button className="btn-ghost" onClick={() => { reloadUsers(); reloadMatrix(); reloadTenants(); }}>
+                <RefreshCw size={14} /> Refresh
+              </button>
+            </div>
+            {usersData ? (
+              <div className="access-context-row">
+                <span className={`role-badge role-${usersData.currentRole}`}>Your role: {usersData.currentRole}</span>
+                <span className="text-muted text-sm">
+                  {usersData.currentRole === "owner" ? "Owners can change role bindings." : "Role changes are only shown to owners."}
+                </span>
+              </div>
+            ) : null}
+            {usersError && !usersData ? (
+              <div className="loading-dim error">Users did not load: {usersError} <button className="btn-ghost btn-sm" onClick={reloadUsers}>Retry</button></div>
+            ) : usersLoading && !usersData ? (
+              <div className="loading-dim">loading...</div>
+            ) : !usersData || usersData.users.length === 0 ? (
+              <div className="empty-state compact">
+                <UserRound size={16} />
+                <div>
+                  <strong>No users found.</strong>
+                  <div>Local or SSO users appear here after they sign in or are created by an enabled identity flow.</div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <TableControls {...usersCtrl.controlsProps} searchPlaceholder="Filter users..." />
+                <div className="table-container">
+                  <table className="data-table governance-table governance-users-table">
+                    <thead>
+                      <tr>
+                        <th {...usersCtrl.sortHeaderProps("displayName")}>User <span className="sortable-th-arrow">{usersCtrl.sort.key === "displayName" ? (usersCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...usersCtrl.sortHeaderProps("role")}>Role <span className="sortable-th-arrow">{usersCtrl.sort.key === "role" ? (usersCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...usersCtrl.sortHeaderProps("tenantId")}>Tenant <span className="sortable-th-arrow">{usersCtrl.sort.key === "tenantId" ? (usersCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th>Last seen</th>
+                        {usersData.currentRole === "owner" ? <th>Role editor</th> : null}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usersCtrl.rows.map((user) => (
+                        <GovernanceUserRow
+                          key={`${user.tenantId}:${user.id}`}
+                          user={user}
+                          canEdit={usersData.currentRole === "owner"}
+                          onChanged={reloadUsers}
+                        />
+                      ))}
+                      {usersCtrl.filteredCount === 0 && (
+                        <tr>
+                          <td colSpan={usersData.currentRole === "owner" ? 5 : 4} className="loading-dim">No users match the current filter.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </section>
+
+          <aside className="governance-access-side">
+            <section className="section-card">
+              <div className="section-card-header">
+                <h2><KeyRound size={15} /> Permission Matrix</h2>
+              </div>
+              {matrixError && !matrixData ? (
+                <div className="loading-dim error">Matrix did not load: {matrixError} <button className="btn-ghost btn-sm" onClick={reloadMatrix}>Retry</button></div>
+              ) : matrixLoading && !matrixData ? (
+                <div className="loading-dim">loading...</div>
+              ) : !matrixData ? (
+                <p className="text-muted">No RBAC matrix returned.</p>
+              ) : (
+                <div className="permission-matrix-list">
+                  {matrixData.roles.map((role) => (
+                    <div className="permission-role-row" key={role}>
+                      <span className={`role-badge role-${role}`}>{role}</span>
+                      <span className="permission-actions">{matrixData.matrix[role].join(", ")}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="section-card">
+              <div className="section-card-header">
+                <h2><Building2 size={15} /> Tenants</h2>
+              </div>
+              {tenantsError && !tenantsData ? (
+                <div className="loading-dim error">Tenants did not load: {tenantsError} <button className="btn-ghost btn-sm" onClick={reloadTenants}>Retry</button></div>
+              ) : tenantsLoading && !tenantsData ? (
+                <div className="loading-dim">loading...</div>
+              ) : !tenantsData || tenantsData.tenants.length === 0 ? (
+                <p className="text-muted">No tenants are configured.</p>
+              ) : (
+                <>
+                  {tenantsData.tenants.length === 1 ? (
+                    <p className="text-muted tenant-single-copy">Single-tenant deployment - one tenant configured.</p>
+                  ) : null}
+                  <div className="tenant-list">
+                    {tenantsData.tenants.map((tenant) => (
+                      <div className="tenant-row" key={tenant.id}>
+                        <div>
+                          <div className="font-medium">{tenant.name}</div>
+                          <div className="text-muted text-xs">{tenant.id} · created {formatDate(tenant.createdAt)}</div>
+                        </div>
+                        <div className="tenant-row-meta">
+                          <span className="badge-gray">{tenant.status}</span>
+                          {tenant.projectCount != null ? <span className="text-muted text-xs">{tenant.projectCount} projects</span> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </section>
+
+            <section className="section-card access-disabled-panel">
+              <div className="access-disabled-item">
+                <strong>Email invitations</strong>
+                <span>Not enabled in this deployment. SMTP-backed invitations are out of scope for this pass.</span>
+              </div>
+              <div className="access-disabled-item">
+                <strong>View As impersonation</strong>
+                <span>Not enabled in this deployment. Impersonation is deferred for a separate audited design.</span>
+              </div>
+            </section>
+          </aside>
+        </div>
+      ) : null}
 
       {tab === "policies" ? (
         <div className="section-card">
@@ -488,6 +673,57 @@ export function GovernancePage() {
       ) : null}
     </div>
   );
+}
+
+function GovernanceUserRow({ user, canEdit, onChanged }: { user: GovernanceUser; canEdit: boolean; onChanged: () => void }) {
+  const roleAction = useAction(`/api/governance/users/${encodeURIComponent(user.id)}/role`);
+  const [selectedRole, setSelectedRole] = useState<RbacRole>(user.role);
+
+  async function handleRoleChange(nextRole: RbacRole) {
+    setSelectedRole(nextRole);
+    if (nextRole === user.role) return;
+    const label = user.email ?? user.displayName ?? user.id;
+    const confirmed = window.confirm(`Change ${label} from ${user.role} to ${nextRole}?`);
+    if (!confirmed) {
+      setSelectedRole(user.role);
+      return;
+    }
+    const ok = await roleAction.run({ role: nextRole, tenantId: user.tenantId });
+    if (ok) onChanged();
+    else setSelectedRole(user.role);
+  }
+
+  return (
+    <tr>
+      <td>
+        <div className="font-medium">{user.displayName ?? user.id}</div>
+        <div className="text-muted text-xs">{user.email ?? user.id}</div>
+      </td>
+      <td><span className={`role-badge role-${user.role}`}>{user.role}</span></td>
+      <td className="font-mono text-xs">{user.tenantId}</td>
+      <td className="text-muted text-xs">{user.lastSeen ? formatDate(user.lastSeen) : "Not recorded"}</td>
+      {canEdit ? (
+        <td>
+          <select
+            className="governance-role-select"
+            value={selectedRole}
+            disabled={roleAction.loading}
+            aria-label={`Role for ${user.email ?? user.id}`}
+            onChange={(event) => handleRoleChange(event.target.value as RbacRole)}
+          >
+            {ROLE_OPTIONS.map((role) => (
+              <option key={role} value={role}>{role}</option>
+            ))}
+          </select>
+          {roleAction.error ? <div className="role-action-error">{roleAction.error}</div> : null}
+        </td>
+      ) : null}
+    </tr>
+  );
+}
+
+function formatDate(ts: number): string {
+  return new Date(ts).toLocaleDateString();
 }
 
 function fmtAge(ts: number): string {

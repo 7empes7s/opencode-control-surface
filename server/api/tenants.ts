@@ -2,7 +2,7 @@ import { checkToken } from "./actions.ts";
 import { upsertTenant, getTenant, listTenants } from "../tenancy/store.ts";
 import { getDashboardDb } from "../db/dashboard.ts";
 import { spawnSync } from "node:child_process";
-import { requireMutation } from "../governance/rbac.ts";
+import { requireMutation, requireView } from "../governance/rbac.ts";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -12,8 +12,16 @@ function json(data: unknown, status = 200): Response {
 }
 
 function operatorOnly(req: Request): Response | null {
-  if (!checkToken(req)) {
+  const hasCredential = Boolean(
+    req.headers.get("x-operator-token") ||
+    req.headers.get("authorization") ||
+    req.headers.get("cookie")
+  );
+  if (!hasCredential) {
     return json({ error: "unauthorized" }, 401);
+  }
+  if (!checkToken(req)) {
+    return requireView(req, "audit.view");
   }
   return null;
 }
@@ -25,7 +33,21 @@ function mutationOnly(req: Request): Response | null {
 export function tenantsListHandler(req: Request): Response {
   const guard = operatorOnly(req);
   if (guard) return guard;
-  return json({ tenants: listTenants() });
+  const db = getDashboardDb();
+  const tenants = listTenants().map((tenant) => {
+    let projectCount: number | undefined;
+    if (db) {
+      try {
+        projectCount = db.query<{ count: number }, [string]>(
+          "SELECT COUNT(*) as count FROM projects WHERE tenant_id = ? AND (status IS NULL OR status != 'deleted')",
+        ).get(tenant.id)?.count ?? 0;
+      } catch {
+        projectCount = undefined;
+      }
+    }
+    return { ...tenant, projectCount };
+  });
+  return json({ data: { tenants }, tenants });
 }
 
 export async function tenantsCreateHandler(req: Request): Promise<Response> {

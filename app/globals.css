@@ -2181,6 +2181,127 @@ body {
 .gov-tab-btn { padding: 0.5rem 1rem; background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 0.875rem; border-bottom: 2px solid transparent; transition: color 0.15s; }
 .gov-tab-btn:hover { color: var(--text); }
 .gov-tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.governance-access-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  gap: 16px;
+  align-items: start;
+}
+.governance-access-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.governance-users-table {
+  min-width: 860px;
+}
+.access-context-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 0 16px 12px;
+}
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.role-owner {
+  color: var(--red);
+  background: color-mix(in oklch, var(--red) 10%, transparent);
+  border-color: color-mix(in oklch, var(--red) 30%, transparent);
+}
+.role-operator {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+  border-color: color-mix(in oklch, var(--accent) 30%, transparent);
+}
+.role-auditor {
+  color: var(--trace-gateway);
+  background: color-mix(in oklch, var(--trace-gateway) 10%, transparent);
+  border-color: color-mix(in oklch, var(--trace-gateway) 30%, transparent);
+}
+.role-viewer {
+  color: var(--text-dim);
+  background: color-mix(in oklch, white 4%, transparent);
+}
+.governance-role-select {
+  min-width: 132px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font: inherit;
+}
+.governance-role-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.role-action-error {
+  margin-top: 6px;
+  color: var(--red);
+  font-size: 11px;
+}
+.permission-matrix-list,
+.tenant-list {
+  display: flex;
+  flex-direction: column;
+}
+.permission-role-row,
+.tenant-row,
+.access-disabled-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.permission-role-row:first-child,
+.tenant-row:first-child,
+.access-disabled-item:first-child {
+  border-top: 0;
+}
+.permission-actions {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.tenant-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+.tenant-single-copy {
+  padding: 0 16px 12px;
+}
+.access-disabled-panel {
+  color: var(--text-muted);
+}
+.access-disabled-item {
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 64px;
+}
+.access-disabled-item strong {
+  color: var(--text);
+  font-size: 12px;
+}
 .approval-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.375rem; margin-bottom: 0.5rem; }
 .approval-item.completed { opacity: 0.5; }
 .approval-actions { display: flex; gap: 0.5rem; }
@@ -2398,6 +2519,12 @@ body {
   .tab-btn {
     flex: 1 1 calc(50% - 8px);
     min-width: 140px;
+  }
+}
+
+@media (max-width: 1040px) {
+  .governance-access-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
