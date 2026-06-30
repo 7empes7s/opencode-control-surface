@@ -20,6 +20,8 @@ export interface Insight {
   resolvedAt?: number | null;
   resolution?: string | null;
   sourceKey?: string | null;
+  acknowledgedAt?: number | null;
+  snoozedUntil?: number | null;
 }
 
 export type InsightInput = Omit<Insight, "status" | "tenant_id"> & {

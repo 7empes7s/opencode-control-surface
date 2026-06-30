@@ -345,6 +345,9 @@ export function GatewayPage() {
           <div style={{ color: "var(--text-dim)", marginTop: 4 }}>
             Check the gateway API and operator session, then retry. Existing data remains visible when available.
           </div>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={refresh} style={{ marginTop: 8 }}>
+            <RefreshCw size={13} /> Retry
+          </button>
         </div>
       )}
 

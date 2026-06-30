@@ -2,6 +2,7 @@ import { isDashboardDbEnabled, getDashboardDb } from "../db/dashboard.ts";
 import { readActionAudit, type ActionAuditRow } from "../db/writer.ts";
 import { ok, type ApiEnvelope } from "./types.ts";
 import { exportAuditLog, buildHashChain, verifyHashChain, type AuditRowForHash } from "../governance/audit/export.ts";
+import { getTenantContext } from "../tenancy/context.ts";
 
 export type ActionAuditResponse = {
   audit: ActionAuditRow[];
@@ -74,6 +75,7 @@ export async function auditExportHandler(
   url: URL,
   method: string,
   body: unknown,
+  req?: Request,
 ): Promise<Response> {
   if (!isDashboardDbEnabled()) {
     return new Response(JSON.stringify({ error: "DASHBOARD_DB disabled" }), {
@@ -90,7 +92,7 @@ export async function auditExportHandler(
     const fromTs = opts?.fromTs ?? Date.now() - 90 * 24 * 60 * 60 * 1000;
     const toTs = opts?.toTs ?? Date.now();
     const format = opts?.format ?? "jsonl";
-    const tenantId = opts?.tenantId ?? "mimule";
+    const tenantId = opts?.tenantId ?? getTenantContext(req).tenantId;
     const includeKinds = opts?.includeKinds;
 
     const jobId = crypto.randomUUID();

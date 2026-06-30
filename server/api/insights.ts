@@ -1,6 +1,6 @@
 import { createApprovalRequest, getApprovalRequest } from "../governance/approvals.ts";
 import { checkPermission, getRoleForRequest } from "../governance/rbac.ts";
-import { writeActionAudit } from "../db/writer.ts";
+import { readActionAudit, writeActionAudit } from "../db/writer.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { ok, type ActionDescriptor } from "./types.ts";
 import { checkToken } from "./actions.ts";
@@ -8,7 +8,7 @@ import { getAuthenticatedUser } from "../auth/session.ts";
 import { executeActionHandler } from "./execute.ts";
 import { aggregateInsights } from "../insights/aggregate.ts";
 import { runInsightsScanOnce } from "../insights/scheduler.ts";
-import { getInsight, listInsights, updateInsightStatus } from "../insights/store.ts";
+import { acknowledgeInsights, getInsight, listInsights, snoozeInsights, updateInsightStatus } from "../insights/store.ts";
 import { getAiAnalysis, enrichInsight } from "../insights/ai.ts";
 import { previewAutoApplyCandidates, riskTierFor } from "../insights/autoapply.ts";
 import { tierForAction } from "../insights/autoapplyPolicy.ts";
@@ -53,6 +53,9 @@ export function requireInsightPermission(req: Request, action: "insights.view" |
 }
 
 function inferActionEnforcement(actionId: string): ActionEnforcement {
+  if (tierForAction(actionId) === "auto") {
+    return { risk: "low", confirm: false, reasonRequired: false };
+  }
   if (actionId.startsWith("reasoner-remediate")) {
     return { risk: "medium", confirm: true, reasonRequired: true };
   }
@@ -70,6 +73,34 @@ function inferActionEnforcement(actionId: string): ActionEnforcement {
   if (kind === "mutate-policy") return { risk: "high", confirm: true, reasonRequired: true };
   if (kind === "resolve" || kind === "mute") return { risk: "medium", confirm: true, reasonRequired: true };
   return { risk: "low", confirm: false, reasonRequired: false };
+}
+
+function executableRollbackHint(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (!/^[a-z0-9-]+:[a-z0-9-]+(?::[^\s]+)*$/i.test(value)) return null;
+  return value;
+}
+
+function rollbackHintForActionId(actionId: string | null | undefined): string | null {
+  if (!actionId) return null;
+  const parts = actionId.split(":");
+  const [kind, targetType, targetId, suffix] = parts;
+  if (kind === "mutate-policy" && targetType === "model") {
+    if (suffix === "block") return `mutate-policy:model:${targetId}:unblock`;
+    if (suffix === "unblock") return `mutate-policy:model:${targetId}:block`;
+  }
+  if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
+    return "start-job:gateway:clear-route-override";
+  }
+  return null;
+}
+
+function latestRollbackHintForInsight(insightId: string): string | null {
+  const rows = readActionAudit({ targetType: "insight", resultStatus: "success", limit: 200 });
+  const row = rows
+    .filter((entry) => entry.actionKind === "insights.apply" && entry.targetId === insightId)
+    .sort((a, b) => b.ts - a.ts)[0];
+  return executableRollbackHint(row?.rollbackHint);
 }
 
 function safeBody(value: unknown): Record<string, unknown> {
@@ -92,6 +123,7 @@ export async function insightsListHandler(req: Request, url: URL): Promise<Respo
     ...insight,
     aiAnalysis: getAiAnalysis(insight.id),
     riskTier: riskTierFor(insight),
+    rollbackHint: insight.status === "applied" ? latestRollbackHintForInsight(insight.id) : null,
   }));
   return json(ok({ insights: withAi, openCount }));
 }
@@ -285,7 +317,7 @@ async function applyInsightCore(
     result: "insight applied",
     resultJson: { before, after, actionResult: execBody },
     evidence: before.evidenceRefs,
-    rollbackHint: "Open the audit page to inspect the action result and use the linked manual page to reverse the configuration if needed.",
+    rollbackHint: rollbackHintForActionId(before.actionDescriptorId),
   });
 
   try {
@@ -369,11 +401,19 @@ export async function insightsBulkApplyHandler(req: Request): Promise<Response> 
   const ids = Array.isArray(body.ids) ? body.ids.filter((v): v is string => typeof v === "string") : undefined;
   const reason = typeof body.reason === "string" ? body.reason.trim() : "";
   const confirmed = body.confirmed === true;
+  const mode = body.mode === "reviewSelected" ? "reviewSelected" : "autoOnly";
 
   const allOpen = listInsights("open");
+  const requested = allOpen.filter((insight) => {
+    if (ids && !ids.includes(insight.id)) return false;
+    if (domain && insight.domain !== domain) return false;
+    return true;
+  });
   const candidates = allOpen.filter((insight) => {
     if (!insight.actionDescriptorId) return false;
-    if (tierForAction(insight.actionDescriptorId) === "off") return false;
+    const tier = tierForAction(insight.actionDescriptorId);
+    if (tier === "off") return false;
+    if (mode === "autoOnly" && tier !== "auto") return false;
     if (ids && !ids.includes(insight.id)) return false;
     if (domain && insight.domain !== domain) return false;
     return true;
@@ -386,9 +426,24 @@ export async function insightsBulkApplyHandler(req: Request): Promise<Response> 
   const skipped: Array<{ id: string; title: string; reason: string }> = [];
   const failed: Array<{ id: string; title: string; reason: string }> = [];
 
+  for (const insight of requested) {
+    if (!insight.actionDescriptorId) {
+      skipped.push({ id: insight.id, title: insight.title, reason: "No one-click action is available." });
+      continue;
+    }
+    const tier = tierForAction(insight.actionDescriptorId);
+    if (tier === "off") {
+      skipped.push({ id: insight.id, title: insight.title, reason: "Auto-apply policy is off for this action." });
+      continue;
+    }
+    if (mode === "autoOnly" && tier !== "auto") {
+      skipped.push({ id: insight.id, title: insight.title, reason: "Skipped review-tier action in apply-safe mode." });
+    }
+  }
+
   for (const insight of candidates) {
     try {
-      const outcome = await applyInsightCore(insight.id, { reason: reason ?? "", confirmed: true }, actor, operatorToken);
+      const outcome = await applyInsightCore(insight.id, { reason, confirmed: confirmed || mode === "autoOnly" }, actor, operatorToken);
       if (outcome.status === "applied") {
         applied.push({ id: insight.id, title: insight.title });
       } else if (outcome.status === "approval") {
@@ -405,12 +460,87 @@ export async function insightsBulkApplyHandler(req: Request): Promise<Response> 
     }
   }
 
-  const message = `Applied ${applied.length} of ${candidates.length}. ${skipped.length} need approval, ${failed.length} failed.`;
+  const message = `Applied ${applied.length} safe finding${applied.length === 1 ? "" : "s"}. ${skipped.length} skipped, ${failed.length} failed.`;
   return json(ok({
     applied: applied.length,
     appliedIds: applied.map((a) => a.id),
     skipped,
     failed,
     message,
+  }));
+}
+
+export async function insightsBulkAcknowledgeHandler(req: Request): Promise<Response> {
+  const roleErr = requireInsightPermission(req, "insights.dismiss");
+  if (roleErr) return roleErr;
+
+  const body = safeBody(await req.json().catch(() => ({})));
+  const ids = Array.isArray(body.ids) ? Array.from(new Set(body.ids.filter((v): v is string => typeof v === "string"))) : [];
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (ids.length === 0) return plainError("ids are required", 400);
+
+  const openIds = new Set(listInsights("open").map((insight) => insight.id));
+  const targetIds = ids.filter((id) => openIds.has(id));
+  const acknowledged = acknowledgeInsights(targetIds, { actor: getUserId(req), reason });
+
+  writeActionAudit({
+    actor: getUserId(req),
+    actorSource: getCurrentTenantContext().source,
+    actionKind: "insights.bulk-ack",
+    targetType: "insights",
+    targetId: "bulk",
+    risk: "low",
+    reason,
+    request: { ids: targetIds },
+    resultStatus: "success",
+    result: `acknowledged ${acknowledged.length} insight(s)`,
+    resultJson: { acknowledgedIds: acknowledged.map((insight) => insight.id) },
+  });
+
+  return json(ok({
+    acknowledged: acknowledged.length,
+    acknowledgedIds: acknowledged.map((insight) => insight.id),
+    skippedIds: ids.filter((id) => !openIds.has(id)),
+    message: `Acknowledged ${acknowledged.length} finding${acknowledged.length === 1 ? "" : "s"}.`,
+  }));
+}
+
+export async function insightsBulkSnoozeHandler(req: Request): Promise<Response> {
+  const roleErr = requireInsightPermission(req, "insights.dismiss");
+  if (roleErr) return roleErr;
+
+  const body = safeBody(await req.json().catch(() => ({})));
+  const ids = Array.isArray(body.ids) ? Array.from(new Set(body.ids.filter((v): v is string => typeof v === "string"))) : [];
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const until = typeof body.until === "number" && Number.isFinite(body.until)
+    ? body.until
+    : Date.now() + 24 * 60 * 60_000;
+  if (ids.length === 0) return plainError("ids are required", 400);
+  if (until <= Date.now()) return plainError("until must be in the future", 400);
+
+  const openIds = new Set(listInsights("open").map((insight) => insight.id));
+  const targetIds = ids.filter((id) => openIds.has(id));
+  const snoozed = snoozeInsights(targetIds, until, { actor: getUserId(req), reason });
+
+  writeActionAudit({
+    actor: getUserId(req),
+    actorSource: getCurrentTenantContext().source,
+    actionKind: "insights.bulk-snooze",
+    targetType: "insights",
+    targetId: "bulk",
+    risk: "low",
+    reason,
+    request: { ids: targetIds, until },
+    resultStatus: "success",
+    result: `snoozed ${snoozed.length} insight(s)`,
+    resultJson: { snoozedIds: snoozed.map((insight) => insight.id), until },
+  });
+
+  return json(ok({
+    snoozed: snoozed.length,
+    snoozedIds: snoozed.map((insight) => insight.id),
+    skippedIds: ids.filter((id) => !openIds.has(id)),
+    until,
+    message: `Snoozed ${snoozed.length} finding${snoozed.length === 1 ? "" : "s"} until ${new Date(until).toLocaleString()}.`,
   }));
 }

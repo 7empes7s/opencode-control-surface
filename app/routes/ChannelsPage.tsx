@@ -312,7 +312,12 @@ export function ChannelsPage() {
   }
 
   if (channelsLoading && !channelsData) return <div className="loading-dim">loading...</div>;
-  if (channelsError && !channelsData) return <div className="loading-dim error">error: {channelsError}</div>;
+  if (channelsError && !channelsData) return (
+    <div className="loading-dim error">
+      Channel data did not load: {channelsError}
+      <button type="button" className="btn btn-sm btn-ghost" onClick={refreshChannels}>Retry</button>
+    </div>
+  );
 
   return (
     <div className="dash-page">

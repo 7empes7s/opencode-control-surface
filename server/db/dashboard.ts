@@ -976,6 +976,31 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON insights (tenant_id, source_key)
       WHERE source_key IS NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS insight_acknowledgements (
+      insight_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      acknowledged_at INTEGER NOT NULL,
+      acknowledged_by TEXT,
+      reason TEXT,
+      PRIMARY KEY (insight_id, tenant_id),
+      FOREIGN KEY (insight_id) REFERENCES insights(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_insight_ack_tenant_at
+      ON insight_acknowledgements (tenant_id, acknowledged_at);
+
+    CREATE TABLE IF NOT EXISTS insight_snoozes (
+      insight_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      snoozed_until INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      reason TEXT,
+      PRIMARY KEY (insight_id, tenant_id),
+      FOREIGN KEY (insight_id) REFERENCES insights(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_insight_snoozes_tenant_until
+      ON insight_snoozes (tenant_id, snoozed_until);
+
     CREATE TABLE IF NOT EXISTS ai_analysis (
       signature TEXT PRIMARY KEY,
       insight_id TEXT NOT NULL,

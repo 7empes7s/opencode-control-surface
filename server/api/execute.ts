@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
-import { setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
+import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
@@ -70,6 +70,20 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
     return "high";
   }
   return "low";
+}
+
+function rollbackHintForActionId(actionId: string): string | undefined {
+  const parsed = parseActionId(actionId);
+  if (!parsed) return undefined;
+  const { kind, targetType, targetId, suffix } = parsed;
+  if (kind === "mutate-policy" && targetType === "model") {
+    if (suffix === "block") return `mutate-policy:model:${targetId}:unblock`;
+    if (suffix === "unblock") return `mutate-policy:model:${targetId}:block`;
+  }
+  if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
+    return "start-job:gateway:clear-route-override";
+  }
+  return undefined;
 }
 
 async function routeAndExecute(
@@ -192,6 +206,15 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       ok: true,
       action: "start-job",
       message: `Routing gateway traffic to ${selected.logicalName} until ${routeOverride.expiresAt}.`,
+    };
+  }
+
+  if (kind === "start-job" && targetType === "gateway" && targetId === "clear-route-override") {
+    clearGatewayRouteOverrideForGatewayAdmin();
+    return {
+      ok: true,
+      action: "start-job",
+      message: "Gateway route override cleared.",
     };
   }
 
@@ -431,6 +454,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
     resultStatus: result.ok ? "success" : "failed",
     result: result.ok ? (result as { message?: string }).message : undefined,
     error: result.ok ? undefined : (result as { error: string }).error,
+    rollbackHint: result.ok ? rollbackHintForActionId(actionId) : undefined,
   });
 
   if (!result.ok) {

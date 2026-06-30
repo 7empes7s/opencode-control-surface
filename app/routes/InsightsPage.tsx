@@ -20,7 +20,11 @@ type AiAnalysis = {
   generatedAt: number;
 };
 
-type InsightWithAi = Insight & { aiAnalysis?: AiAnalysis | null; riskTier?: "auto" | "review" | "none" };
+type InsightWithAi = Insight & {
+  aiAnalysis?: AiAnalysis | null;
+  riskTier?: "auto" | "review" | "none";
+  rollbackHint?: string | null;
+};
 
 type InsightsPayload = {
   insights: InsightWithAi[];
@@ -756,6 +760,7 @@ export function InsightsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [bulkReasons, setBulkReasons] = useState<Record<string, string>>({});
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
 
   // Deep-link focus support: ?focus=<sourceKey or id>
@@ -860,11 +865,116 @@ export function InsightsPage() {
         domain,
         reason: (bulkReasons[domain] ?? "").trim(),
         confirmed: true,
+        mode: "autoOnly",
       });
       setMessage(result.data?.message ?? "Bulk apply finished.");
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Bulk apply could not be completed.");
+    } finally { setBusyId(null); }
+  }
+
+  const visibleOpenInsights = useMemo(() => {
+    return Object.values(grouped).flat().filter((insight) => insight.status === "open");
+  }, [grouped]);
+
+  const selectedOpenInsights = visibleOpenInsights.filter((insight) => selectedIds.has(insight.id));
+  const selectedAutoCount = selectedOpenInsights.filter((insight) => insight.riskTier === "auto").length;
+  const selectedReviewCount = selectedOpenInsights.filter((insight) => insight.riskTier === "review").length;
+
+  function toggleSelected(id: string, checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function selectAllVisible(checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const insight of visibleOpenInsights) {
+        if (checked) next.add(insight.id);
+        else next.delete(insight.id);
+      }
+      return next;
+    });
+  }
+
+  async function bulkAck() {
+    const ids = selectedOpenInsights.map((insight) => insight.id);
+    if (ids.length === 0) return;
+    setBusyId("bulk:ack");
+    setMessage(null);
+    try {
+      const result = await post("/api/insights/bulk-ack", {
+        ids,
+        reason: "Operator acknowledged selected findings",
+      });
+      setMessage(result.data?.message ?? "Selected findings were acknowledged.");
+      setSelectedIds(new Set());
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Bulk acknowledge could not be completed.");
+    } finally { setBusyId(null); }
+  }
+
+  async function bulkSnooze(hours: number) {
+    const ids = selectedOpenInsights.map((insight) => insight.id);
+    if (ids.length === 0) return;
+    setBusyId("bulk:snooze");
+    setMessage(null);
+    try {
+      const result = await post("/api/insights/bulk-snooze", {
+        ids,
+        until: Date.now() + hours * 60 * 60_000,
+        reason: `Operator snoozed selected findings for ${hours}h`,
+      });
+      setMessage(result.data?.message ?? "Selected findings were snoozed.");
+      setSelectedIds(new Set());
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Bulk snooze could not be completed.");
+    } finally { setBusyId(null); }
+  }
+
+  async function bulkApplySafe() {
+    const ids = selectedOpenInsights.map((insight) => insight.id);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Apply ${selectedAutoCount} auto-tier finding(s)? ${selectedReviewCount} review-tier finding(s) will be skipped.`)) return;
+    setBusyId("bulk:apply-safe");
+    setMessage(null);
+    try {
+      const result = await post("/api/insights/bulk-apply", {
+        ids,
+        reason: "Operator bulk-applied selected safe findings",
+        confirmed: true,
+        mode: "autoOnly",
+      });
+      setMessage(result.data?.message ?? "Bulk safe apply finished.");
+      setSelectedIds(new Set());
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Bulk safe apply could not be completed.");
+    } finally { setBusyId(null); }
+  }
+
+  async function revertInsight(insight: InsightWithAi) {
+    if (!insight.rollbackHint) return;
+    setBusyId(`revert:${insight.id}`);
+    setMessage(null);
+    try {
+      const result = await post("/api/actions/execute", {
+        actionId: insight.rollbackHint,
+        reason: `Operator reverted applied finding ${insight.id}`,
+        confirmed: true,
+        params: {},
+      });
+      setMessage(result.data?.message ?? "The applied finding was reverted and audited.");
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Revert could not be completed.");
     } finally { setBusyId(null); }
   }
 
@@ -993,7 +1103,34 @@ export function InsightsPage() {
       {activeTab === "inbox" && (
         <>
           {loading && !data && <div className="loading-panel">Loading insights from the inbox.</div>}
-          {error && !data && <div className="loading-panel error">The insights inbox did not load. Try refreshing the page.</div>}
+          {error && !data && <div className="loading-panel error">The insights inbox did not load: {error} <button type="button" className="btn" onClick={refresh}>Retry</button></div>}
+
+          {data && visibleOpenInsights.length > 0 && (
+            <div className="insights-filter-bar" style={{ marginBottom: 12 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, minHeight: 44 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedOpenInsights.length > 0 && selectedOpenInsights.length === visibleOpenInsights.length}
+                  onChange={(event) => selectAllVisible(event.target.checked)}
+                />
+                <span>{selectedOpenInsights.length} selected</span>
+              </label>
+              <span className="pill green">{selectedAutoCount} auto</span>
+              <span className="pill amber">{selectedReviewCount} review skipped by Apply safe</span>
+              <button type="button" className="btn" disabled={selectedOpenInsights.length === 0 || busyId === "bulk:ack"} onClick={bulkAck}>
+                <CheckCircle2 size={14} />
+                Ack
+              </button>
+              <button type="button" className="btn btn-ghost" disabled={selectedOpenInsights.length === 0 || busyId === "bulk:snooze"} onClick={() => bulkSnooze(24)}>
+                <ShieldCheck size={14} />
+                Snooze 24h
+              </button>
+              <button type="button" className="btn btn-primary" disabled={selectedAutoCount === 0 || busyId === "bulk:apply-safe"} onClick={bulkApplySafe}>
+                <CheckCircle2 size={14} />
+                Apply safe
+              </button>
+            </div>
+          )}
 
           {!loading && data && data.insights.length === 0 && (
             <div className="dash-section">
@@ -1008,7 +1145,7 @@ export function InsightsPage() {
           {DOMAIN_ORDER.map((domain) => {
             const insights = grouped[domain];
             if (insights.length === 0) return null;
-            const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open").length;
+            const actionableCount = insights.filter((i) => i.actionDescriptorId && i.status === "open" && i.riskTier === "auto").length;
             return (
               <section className="dash-section" key={domain}>
                 <div className="insight-group-title">
@@ -1026,7 +1163,7 @@ export function InsightsPage() {
                       className="btn"
                       disabled={actionableCount === 0 || busyId === `bulk:${domain}`}
                       onClick={() => applyGroup(domain)}
-                      title={actionableCount === 0 ? "No one-click actions in this group" : "Apply every actionable insight in this group"}
+                      title={actionableCount === 0 ? "No safe auto-tier actions in this group" : "Apply every safe auto-tier insight in this group"}
                     >
                       <CheckCircle2 size={14} />
                       Apply all safe ({actionableCount})
@@ -1047,6 +1184,17 @@ export function InsightsPage() {
                         <div className="insight-card-head">
                           <div>
                             <div className="insight-title-row">
+                              {insight.status === "open" && (
+                                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, minHeight: 44 }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedIds.has(insight.id)}
+                                    onChange={(event) => toggleSelected(insight.id, event.target.checked)}
+                                    aria-label={`Select ${insight.title}`}
+                                  />
+                                  <span className="dim" style={{ fontSize: 11 }}>select</span>
+                                </label>
+                              )}
                               <span className={`pill ${severityClass(insight.severity)}`}>{insight.severity}</span>
                               <span className="pill blue">{confidenceLabel(insight.confidence)}</span>
                               {insight.riskTier === "auto" && insight.status === "open" && (
@@ -1062,6 +1210,8 @@ export function InsightsPage() {
                                 <span className="pill green">{insight.riskTier === "auto" ? "Auto-applied ✓" : "Applied"}</span>
                               )}
                               {insight.status === "dismissed" && <span className="pill gray">Dismissed</span>}
+                              {insight.acknowledgedAt && <span className="pill blue">Acknowledged</span>}
+                              {insight.snoozedUntil && <span className="pill gray">Snoozed</span>}
                             </div>
                             <h2>{insight.title}</h2>
                           </div>
@@ -1103,44 +1253,64 @@ export function InsightsPage() {
                             </Link>
                           </div>
                         )}
-                        <div className="insight-reason-row">
-                          <input
-                            value={reasons[insight.id] ?? ""}
-                            onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
-                            placeholder="Reason for applying or dismissing"
-                            aria-label={`Reason for ${insight.title}`}
-                          />
-                        </div>
-                        <div className="insight-actions">
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={!canApply || busyId === insight.id}
-                            onClick={() => applyInsight(insight)}
-                            title={canApply ? "Apply this audited action" : "This action is disabled by policy or needs manual handling"}
-                          >
-                            <CheckCircle2 size={14} />
-                            Apply
-                          </button>
-                          <Link href={insight.manualPageHref} className="btn btn-ghost">
-                            <ExternalLink size={14} />
-                            Configure manually
-                          </Link>
-                          <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
-                            <XCircle size={14} />
-                            Dismiss
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            disabled={busyId === `ai:${insight.id}`}
-                            onClick={() => reanalyze(insight)}
-                            title="Ask the AI to re-analyse this finding now"
-                          >
-                            <Sparkles size={14} />
-                            {busyId === `ai:${insight.id}` ? "Analysing…" : "Re-analyze"}
-                          </button>
-                        </div>
+                        {insight.status === "open" ? (
+                          <>
+                            <div className="insight-reason-row">
+                              <input
+                                value={reasons[insight.id] ?? ""}
+                                onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
+                                placeholder="Reason for applying or dismissing"
+                                aria-label={`Reason for ${insight.title}`}
+                              />
+                            </div>
+                            <div className="insight-actions">
+                              <button
+                                type="button"
+                                className="btn"
+                                disabled={!canApply || busyId === insight.id}
+                                onClick={() => applyInsight(insight)}
+                                title={canApply ? "Apply this audited action" : "This action is disabled by policy or needs manual handling"}
+                              >
+                                <CheckCircle2 size={14} />
+                                Apply
+                              </button>
+                              <Link href={insight.manualPageHref} className="btn btn-ghost">
+                                <ExternalLink size={14} />
+                                Configure manually
+                              </Link>
+                              <button type="button" className="btn btn-ghost" disabled={busyId === insight.id} onClick={() => dismissInsight(insight)}>
+                                <XCircle size={14} />
+                                Dismiss
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                disabled={busyId === `ai:${insight.id}`}
+                                onClick={() => reanalyze(insight)}
+                                title="Ask the AI to re-analyse this finding now"
+                              >
+                                <Sparkles size={14} />
+                                {busyId === `ai:${insight.id}` ? "Analysing…" : "Re-analyze"}
+                              </button>
+                            </div>
+                          </>
+                        ) : insight.status === "applied" ? (
+                          <div className="insight-actions">
+                            {insight.rollbackHint ? (
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                disabled={busyId === `revert:${insight.id}`}
+                                onClick={() => revertInsight(insight)}
+                              >
+                                <RotateCcw size={14} />
+                                {busyId === `revert:${insight.id}` ? "Reverting…" : "Revert"}
+                              </button>
+                            ) : (
+                              <span className="pill gray">Not reversible</span>
+                            )}
+                          </div>
+                        ) : null}
                       </article>
                     );
                   })}

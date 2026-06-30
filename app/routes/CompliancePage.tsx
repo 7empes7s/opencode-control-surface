@@ -71,7 +71,7 @@ export function CompliancePage() {
 }
 
 function ReportsPanel() {
-  const { data: templates } = useAuthApi<ReportTemplate[]>("/api/reports/templates", 0);
+  const { data: templates, loading, error, refresh } = useAuthApi<ReportTemplate[]>("/api/reports/templates", 0);
   const { authStatus } = useAuthStatus();
   const [results, setResults] = useState<Record<string, Record<string, unknown>[]>>({});
   const [running, setRunning] = useState<string | null>(null);
@@ -88,7 +88,7 @@ function ReportsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           templateId,
-          params: { tenantId: "mimule", fromTs: Date.now() - 7 * 24 * 60 * 60 * 1000, toTs: Date.now() },
+          params: { fromTs: Date.now() - 7 * 24 * 60 * 60 * 1000, toTs: Date.now() },
         }),
       });
       const json = await res.json();
@@ -100,8 +100,11 @@ function ReportsPanel() {
     }
   };
 
-  if (!templates) {
+  if (loading && !templates) {
     return <div className="text-sm text-[var(--text-dim)]">Loading templates...</div>;
+  }
+  if (error && !templates) {
+    return <div className="loading-panel error">Report templates did not load: {error} <button className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button></div>;
   }
 
   return (
@@ -117,7 +120,13 @@ function ReportsPanel() {
         </div>
         <div className="section-card-body compliance-section-body">
           <div className="compliance-template-list">
-          {templates.map((t) => (
+          {(templates ?? []).length === 0 ? (
+            <div className="empty-state">
+              <FileText size={18} />
+              <strong>No report templates are registered.</strong>
+              <span>Templates appear here when the reporting catalog is loaded by the backend.</span>
+            </div>
+          ) : (templates ?? []).map((t) => (
             <div key={t.id} className="compliance-template-row">
               <div className="compliance-template-copy">
                 <div className="font-medium text-sm">{t.name}</div>
@@ -183,7 +192,6 @@ function AuditExportPanel() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tenantId: "mimule",
           fromTs: dateRange.from
             ? new Date(dateRange.from).getTime()
             : Date.now() - 7 * 24 * 60 * 60 * 1000,
@@ -284,7 +292,7 @@ function AuditExportPanel() {
 }
 
 function TenantSettingsPanel() {
-  const { data: settings, refresh } = useAuthApi<TenantSettings>("/api/tenant/settings", 0);
+  const { data: settings, loading, error, refresh } = useAuthApi<TenantSettings>("/api/tenant/settings", 0);
   const { authStatus } = useAuthStatus();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<Partial<TenantSettings>>({});
@@ -308,7 +316,9 @@ function TenantSettingsPanel() {
     }
   };
 
-  if (!settings) return <div className="text-sm text-[var(--text-dim)]">Loading...</div>;
+  if (loading && !settings) return <div className="text-sm text-[var(--text-dim)]">Loading...</div>;
+  if (error && !settings) return <div className="loading-panel error">Tenant settings did not load: {error} <button className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button></div>;
+  if (!settings) return <div className="empty-state"><Shield size={18} /><strong>No tenant settings returned.</strong><span>Tenant controls appear after the tenant settings table is initialized.</span></div>;
 
   return (
     <div className="space-y-4">
@@ -404,9 +414,9 @@ interface Soc2MappingResult {
 type ComplianceSortKey = "criteria" | "feature";
 
 function DpaPanel() {
-  const { data: summary } = useAuthApi<ComplianceSummary>("/api/compliance/summary", 0);
-  const { data: subproc } = useAuthApi<SubprocessorResult>("/api/compliance/subprocessors", 0);
-  const { data: mapping } = useAuthApi<Soc2MappingResult>("/api/compliance/soc2-mapping", 0);
+  const { data: summary, loading: summaryLoading, error: summaryError, refresh: refreshSummary } = useAuthApi<ComplianceSummary>("/api/compliance/summary", 0);
+  const { data: subproc, loading: subprocLoading, error: subprocError, refresh: refreshSubproc } = useAuthApi<SubprocessorResult>("/api/compliance/subprocessors", 0);
+  const { data: mapping, loading: mappingLoading, error: mappingError, refresh: refreshMapping } = useAuthApi<Soc2MappingResult>("/api/compliance/soc2-mapping", 0);
   const { authStatus } = useAuthStatus();
   const [customerName, setCustomerName] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -480,6 +490,16 @@ function DpaPanel() {
         </div>
       </div>
 
+      {(summaryError || subprocError || mappingError) && (
+        <div className="loading-panel error">
+          Compliance evidence did not load: {summaryError ?? subprocError ?? mappingError}
+          <button className="btn btn-sm btn-ghost" onClick={() => { refreshSummary(); refreshSubproc(); refreshMapping(); }}>Retry</button>
+        </div>
+      )}
+      {(summaryLoading || subprocLoading || mappingLoading) && !summary && !subproc && !mapping && (
+        <div className="loading-panel">Loading compliance evidence.</div>
+      )}
+
       <div className="section-card">
         <div className="section-card-header">
           <h2 className="text-sm font-medium text-[var(--text)] flex items-center gap-2">
@@ -487,11 +507,19 @@ function DpaPanel() {
           </h2>
         </div>
         <div className="section-card-body compliance-section-body">
+          {(subproc?.subprocessors ?? []).length === 0 ? (
+            <div className="empty-state">
+              <Users size={18} />
+              <strong>No subprocessors listed.</strong>
+              <span>Subprocessors appear here when the compliance template includes reviewed vendors.</span>
+            </div>
+          ) : (
           <ul className="text-xs space-y-1">
             {(subproc?.subprocessors ?? []).map((s: string) => (
               <li key={s} className="text-[var(--text-dim)]">{s}</li>
             ))}
           </ul>
+          )}
         </div>
       </div>
 

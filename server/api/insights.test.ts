@@ -201,9 +201,8 @@ describe("build-insight playbook routing + bulk apply", () => {
     expect(typeof data.message).toBe("string");
 
     const reported = [...data.appliedIds, ...data.skipped.map((s) => s.id), ...data.failed.map((f) => f.id)];
-    // The manual-only insight is filtered out as a non-candidate and must never
-    // appear in any bucket.
-    expect(reported).not.toContain("insight_build_d_manual_run");
+    // The manual-only insight is reported as skipped, not attempted.
+    expect(data.skipped.some((row) => row.id === "insight_build_d_manual_run" && row.reason.includes("No one-click action"))).toBe(true);
     // The actionable insight is a candidate and must be accounted for (it
     // applies successfully via the notify-operator playbook).
     expect(reported).toContain("insight_build_d_actionable_run");

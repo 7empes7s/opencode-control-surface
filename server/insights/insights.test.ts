@@ -15,6 +15,7 @@ let tempDir: string;
 let prevDb: string | undefined;
 let prevDbPath: string | undefined;
 let prevToken: string | undefined;
+let prevCooldownPath: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -22,9 +23,11 @@ beforeEach(() => {
   prevDb = process.env.DASHBOARD_DB;
   prevDbPath = process.env.DASHBOARD_DB_PATH;
   prevToken = process.env.OPERATOR_TOKEN;
+  prevCooldownPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
+  process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = join(tempDir, "model-cooldowns.json");
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   clearGatewayRouteOverrideForGatewayAdmin();
 });
@@ -38,6 +41,8 @@ afterEach(() => {
   else process.env.DASHBOARD_DB_PATH = prevDbPath;
   if (prevToken === undefined) delete process.env.OPERATOR_TOKEN;
   else process.env.OPERATOR_TOKEN = prevToken;
+  if (prevCooldownPath === undefined) delete process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
+  else process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = prevCooldownPath;
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -152,6 +157,77 @@ describe("insights API actions", () => {
     expect(audit.some((row) => row.actionKind === "insights.apply" && row.targetId === "insight-test-apply" && row.resultStatus === "success")).toBe(true);
   });
 
+  test("applied reversible findings expose a rollback action that can execute", async () => {
+    upsertInsight({
+      id: "insight-test-reversible",
+      domain: "cost",
+      severity: "medium",
+      title: "Route to healthier model",
+      plainSummary: "A healthier route is available.",
+      confidence: 0.8,
+      evidenceRefs: [],
+      actionDescriptorId: "start-job:gateway:route-healthiest",
+      manualPageHref: "/gateway",
+      createdAt: Date.now(),
+    });
+
+    const applyReq = apiReq("/api/insights/insight-test-reversible/apply", {
+      method: "POST",
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+      body: JSON.stringify({ confirmed: true, reason: "test reversible apply" }),
+    });
+    const applyRes = await handleApi(applyReq, new URL(applyReq.url));
+    expect(applyRes.status).toBe(200);
+
+    const listReq = apiReq("/api/insights?status=applied", {
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+    });
+    const listRes = await handleApi(listReq, new URL(listReq.url));
+    expect(listRes.status).toBe(200);
+    const listBody = await listRes.json() as { data: { insights: Array<{ id: string; rollbackHint: string | null }> } };
+    const applied = listBody.data.insights.find((insight) => insight.id === "insight-test-reversible");
+    expect(applied?.rollbackHint).toBe("start-job:gateway:clear-route-override");
+
+    const revertReq = apiReq("/api/actions/execute", {
+      method: "POST",
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+      body: JSON.stringify({
+        actionId: applied?.rollbackHint,
+        confirmed: true,
+        reason: "test revert",
+        params: {},
+      }),
+    });
+    const revertRes = await handleApi(revertReq, new URL(revertReq.url));
+    expect(revertRes.status).toBe(200);
+    const audit = readActionAudit({ actionKind: "start-job.gateway" });
+    expect(audit.some((row) => row.actionId === "start-job:gateway:clear-route-override" && row.resultStatus === "success")).toBe(true);
+  });
+
+  test("applied irreversible findings do not expose rollback", async () => {
+    upsertInsight({
+      id: "insight-test-irreversible",
+      domain: "data",
+      severity: "low",
+      title: "Manual data review",
+      plainSummary: "A manual data review was completed.",
+      confidence: 0.8,
+      evidenceRefs: [],
+      actionDescriptorId: null,
+      manualPageHref: "/insights",
+      status: "applied",
+      createdAt: Date.now(),
+    });
+    const listReq = apiReq("/api/insights?status=applied", {
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+    });
+    const listRes = await handleApi(listReq, new URL(listReq.url));
+    expect(listRes.status).toBe(200);
+    const listBody = await listRes.json() as { data: { insights: Array<{ id: string; rollbackHint: string | null }> } };
+    const applied = listBody.data.insights.find((insight) => insight.id === "insight-test-irreversible");
+    expect(applied?.rollbackHint).toBeNull();
+  });
+
   test("dismiss requires a reason, writes audit, and marks dismissed", async () => {
     upsertInsight({
       id: "insight-test-dismiss",
@@ -177,6 +253,131 @@ describe("insights API actions", () => {
     expect(getInsight("insight-test-dismiss")?.status).toBe("dismissed");
     const audit = readActionAudit({ targetType: "insight" });
     expect(audit.some((row) => row.actionKind === "insights.dismiss" && row.reason === "accepted for the demo")).toBe(true);
+  });
+
+  test("bulk acknowledge records acknowledgement metadata and audit", async () => {
+    for (const id of ["insight-test-ack-1", "insight-test-ack-2"]) {
+      upsertInsight({
+        id,
+        domain: "ops",
+        severity: "low",
+        title: `Acknowledge ${id}`,
+        plainSummary: "Operator should acknowledge this finding.",
+        confidence: 0.7,
+        evidenceRefs: [],
+        actionDescriptorId: null,
+        manualPageHref: "/insights",
+        createdAt: Date.now(),
+      });
+    }
+
+    const req = apiReq("/api/insights/bulk-ack", {
+      method: "POST",
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+      body: JSON.stringify({ ids: ["insight-test-ack-1", "insight-test-ack-2"], reason: "triaged together" }),
+    });
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { acknowledged: number; acknowledgedIds: string[] } };
+    expect(body.data.acknowledged).toBe(2);
+    expect(getInsight("insight-test-ack-1")?.acknowledgedAt).toBeTruthy();
+    const audit = readActionAudit({ actionKind: "insights.bulk-ack" });
+    expect(audit.some((row) => row.resultStatus === "success" && row.reason === "triaged together")).toBe(true);
+  });
+
+  test("bulk snooze hides open findings until expiry and writes audit", async () => {
+    upsertInsight({
+      id: "insight-test-snooze",
+      domain: "ops",
+      severity: "medium",
+      title: "Snooze me",
+      plainSummary: "This finding can wait.",
+      confidence: 0.7,
+      evidenceRefs: [],
+      actionDescriptorId: null,
+      manualPageHref: "/insights",
+      createdAt: Date.now(),
+    });
+
+    const req = apiReq("/api/insights/bulk-snooze", {
+      method: "POST",
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+      body: JSON.stringify({ ids: ["insight-test-snooze"], until: Date.now() + 60_000, reason: "quiet window" }),
+    });
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    expect(listInsights("open").some((insight) => insight.id === "insight-test-snooze")).toBe(false);
+    expect(getInsight("insight-test-snooze")?.snoozedUntil).toBeTruthy();
+    const audit = readActionAudit({ actionKind: "insights.bulk-snooze" });
+    expect(audit.some((row) => row.resultStatus === "success" && row.reason === "quiet window")).toBe(true);
+  });
+
+  test("bulk apply-safe applies auto-tier findings and skips review-tier findings", async () => {
+    upsertInsight({
+      id: "insight-test-bulk-auto",
+      domain: "ops",
+      severity: "low",
+      title: "Clear cooldown",
+      plainSummary: "A model cooldown expired.",
+      confidence: 0.9,
+      evidenceRefs: [],
+      actionDescriptorId: "mutate-policy:model:test-model:cooldown-clear",
+      manualPageHref: "/models",
+      createdAt: Date.now(),
+    });
+    upsertInsight({
+      id: "insight-test-bulk-review",
+      domain: "security",
+      severity: "high",
+      title: "Set budget",
+      plainSummary: "A budget cap needs review.",
+      confidence: 0.9,
+      evidenceRefs: [],
+      actionDescriptorId: "mutate-policy:budget:global:set-cap",
+      manualPageHref: "/governance",
+      createdAt: Date.now(),
+    });
+
+    const req = apiReq("/api/insights/bulk-apply", {
+      method: "POST",
+      headers: { "x-operator-token": "test-token", "x-user-id": "owner-user" },
+      body: JSON.stringify({
+        ids: ["insight-test-bulk-auto", "insight-test-bulk-review"],
+        reason: "apply only safe",
+        confirmed: true,
+        mode: "autoOnly",
+      }),
+    });
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { applied: number; skipped: Array<{ id: string; reason: string }> } };
+    expect(body.data.applied).toBe(1);
+    expect(body.data.skipped.some((row) => row.id === "insight-test-bulk-review" && row.reason.includes("review-tier"))).toBe(true);
+    expect(getInsight("insight-test-bulk-auto")?.status).toBe("applied");
+    expect(getInsight("insight-test-bulk-review")?.status).toBe("open");
+  });
+
+  test("bulk mutation without an operator token fails closed", async () => {
+    upsertInsight({
+      id: "insight-test-no-token",
+      domain: "ops",
+      severity: "low",
+      title: "No token",
+      plainSummary: "Mutation should fail closed.",
+      confidence: 0.7,
+      evidenceRefs: [],
+      actionDescriptorId: null,
+      manualPageHref: "/insights",
+      createdAt: Date.now(),
+    });
+    delete process.env.OPERATOR_TOKEN;
+    const req = apiReq("/api/insights/bulk-ack", {
+      method: "POST",
+      body: JSON.stringify({ ids: ["insight-test-no-token"] }),
+    });
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(401);
+    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("auditor can view insights but cannot apply them", async () => {

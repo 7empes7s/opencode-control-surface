@@ -147,7 +147,7 @@ export function ReportsPage() {
       const response = await authFetch("/api/reports/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId, params: { tenantId: "mimule", fromTs, toTs } }),
+        body: JSON.stringify({ templateId, params: { fromTs, toTs } }),
       });
       const json = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(json.error || `HTTP ${response.status}`);
@@ -272,7 +272,7 @@ export function ReportsPage() {
       {!isAuthenticated && <div className="loading-panel error">Authentication is required to generate reports.</div>}
       {message && <div className="loading-panel">{message}</div>}
       {loading && !data && <div className="loading-panel">Loading report archive.</div>}
-      {error && !data && <div className="loading-panel error">Reports did not load: {error}</div>}
+      {error && !data && <div className="loading-panel error">Reports did not load: {error} <button type="button" className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button></div>}
 
       {summary.length > 0 && (
         <section className="dash-section">

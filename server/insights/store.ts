@@ -19,6 +19,8 @@ type InsightRow = {
   resolved_at: number | null;
   resolution: string | null;
   source_key: string | null;
+  acknowledged_at: number | null;
+  snoozed_until: number | null;
 };
 
 export const SEVERITY_RANK: Record<InsightSeverity, number> = {
@@ -52,6 +54,8 @@ function mapRow(row: InsightRow): Insight {
     resolvedAt: row.resolved_at,
     resolution: row.resolution,
     sourceKey: row.source_key,
+    acknowledgedAt: row.acknowledged_at,
+    snoozedUntil: row.snoozed_until,
   };
 }
 
@@ -61,17 +65,43 @@ export function listInsights(status?: InsightStatus | "all"): Insight[] {
 
   const tenant = whereTenant();
   const params: Array<string | number> = [...tenant.params];
+  const now = Date.now();
   let sql = `
     SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
            action_descriptor_id, manual_page_href, status, tenant_id, created_at,
-           resolved_at, resolution, source_key
+           resolved_at, resolution, source_key,
+           (
+             SELECT MAX(acknowledged_at)
+             FROM insight_acknowledgements ack
+             WHERE ack.insight_id = insights.id AND ack.tenant_id = insights.tenant_id
+           ) AS acknowledged_at,
+           (
+             SELECT MAX(snoozed_until)
+             FROM insight_snoozes snooze
+             WHERE snooze.insight_id = insights.id
+               AND snooze.tenant_id = insights.tenant_id
+               AND snooze.snoozed_until > ?
+           ) AS snoozed_until
     FROM insights
     WHERE 1=1 ${tenant.clause}
   `;
+  params.unshift(now);
 
   if (status && status !== "all") {
     sql += " AND status = ?";
     params.push(status);
+    if (status === "open") {
+      sql += `
+        AND NOT EXISTS (
+          SELECT 1
+          FROM insight_snoozes active_snooze
+          WHERE active_snooze.insight_id = insights.id
+            AND active_snooze.tenant_id = insights.tenant_id
+            AND active_snooze.snoozed_until > ?
+        )
+      `;
+      params.push(now);
+    }
   }
 
   sql += " ORDER BY created_at DESC";
@@ -87,10 +117,22 @@ export function getInsight(id: string): Insight | null {
   const row = db.query(`
     SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
            action_descriptor_id, manual_page_href, status, tenant_id, created_at,
-           resolved_at, resolution, source_key
+           resolved_at, resolution, source_key,
+           (
+             SELECT MAX(acknowledged_at)
+             FROM insight_acknowledgements ack
+             WHERE ack.insight_id = insights.id AND ack.tenant_id = insights.tenant_id
+           ) AS acknowledged_at,
+           (
+             SELECT MAX(snoozed_until)
+             FROM insight_snoozes snooze
+             WHERE snooze.insight_id = insights.id
+               AND snooze.tenant_id = insights.tenant_id
+               AND snooze.snoozed_until > ?
+           ) AS snoozed_until
     FROM insights
     WHERE id = ? ${tenant.clause}
-  `).get(id, ...tenant.params) as InsightRow | null;
+  `).get(Date.now(), id, ...tenant.params) as InsightRow | null;
   return row ? mapRow(row) : null;
 }
 
@@ -167,6 +209,89 @@ export function updateInsightStatus(id: string, status: InsightStatus): Insight 
   const tenant = whereTenant();
   db.query(`UPDATE insights SET status = ? WHERE id = ? ${tenant.clause}`).run(status, id, ...tenant.params);
   return getInsight(id);
+}
+
+export function acknowledgeInsights(ids: string[], input: { actor?: string; reason?: string; at?: number } = {}): Insight[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+  const tenant = whereTenant();
+  const tenantId = getCurrentTenantContext().tenantId;
+  const at = input.at ?? Date.now();
+  const seen = Array.from(new Set(ids)).filter(Boolean);
+  for (const id of seen) {
+    db.query(`
+      INSERT INTO insight_acknowledgements (insight_id, tenant_id, acknowledged_at, acknowledged_by, reason)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(insight_id, tenant_id) DO UPDATE SET
+        acknowledged_at = excluded.acknowledged_at,
+        acknowledged_by = excluded.acknowledged_by,
+        reason = excluded.reason
+    `).run(id, tenantId, at, input.actor ?? null, input.reason ?? null);
+  }
+  if (seen.length === 0) return [];
+  const placeholders = seen.map(() => "?").join(",");
+  const rows = db.query(`
+    SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+           action_descriptor_id, manual_page_href, status, tenant_id, created_at,
+           resolved_at, resolution, source_key,
+           (
+             SELECT MAX(acknowledged_at)
+             FROM insight_acknowledgements ack
+             WHERE ack.insight_id = insights.id AND ack.tenant_id = insights.tenant_id
+           ) AS acknowledged_at,
+           (
+             SELECT MAX(snoozed_until)
+             FROM insight_snoozes snooze
+             WHERE snooze.insight_id = insights.id
+               AND snooze.tenant_id = insights.tenant_id
+               AND snooze.snoozed_until > ?
+           ) AS snoozed_until
+    FROM insights
+    WHERE id IN (${placeholders}) ${tenant.clause}
+  `).all(Date.now(), ...seen, ...tenant.params) as InsightRow[];
+  return rows.map(mapRow);
+}
+
+export function snoozeInsights(ids: string[], until: number, input: { actor?: string; reason?: string; at?: number } = {}): Insight[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+  const tenant = whereTenant();
+  const tenantId = getCurrentTenantContext().tenantId;
+  const at = input.at ?? Date.now();
+  const seen = Array.from(new Set(ids)).filter(Boolean);
+  for (const id of seen) {
+    db.query(`
+      INSERT INTO insight_snoozes (insight_id, tenant_id, snoozed_until, created_at, created_by, reason)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(insight_id, tenant_id) DO UPDATE SET
+        snoozed_until = excluded.snoozed_until,
+        created_at = excluded.created_at,
+        created_by = excluded.created_by,
+        reason = excluded.reason
+    `).run(id, tenantId, until, at, input.actor ?? null, input.reason ?? null);
+  }
+  if (seen.length === 0) return [];
+  const placeholders = seen.map(() => "?").join(",");
+  const rows = db.query(`
+    SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+           action_descriptor_id, manual_page_href, status, tenant_id, created_at,
+           resolved_at, resolution, source_key,
+           (
+             SELECT MAX(acknowledged_at)
+             FROM insight_acknowledgements ack
+             WHERE ack.insight_id = insights.id AND ack.tenant_id = insights.tenant_id
+           ) AS acknowledged_at,
+           (
+             SELECT MAX(snoozed_until)
+             FROM insight_snoozes snooze
+             WHERE snooze.insight_id = insights.id
+               AND snooze.tenant_id = insights.tenant_id
+               AND snooze.snoozed_until > ?
+           ) AS snoozed_until
+    FROM insights
+    WHERE id IN (${placeholders}) ${tenant.clause}
+  `).all(Date.now(), ...seen, ...tenant.params) as InsightRow[];
+  return rows.map(mapRow);
 }
 
 export function countOpenInsights(): number {

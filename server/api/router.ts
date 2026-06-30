@@ -194,6 +194,8 @@ import {
   insightsScanHandler,
   insightsReanalyzeHandler,
   insightsBulkApplyHandler,
+  insightsBulkAcknowledgeHandler,
+  insightsBulkSnoozeHandler,
   insightsAutoApplyPreviewHandler,
   requireInsightPermission,
 } from "./insights.ts";
@@ -540,6 +542,16 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return insightsBulkApplyHandler(req);
   }
+  if (method === "POST" && pathname === "/api/insights/bulk-ack") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return insightsBulkAcknowledgeHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/insights/bulk-snooze") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return insightsBulkSnoozeHandler(req);
+  }
   if (method === "GET" && pathname === "/api/insights/auto-apply/preview") {
     if (!checkToken(req)) return unauthorized();
     return insightsAutoApplyPreviewHandler(req);
@@ -561,12 +573,12 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/governance/audit") return governanceAuditHandler(req);
   if (method === "POST" && pathname === "/api/audit/export") {
     if (!checkToken(req)) return unauthorized();
-    return auditExportHandler(url, method, await req.clone().json().catch(() => ({})));
+    return auditExportHandler(url, method, await req.clone().json().catch(() => ({})), req);
   }
   const auditExportMatch = pathname.match(/^\/api\/audit\/export\/([^/]+)(\/download|\/verify)?$/);
   if (auditExportMatch) {
     if (!checkToken(req)) return unauthorized();
-    return auditExportHandler(url, method, await req.clone().json().catch(() => ({})));
+    return auditExportHandler(url, method, await req.clone().json().catch(() => ({})), req);
   }
   if (method === "GET" && pathname === "/api/jobs") {
     if (!checkToken(req)) return unauthorized();

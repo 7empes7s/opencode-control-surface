@@ -96,6 +96,19 @@ function emitFlappingInsight(insight: Insight, failures: number): void {
   });
 }
 
+function rollbackHintForActionId(actionId: string | null | undefined): string | undefined {
+  if (!actionId) return undefined;
+  const [kind, targetType, targetId, suffix] = actionId.split(":");
+  if (kind === "mutate-policy" && targetType === "model") {
+    if (suffix === "block") return `mutate-policy:model:${targetId}:unblock`;
+    if (suffix === "unblock") return `mutate-policy:model:${targetId}:block`;
+  }
+  if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
+    return "start-job:gateway:clear-route-override";
+  }
+  return undefined;
+}
+
 function aiConfidenceGate(insight: Insight, threshold: number): { ok: boolean; confidence: number | null; reason: string } {
   const analysis = getAiAnalysisBySignature(signatureFor(insight));
   if (!analysis) {
@@ -236,7 +249,7 @@ async function runAutoApply(insight: Insight, token: string): Promise<boolean> {
       },
       resultStatus: ok ? "success" : "failed",
       result: ok ? "auto-applied safe remediation" : (body.error ?? "auto-apply failed"),
-      rollbackHint: undefined,
+      rollbackHint: rollbackHintForActionId(insight.actionDescriptorId),
     });
 
     if (ok) updateInsightStatus(insight.id, "applied");

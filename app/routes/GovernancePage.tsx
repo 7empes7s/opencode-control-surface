@@ -67,10 +67,10 @@ export function GovernancePage() {
   const [pendingApprovalRunId, setPendingApprovalRunId] = useState<string | null>(null);
   const [pendingApprovalDecision, setPendingApprovalDecision] = useState<"approve" | "reject" | null>(null);
 
-  const { data: policiesData, refresh: reloadPolicies } = useAuthApi<{ policies: PolicyInfo[]; decisionCount: number }>("/api/governance/policies", 30_000);
-  const { data: secretsData, refresh: reloadSecrets } = useAuthApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
-  const { data: approvalsData, refresh: reloadApprovals } = useAuthApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
-  const { data: budgetsData, refresh: reloadBudgets } = useAuthApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
+  const { data: policiesData, loading: policiesLoading, error: policiesError, refresh: reloadPolicies } = useAuthApi<{ policies: PolicyInfo[]; decisionCount: number }>("/api/governance/policies", 30_000);
+  const { data: secretsData, loading: secretsLoading, error: secretsError, refresh: reloadSecrets } = useAuthApi<{ secrets: SecretInfo[] }>("/api/governance/secrets", 30_000);
+  const { data: approvalsData, loading: approvalsLoading, error: approvalsError, refresh: reloadApprovals } = useAuthApi<{ pending: ApprovalInfo[]; completed: ApprovalInfo[] }>("/api/governance/approvals", 30_000);
+  const { data: budgetsData, loading: budgetsLoading, error: budgetsError, refresh: reloadBudgets } = useAuthApi<{ budgets: BudgetInfo[]; spending: BudgetSpending }>("/api/governance/budgets", 30_000);
 
   const policiesCtrl = useTableControls<PolicyInfo, "name" | "version" | "ruleCount">({
     rows: policiesData?.policies ?? [],
@@ -195,7 +195,7 @@ export function GovernancePage() {
       <div className="page-header">
         <div className="page-title">
           <Shield size={20} />
-          <h1>Governance</h1>
+          <h1>Access &amp; Policy</h1>
         </div>
       </div>
 
@@ -215,10 +215,12 @@ export function GovernancePage() {
               <RefreshCw size={14} /> Reload
             </button>
           </div>
-          {!policiesData ? (
+          {policiesError && !policiesData ? (
+            <div className="loading-dim error">Policies did not load: {policiesError} <button className="btn-ghost btn-sm" onClick={reloadPolicies}>Retry</button></div>
+          ) : policiesLoading && !policiesData ? (
             <div className="loading-dim">loading…</div>
-          ) : policiesData.policies.length === 0 ? (
-            <p className="text-muted">No policies loaded.</p>
+          ) : !policiesData || policiesData.policies.length === 0 ? (
+            <p className="text-muted">No policies loaded. Reload when local YAML/JSON policy documents are available.</p>
           ) : (
             <>
               <TableControls {...policiesCtrl.controlsProps} searchPlaceholder="Filter policies..." />
@@ -292,10 +294,12 @@ export function GovernancePage() {
               </div>
             </div>
           ) : null}
-          {!secretsData ? (
+          {secretsError && !secretsData ? (
+            <div className="loading-dim error">Secrets did not load: {secretsError} <button className="btn-ghost btn-sm" onClick={reloadSecrets}>Retry</button></div>
+          ) : secretsLoading && !secretsData ? (
             <div className="loading-dim">loading…</div>
-          ) : secretsData.secrets.length === 0 ? (
-            <p className="text-muted">No secrets stored.</p>
+          ) : !secretsData || secretsData.secrets.length === 0 ? (
+            <p className="text-muted">No secrets stored. Add a managed secret when an integration needs vaulted credentials.</p>
           ) : (
             <>
               <TableControls {...secretsCtrl.controlsProps} searchPlaceholder="Filter secrets..." />
@@ -350,8 +354,12 @@ export function GovernancePage() {
           <div className="section-card-header">
             <h2>Approval Gates</h2>
           </div>
-          {!approvalsData ? (
+          {approvalsError && !approvalsData ? (
+            <div className="loading-dim error">Approvals did not load: {approvalsError} <button className="btn-ghost btn-sm" onClick={reloadApprovals}>Retry</button></div>
+          ) : approvalsLoading && !approvalsData ? (
             <div className="loading-dim">loading…</div>
+          ) : !approvalsData ? (
+            <p className="text-muted">No approval data returned yet. Pending approval gates appear here when a workflow or high-risk action needs review.</p>
           ) : (
             <>
               {approvalsData.pending.length === 0 ? <p className="text-muted">No pending approvals.</p> : null}
@@ -412,8 +420,12 @@ export function GovernancePage() {
               </div>
             </div>
           ) : null}
-          {!budgetsData ? (
+          {budgetsError && !budgetsData ? (
+            <div className="loading-dim error">Budgets did not load: {budgetsError} <button className="btn-ghost btn-sm" onClick={reloadBudgets}>Retry</button></div>
+          ) : budgetsLoading && !budgetsData ? (
             <div className="loading-dim">loading…</div>
+          ) : !budgetsData ? (
+            <p className="text-muted">No budget data returned yet. Set a global cap once gateway spend should be governed.</p>
           ) : (
             <>
               <div className="budget-summary-cards">
