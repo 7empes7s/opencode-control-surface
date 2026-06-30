@@ -129,4 +129,44 @@ describe("edge scanner: runEdgeScan integration", () => {
     expect(getInsight("insight_edge_tunnel_down")?.status).toBe("resolved");
     expect(getInsight("insight_cost_vast_balance_low")?.status).toBe("resolved");
   });
+
+  test("own control surface: public probe fails but localhost fallback succeeds → no unreachable finding (hairpin NAT)", async () => {
+    const ownTarget: EdgeTarget = {
+      url: "https://control.techinsiderbytes.com/api/public-status",
+      host: "control.techinsiderbytes.com",
+      scheme: "https",
+    };
+    setEdgeProbeOverridesForTest({
+      discoverTargets: () => [ownTarget],
+      httpProbe: async (target) => (target.host === "127.0.0.1"
+        ? { ok: true, status: 200 }
+        : { ok: false, status: null, error: "fetch failed" }),
+      dnsProbe: async () => ({ ok: true, address: "203.0.113.10" }),
+      tlsProbe: async () => ({ daysRemaining: 90, validTo: "Sep 27 00:00:00 2026 GMT" }),
+      tunnelProbe: () => ({ checked: false, units: [], downUnits: [] }),
+      vastRunway: async () => null,
+    });
+
+    const result = await runEdgeScan();
+    expect(result.findings.some((f) => f.sourceKey === "edge:site-unreachable:control.techinsiderbytes.com")).toBe(false);
+  });
+
+  test("own control surface: public AND localhost probes fail → unreachable finding still emitted", async () => {
+    const ownTarget: EdgeTarget = {
+      url: "https://control.techinsiderbytes.com/api/public-status",
+      host: "control.techinsiderbytes.com",
+      scheme: "https",
+    };
+    setEdgeProbeOverridesForTest({
+      discoverTargets: () => [ownTarget],
+      httpProbe: async () => ({ ok: false, status: null, error: "fetch failed" }),
+      dnsProbe: async () => ({ ok: true, address: "203.0.113.10" }),
+      tlsProbe: async () => ({ daysRemaining: 90, validTo: "Sep 27 00:00:00 2026 GMT" }),
+      tunnelProbe: () => ({ checked: false, units: [], downUnits: [] }),
+      vastRunway: async () => null,
+    });
+
+    const result = await runEdgeScan();
+    expect(result.findings.some((f) => f.sourceKey === "edge:site-unreachable:control.techinsiderbytes.com")).toBe(true);
+  });
 });

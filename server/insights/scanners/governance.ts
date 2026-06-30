@@ -60,6 +60,9 @@ let governanceProbeOverrides: GovernanceProbeOverrides | null = null;
 
 const DEFAULT_SENTINEL_HEALTH_PATH = "/var/lib/mimule/product-health.json";
 const SLA_BREACH_MS = 4 * 60 * 60 * 1000;
+// An incident must also still be recently active to count as a live SLA breach —
+// otherwise abandoned, years-old incidents would dominate the score forever.
+const SLA_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 
 function evidence(label: string, kind: EvidenceRef["kind"], ref: string): EvidenceRef {
   return { label, kind, ref, redacted: true };
@@ -217,13 +220,14 @@ export function readSlaIncidents(now = Date.now()): SlaIncident[] {
   if (!db || !hasTable("reasoner_incidents")) return [];
   try {
     const rows = db.query(`
-      SELECT id, title, first_seen, occurrence_count
+      SELECT id, title, first_seen, last_seen, occurrence_count
       FROM reasoner_incidents
       WHERE status = 'open'
         AND first_seen <= ?
+        AND last_seen >= ?
       ORDER BY first_seen ASC
       LIMIT 20
-    `).all(now - SLA_BREACH_MS) as Array<{ id: string; title: string; first_seen: number; occurrence_count: number }>;
+    `).all(now - SLA_BREACH_MS, now - SLA_RECENT_MS) as Array<{ id: string; title: string; first_seen: number; last_seen: number; occurrence_count: number }>;
     return rows.map((row) => ({
       id: row.id,
       title: row.title,

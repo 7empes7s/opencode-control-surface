@@ -89,9 +89,9 @@ function neutralOpsOverrides() {
 }
 
 describe("ops scanner: pure mapping", () => {
-  test("service down emits a high ops finding; critical service is critical", () => {
+  test("a failed unit flags (high, or critical for a critical service)", () => {
     const pills: ServicePill[] = [
-      { name: "goblin_game", status: "inactive" },
+      { name: "goblin_game", status: "failed" },
       { name: "litellm", status: "failed" },
       { name: "newsbites", status: "active" },
     ];
@@ -106,6 +106,21 @@ describe("ops scanner: pure mapping", () => {
 
     const litellm = out.find((f) => f.sourceKey === "ops:service-down:litellm")!;
     expect(litellm.severity).toBe("critical");
+  });
+
+  test("a non-critical inactive unit does NOT flag (normal resting state for oneshot/triggered units)", () => {
+    const out = mapServiceFindings(
+      [{ name: "mimule-orchestrator", status: "inactive" }, { name: "mimule-overseer", status: "inactive" }],
+      NOW,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  test("a critical service that is inactive still flags as critical", () => {
+    const out = mapServiceFindings([{ name: "litellm", status: "inactive" }], NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceKey).toBe("ops:service-down:litellm");
+    expect(out[0].severity).toBe("critical");
   });
 
   test("all services healthy emits nothing", () => {

@@ -77,6 +77,19 @@ export function setEdgeProbeOverridesForTest(overrides: EdgeProbeOverrides | nul
   edgeProbeOverrides = overrides;
 }
 
+// This box often cannot reach its own public hostname through Cloudflare
+// (hairpin NAT) even when the service is genuinely up — so before flagging
+// our own control surface as unreachable, confirm via a direct localhost probe.
+function isOwnControlSurfaceTarget(target: EdgeTarget): boolean {
+  const ownTarget = normalizeTarget(process.env.CONTROL_STATUS_URL || DEFAULT_CONTROL_STATUS_URL);
+  return !!ownTarget && target.host === ownTarget.host;
+}
+
+function localFallbackTarget(): EdgeTarget {
+  const port = process.env.PORT || "3000";
+  return { url: `http://127.0.0.1:${port}/api/public-status`, host: "127.0.0.1", scheme: "http" };
+}
+
 function normalizeTarget(raw: string): EdgeTarget | null {
   try {
     const url = new URL(raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`);
@@ -356,6 +369,11 @@ export async function runEdgeScan(): Promise<ScanResult> {
       const previousOk = latestEdgeHttpWasOk(target.host);
       const result = await httpProbe(target);
       sampleEdge(`${target.host}.http`, { ok: result.ok, status: result.status, url: target.url });
+      if (!result.ok && isOwnControlSurfaceTarget(target)) {
+        const local = await httpProbe(localFallbackTarget());
+        sampleEdge(`${target.host}.http-local-fallback`, { ok: local.ok, status: local.status });
+        if (local.ok) return [];
+      }
       return mapHttpFinding(target, result, scannedAt, previousOk);
     });
     await collect(async () => {

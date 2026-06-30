@@ -143,8 +143,8 @@ export function getStuckCooldowns(now = Date.now()): StuckCooldown[] {
 export function mapServiceFindings(pills: ServicePill[], now: number): InsightInput[] {
   const out: InsightInput[] = [];
   for (const pill of pills) {
-    if (pill.status !== "failed" && pill.status !== "inactive") continue;
     const critical = CRITICAL_SERVICES.has(pill.name);
+    if (pill.status !== "failed" && !(pill.status === "inactive" && critical)) continue;
     out.push({
       id: `insight_ops_service_down_${pill.name}`,
       sourceKey: `ops:service-down:${pill.name}`,

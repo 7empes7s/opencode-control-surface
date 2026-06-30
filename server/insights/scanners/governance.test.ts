@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeDashboardDb, initDashboardDb } from "../../db/dashboard.ts";
+import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../../db/dashboard.ts";
 import { getInsight } from "../store.ts";
 import {
   mapComplianceFindings,
@@ -10,6 +10,7 @@ import {
   mapSecurityPostureFindings,
   mapSlaBreachFindings,
   mapSuspiciousActivityFindings,
+  readSlaIncidents,
   readStaleFeatureFlagFindings,
   runGovernanceScan,
   setGovernanceProbeOverridesForTest,
@@ -129,5 +130,40 @@ describe("governance scanner: runGovernanceScan integration", () => {
     expect(getInsight("insight_ops_sla_breach_inc_1")?.status).toBe("resolved");
     expect(getInsight("insight_security_compliance_module_not_configured")?.status).toBe("resolved");
     expect(getInsight("insight_security_posture_regression")?.status).toBe("resolved");
+  });
+
+  test("readSlaIncidents ignores abandoned incidents but still flags recently-active aged ones", () => {
+    const db = getDashboardDb()!;
+    const insertIncident = (row: {
+      id: string;
+      clusterKey: string;
+      firstSeen: number;
+      lastSeen: number;
+    }) => {
+      db.query(`
+        INSERT OR REPLACE INTO reasoner_incidents
+          (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count, representative_pass_id, representative_diagnosis_id, status)
+        VALUES (?, ?, 'test_failure', ?, ?, ?, 1, 'pass_x', 'diag_x', 'open')
+      `).run(row.id, row.clusterKey, `Incident ${row.id}`, row.firstSeen, row.lastSeen);
+    };
+
+    // Long-open (well past the 4h SLA threshold) but last active 1 day ago — a live breach.
+    insertIncident({
+      id: "inc_recent_aged",
+      clusterKey: "cluster_recent_aged",
+      firstSeen: NOW - 30 * 24 * 60 * 60 * 1000,
+      lastSeen: NOW - 1 * 24 * 60 * 60 * 1000,
+    });
+    // Open for 3 years but last active 3 years ago — abandoned data, not a current breach.
+    insertIncident({
+      id: "inc_3yr_stale",
+      clusterKey: "cluster_3yr_stale",
+      firstSeen: NOW - 3 * 365 * 24 * 60 * 60 * 1000,
+      lastSeen: NOW - 3 * 365 * 24 * 60 * 60 * 1000,
+    });
+
+    const incidents = readSlaIncidents(NOW);
+    expect(incidents.some((incident) => incident.id === "inc_recent_aged")).toBe(true);
+    expect(incidents.some((incident) => incident.id === "inc_3yr_stale")).toBe(false);
   });
 });
