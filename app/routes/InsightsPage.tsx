@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink,
   RefreshCw, ShieldCheck, Sparkles, XCircle, Filter, X, RotateCcw,
-  Activity, Database, ScanSearch, Eye, EyeOff,
+  Activity, Database, ScanSearch, Eye, EyeOff, SlidersHorizontal,
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
@@ -25,6 +25,24 @@ type InsightWithAi = Insight & { aiAnalysis?: AiAnalysis | null; riskTier?: "aut
 type InsightsPayload = {
   insights: InsightWithAi[];
   openCount: number;
+};
+
+type PolicyRegistryRow = {
+  key: string;
+  actionDescriptorId: string | null;
+  label: string;
+  riskTier: "auto" | "review" | "off";
+  source: "allowlist" | "reasoner" | "catalog";
+  reversible: boolean;
+};
+
+type AutoApplyPreviewRow = {
+  insightId: string;
+  sourceKey: string;
+  actionDescriptorId: string | null;
+  tier: "auto" | "review" | "off" | "none";
+  wouldApply: boolean;
+  reason: string;
 };
 
 type StatusFilter = "open" | "applied" | "dismissed" | "resolved" | "all";
@@ -224,6 +242,132 @@ function AutoFixActivity() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function AutoApplyPolicyEditor() {
+  const { data, loading, error, refresh } = useApi<{ registry: PolicyRegistryRow[] }>("/api/policy/registry", 30_000);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [preview, setPreview] = useState<AutoApplyPreviewRow[] | null>(null);
+
+  async function setTier(row: PolicyRegistryRow, tier: PolicyRegistryRow["riskTier"]) {
+    setBusyKey(row.key);
+    setMessage(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actionId: `mutate-policy:autoapply:${row.key}:set-tier`,
+          confirmed: true,
+          reason: "Update auto-apply policy from Detections",
+          params: { tier },
+        }),
+      });
+      const body = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; message?: string };
+      if (!res.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${res.status}`);
+      setMessage(body.message ?? `Policy set to ${tier}.`);
+      refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Policy update failed.");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function loadPreview() {
+    setBusyKey("preview");
+    setMessage(null);
+    try {
+      const res = await authFetch("/api/insights/auto-apply/preview");
+      const body = await res.json().catch(() => ({})) as ApiEnvelope<{ candidates: AutoApplyPreviewRow[] }> & { error?: string };
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+      setPreview(body.data.candidates);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Preview failed.");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  const registry = data?.registry ?? [];
+
+  return (
+    <div className="insight-autofeed">
+      {message && <div className="insights-message"><CheckCircle2 size={14} />{message}</div>}
+      <div className="insights-filter-bar" style={{ marginBottom: 12 }}>
+        <SlidersHorizontal size={14} />
+        <strong style={{ fontSize: 13 }}>Auto-apply policy</strong>
+        <span className="pill gray">{registry.length} actions</span>
+        <button type="button" className="btn" onClick={loadPreview} disabled={busyKey === "preview"} style={{ marginLeft: "auto", minHeight: 44 }}>
+          <ScanSearch size={14} />
+          {busyKey === "preview" ? "Simulating…" : "Preview auto-apply"}
+        </button>
+      </div>
+
+      {preview && (
+        <div className="dash-section" style={{ marginBottom: 12 }}>
+          <div className="dash-section-title">dry run</div>
+          {preview.length === 0 ? (
+            <div className="empty-state"><ShieldCheck size={20} /><strong>No open auto-apply candidates.</strong></div>
+          ) : (
+            <div className="insight-card-list">
+              {preview.map((row) => (
+                <article key={row.insightId} className={`insight-card severity-${row.wouldApply ? "info" : "low"}`}>
+                  <div className="insight-title-row">
+                    <span className={`pill ${row.wouldApply ? "green" : "gray"}`}>{row.wouldApply ? "would apply" : "skip"}</span>
+                    <span className="pill blue">{row.tier}</span>
+                    <Link href={`/insights?focus=${encodeURIComponent(row.sourceKey)}`} className="pill gray">
+                      {row.sourceKey}
+                    </Link>
+                  </div>
+                  <p className="dim" style={{ margin: "8px 0 0" }}>{row.reason}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading && !data && <div className="loading-panel">Loading policy registry…</div>}
+      {error && !data && <div className="loading-panel error">Policy registry did not load. Try refreshing.</div>}
+      {!loading && data && registry.length === 0 && (
+        <div className="empty-state">
+          <ShieldCheck size={20} />
+          <strong>No registered remediation actions.</strong>
+        </div>
+      )}
+      <div className="insight-card-list">
+        {registry.map((row) => (
+          <article key={row.key} className="insight-card">
+            <div className="insight-card-head">
+              <div>
+                <div className="insight-title-row">
+                  <span className={`pill ${row.riskTier === "auto" ? "green" : row.riskTier === "review" ? "amber" : "gray"}`}>{row.riskTier}</span>
+                  <span className="pill blue">{row.source}</span>
+                  {row.reversible ? <span className="pill green">reversible</span> : <span className="pill gray">non-revertible</span>}
+                </div>
+                <h2>{row.label}</h2>
+                <div className="mono dim" style={{ fontSize: 11, wordBreak: "break-all" }}>{row.key}</div>
+              </div>
+              <select
+                className="select"
+                value={row.riskTier}
+                disabled={busyKey === row.key}
+                onChange={(event) => setTier(row, event.target.value as PolicyRegistryRow["riskTier"])}
+                aria-label={`Set policy for ${row.label}`}
+                style={{ minHeight: 44 }}
+              >
+                <option value="auto">auto</option>
+                <option value="review">review</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
@@ -588,7 +732,7 @@ function AiInventory() {
 
 export function InsightsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
-  const [activeTab, setActiveTab] = useState<"inbox" | "autofeed" | "inventory">("inbox");
+  const [activeTab, setActiveTab] = useState<"inbox" | "autofeed" | "policy" | "inventory">("inbox");
 
   // Persistent filter chips
   const [savedFilters, setSavedFiltersState] = useState<SavedFilters>(loadSavedFilters);
@@ -824,6 +968,13 @@ export function InsightsPage() {
         </button>
         <button
           type="button"
+          className={`insights-tab${activeTab === "policy" ? " active" : ""}`}
+          onClick={() => setActiveTab("policy")}
+        >
+          <SlidersHorizontal size={13} /> Autonomy Policy
+        </button>
+        <button
+          type="button"
           className={`insights-tab${activeTab === "inventory" ? " active" : ""}`}
           onClick={() => setActiveTab("inventory")}
         >
@@ -834,6 +985,8 @@ export function InsightsPage() {
       {message && <div className="insights-message"><CheckCircle2 size={15} />{message}</div>}
 
       {activeTab === "autofeed" && <AutoFixActivity />}
+
+      {activeTab === "policy" && <AutoApplyPolicyEditor />}
 
       {activeTab === "inventory" && <AiInventory />}
 
@@ -883,6 +1036,7 @@ export function InsightsPage() {
                 <div className="insight-card-list">
                   {insights.map((insight) => {
                     const isFocused = focusKey && (insight.id === focusKey || insight.sourceKey === focusKey);
+                    const canApply = Boolean(insight.actionDescriptorId && insight.riskTier !== "none");
                     return (
                       <article
                         key={insight.id}
@@ -961,9 +1115,9 @@ export function InsightsPage() {
                           <button
                             type="button"
                             className="btn"
-                            disabled={!insight.actionDescriptorId || busyId === insight.id}
+                            disabled={!canApply || busyId === insight.id}
                             onClick={() => applyInsight(insight)}
-                            title={insight.actionDescriptorId ? "Apply this audited action" : "Open the manual page for this insight"}
+                            title={canApply ? "Apply this audited action" : "This action is disabled by policy or needs manual handling"}
                           >
                             <CheckCircle2 size={14} />
                             Apply

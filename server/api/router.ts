@@ -194,8 +194,10 @@ import {
   insightsScanHandler,
   insightsReanalyzeHandler,
   insightsBulkApplyHandler,
+  insightsAutoApplyPreviewHandler,
   requireInsightPermission,
 } from "./insights.ts";
+import { policyRegistryHandler } from "./policyRegistry.ts";
 import { securityPostureHandler, trustScoreHandler } from "./security.ts";
 import {
   adminHealthHandler,
@@ -490,6 +492,10 @@ if (method === "GET" && pathname === "/api/stream") {
   return response;
 }
   if (method === "GET" && pathname === "/api/actions/catalog") return actionCatalogHandler(url);
+  if (method === "GET" && pathname === "/api/policy/registry") {
+    if (!checkToken(req)) return unauthorized();
+    return policyRegistryHandler();
+  }
   if (method === "GET" && (pathname === "/api/content-health" || pathname === "/api/content-health/findings")) {
     if (!checkToken(req)) return unauthorized();
     return contentHealthHandler(url);
@@ -533,6 +539,10 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return insightsBulkApplyHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/insights/auto-apply/preview") {
+    if (!checkToken(req)) return unauthorized();
+    return insightsAutoApplyPreviewHandler(req);
   }
   const insightActionMatch = pathname.match(/^\/api\/insights\/([^/]+)\/(apply|dismiss|reanalyze)$/);
   if (method === "POST" && insightActionMatch) {

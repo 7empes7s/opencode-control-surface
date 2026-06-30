@@ -10,7 +10,8 @@ import { aggregateInsights } from "../insights/aggregate.ts";
 import { runInsightsScanOnce } from "../insights/scheduler.ts";
 import { getInsight, listInsights, updateInsightStatus } from "../insights/store.ts";
 import { getAiAnalysis, enrichInsight } from "../insights/ai.ts";
-import { riskTierFor } from "../insights/autoapply.ts";
+import { previewAutoApplyCandidates, riskTierFor } from "../insights/autoapply.ts";
+import { tierForAction } from "../insights/autoapplyPolicy.ts";
 import type { Insight } from "../insights/types.ts";
 import { dispatchEventFireAndForget } from "../webhooks/dispatcher.ts";
 import { reasonerApplyPlaybookHandler } from "./reasoner.ts";
@@ -157,6 +158,9 @@ async function applyInsightCore(
   if (!before.actionDescriptorId) {
     return { status: "error", httpStatus: 400, message: "This insight does not have a one-click action yet. Open the manual page to configure it." };
   }
+  if (tierForAction(before.actionDescriptorId) === "off") {
+    return { status: "error", httpStatus: 400, message: "Auto-apply policy is off for this action. Change the policy before applying it." };
+  }
 
   const enforcement = inferActionEnforcement(before.actionDescriptorId);
 
@@ -297,6 +301,14 @@ async function applyInsightCore(
   return { status: "applied", insight: after, result: execBody, message: "The insight was applied and recorded in the audit trail." };
 }
 
+export async function insightsAutoApplyPreviewHandler(req: Request): Promise<Response> {
+  const roleErr = requireInsightPermission(req, "insights.view");
+  if (roleErr) return roleErr;
+
+  const candidates = previewAutoApplyCandidates(listInsights("open"), 25);
+  return json(ok({ candidates }));
+}
+
 export async function insightApplyHandler(req: Request, id: string): Promise<Response> {
   const roleErr = requireInsightPermission(req, "insights.apply");
   if (roleErr) return roleErr;
@@ -361,6 +373,7 @@ export async function insightsBulkApplyHandler(req: Request): Promise<Response> 
   const allOpen = listInsights("open");
   const candidates = allOpen.filter((insight) => {
     if (!insight.actionDescriptorId) return false;
+    if (tierForAction(insight.actionDescriptorId) === "off") return false;
     if (ids && !ids.includes(insight.id)) return false;
     if (domain && insight.domain !== domain) return false;
     return true;

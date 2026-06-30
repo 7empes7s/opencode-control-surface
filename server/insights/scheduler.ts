@@ -9,6 +9,7 @@ import { runOpsScan } from "./scanners/ops.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
 import { runEdgeScan } from "./scanners/edge.ts";
 import { runGovernanceScan } from "./scanners/governance.ts";
+import { runBuildScan } from "./scanners/build.ts";
 import { listInsights } from "./store.ts";
 import { enrichOpenInsights } from "./ai.ts";
 import { autoApplySafeInsights } from "./autoapply.ts";
@@ -39,6 +40,7 @@ export async function runInsightsScanOnce(): Promise<{
   discoveryFindings: number;
   edgeFindings: number;
   governanceFindings: number;
+  buildFindings: number;
   notifications: { sent: number; deduped: number; scanned: number; skipped: number };
 }> {
   const aggregated = aggregateInsights().createdOrUpdated;
@@ -76,6 +78,12 @@ export async function runInsightsScanOnce(): Promise<{
   } catch (error) {
     console.error("[insights] governance scan failed", error);
   }
+  let buildFindings = 0;
+  try {
+    buildFindings = runBuildScan().findings.length;
+  } catch (error) {
+    console.error("[insights] build scan failed", error);
+  }
 
   let notifications = { sent: 0, deduped: 0, scanned: 0, skipped: 0 };
   try {
@@ -108,7 +116,7 @@ export async function runInsightsScanOnce(): Promise<{
     writeHealthSample(hs.score);
   } catch { /* ignore */ }
 
-  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, edgeFindings, governanceFindings, notifications };
+  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {

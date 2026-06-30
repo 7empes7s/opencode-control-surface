@@ -5,6 +5,8 @@ import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
+import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
+import { setAutoApplyTier, type AutoApplyTier } from "../insights/autoapplyPolicy.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 
@@ -63,6 +65,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
   if (kind === "mutate-policy") {
+    if (targetType === "autoapply") return "medium";
     if (targetType === "budget") return "medium";
     return "high";
   }
@@ -207,6 +210,29 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
     }
+  }
+
+  if (kind === "mutate-policy" && targetType === "autoapply") {
+    const last = parsed.segments[parsed.segments.length - 1];
+    if (last !== "set-tier" || parsed.segments.length < 5) {
+      return { ok: false, error: "invalid autoapply policy action", code: "BAD_REQUEST" };
+    }
+    const key = parsed.segments.slice(2, -1).join(":");
+    const tier = body.params?.tier;
+    if (tier !== "auto" && tier !== "review" && tier !== "off") {
+      return { ok: false, error: "tier must be auto, review, or off", code: "BAD_REQUEST" };
+    }
+    if (!await isKnownPolicyRegistryKey(key)) {
+      return { ok: false, error: "unknown autoapply policy key", code: "BAD_REQUEST" };
+    }
+    const actor = getCurrentTenantContext().actor ?? "operator";
+    const policy = setAutoApplyTier(key, tier as AutoApplyTier, actor);
+    return {
+      ok: true,
+      action: "mutate-policy",
+      message: `Auto-apply policy set ${key} to ${tier}.`,
+      result: { key, tier, policy },
+    };
   }
 
   if (

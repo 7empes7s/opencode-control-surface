@@ -6,6 +6,7 @@ import { upsertInsight, resolveStaleInsights } from "./store.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { readFileSync } from "node:fs";
 import { matchPlaybook } from "../reasoner/playbooks.ts";
+import { runBuildScan } from "./scanners/build.ts";
 
 type AggregateResult = {
   createdOrUpdated: number;
@@ -162,130 +163,8 @@ function aggregateModelSwapRecommendation(results: Insight[]): void {
 }
 
 function aggregateReasoner(results: Insight[]): void {
-  const db = getDashboardDb();
-  if (!db) return;
-  const tenant = whereTenant();
-
-  // Build insights are only actionable while the builder run/workflow they
-  // describe still exists. Orphaned diagnoses/incidents (run deleted) and
-  // sentinel_health rows (owned by the Product Sentinel path, not the builder)
-  // are skipped here and resolved at the end, so the inbox never fills up with
-  // dead, un-actionable build noise.
-  const liveWorkflows = new Set<string>(
-    (db.query(`SELECT id FROM builder_workflows`).all() as Array<{ id: string }>).map((r) => r.id),
-  );
-  const liveRuns = new Set<string>(
-    (db.query(`SELECT id FROM builder_runs`).all() as Array<{ id: string }>).map((r) => r.id),
-  );
-  const emittedBuildKeys: string[] = [];
-
-  const diagnoses = db.query(`
-    SELECT id, pass_id, run_id, workflow_id, failure_class, root_cause,
-           evidence_json, suggested_actions_json, confidence, diagnosed_at
-    FROM reasoner_diagnoses
-    WHERE 1=1 ${tenant.clause}
-    ORDER BY diagnosed_at DESC
-    LIMIT 50
-  `).all(...tenant.params) as Array<{
-    id: string;
-    pass_id: string;
-    run_id: string;
-    workflow_id: string;
-    failure_class: string;
-    root_cause: string;
-    evidence_json: string;
-    suggested_actions_json: string;
-    confidence: string;
-    diagnosed_at: number;
-  }>;
-
-  for (const row of diagnoses) {
-    if (row.failure_class === "sentinel_health") continue;
-    if (!liveWorkflows.has(row.workflow_id) && !liveRuns.has(row.run_id)) continue;
-    const suggested = parseJson<Array<{ title?: string; description?: string }>>(row.suggested_actions_json, []);
-    const firstAction = suggested[0]?.title || suggested[0]?.description;
-    const playbook = row.workflow_id ? matchPlaybook(db, row.failure_class) : null;
-    const actionDescriptorId = playbook && row.workflow_id
-      ? remediateDescriptor(playbook.id, row.workflow_id, row.pass_id ?? null)
-      : null;
-    addInsight(results, {
-      id: `insight_build_diagnosis_${safeId(row.id)}`,
-      sourceKey: `build:diagnosis:${row.id}`,
-      domain: "build",
-      severity: normalizeSeverity(row.failure_class, "medium"),
-      title: `Build diagnosis: ${row.failure_class}`,
-      plainSummary: firstAction
-        ? `${row.root_cause}. Recommended next step: ${firstAction}.`
-        : `${row.root_cause}. Open the builder page to inspect the run and choose the next action.`,
-      confidence: confidenceValue(row.confidence),
-      evidenceRefs: [
-        evidence("Reasoner diagnosis", "db", `reasoner_diagnoses:${row.id}`),
-        evidence("Builder run", "api", `/api/builder/runs/${row.run_id}`),
-      ],
-      actionDescriptorId,
-      manualPageHref: `/builder?run=${encodeURIComponent(row.run_id)}`,
-      createdAt: row.diagnosed_at,
-    });
-    emittedBuildKeys.push(`build:diagnosis:${row.id}`);
-  }
-
-  const incidentTenant = whereTenant(undefined, "i");
-  const incidents = db.query(`
-    SELECT i.id, i.failure_class, i.title, i.last_seen, i.occurrence_count, i.status,
-           i.representative_diagnosis_id,
-           d.workflow_id AS rep_workflow_id, d.pass_id AS rep_pass_id
-    FROM reasoner_incidents i
-    LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
-    WHERE i.status = 'open' ${incidentTenant.clause}
-    ORDER BY i.occurrence_count DESC, i.last_seen DESC
-    LIMIT 50
-  `).all(...incidentTenant.params) as Array<{
-    id: string;
-    failure_class: string;
-    title: string;
-    last_seen: number;
-    occurrence_count: number;
-    status: string;
-    representative_diagnosis_id: string;
-    rep_workflow_id: string | null;
-    rep_pass_id: string | null;
-  }>;
-
-  for (const row of incidents) {
-    if (row.failure_class === "sentinel_health") continue;
-    const wfId = row.rep_workflow_id && row.rep_workflow_id !== "unknown" ? row.rep_workflow_id : null;
-    if (!wfId || !liveWorkflows.has(wfId)) continue;
-    const playbook = wfId ? matchPlaybook(db, row.failure_class) : null;
-    const actionDescriptorId = playbook && wfId
-      ? remediateDescriptor(playbook.id, wfId, row.rep_pass_id ?? null, row.id)
-      : null;
-    addInsight(results, {
-      id: `insight_build_incident_${safeId(row.id)}`,
-      sourceKey: `build:incident:${row.id}`,
-      domain: "build",
-      severity: row.occurrence_count >= 3 ? "high" : "medium",
-      title: row.title,
-      plainSummary: `This build issue has happened ${row.occurrence_count} times. Run a doctor scan or open the incident to review the recommended fix.`,
-      confidence: 0.74,
-      evidenceRefs: [
-        evidence("Reasoner incident", "db", `reasoner_incidents:${row.id}`),
-        evidence("Incident details", "api", `/api/reasoner/incidents/${row.id}`),
-      ],
-      actionDescriptorId,
-      manualPageHref: `/incidents`,
-      createdAt: row.last_seen,
-    });
-    emittedBuildKeys.push(`build:incident:${row.id}`);
-  }
-
-  // Resolve any build insight whose run/workflow is gone (or that we no longer
-  // emit). Without this, build insights accumulated forever even after the
-  // builder runs they described were deleted.
-  resolveStaleInsights(
-    "build:",
-    emittedBuildKeys,
-    "The builder run this was about no longer exists, so this build issue is no longer actionable.",
-  );
+  const scan = runBuildScan();
+  for (const insight of scan.findings) results.push(insight);
 }
 
 function aggregateContentHealth(results: Insight[]): void {
@@ -446,4 +325,3 @@ export function aggregateInsights(): AggregateResult {
   }
   return { createdOrUpdated: results.length, insights: results, resolvedCount: 0 };
 }
-

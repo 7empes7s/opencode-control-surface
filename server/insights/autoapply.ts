@@ -1,35 +1,139 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { writeActionAudit } from "../db/writer.ts";
-import { updateInsightStatus } from "./store.ts";
-import { executeActionHandler } from "../api/execute.ts";
+import { updateInsightStatus, upsertInsight } from "./store.ts";
 import type { Insight } from "./types.ts";
+import {
+  SAFE_AUTO_ACTIONS,
+  isSafeAutoAction,
+  riskTierFor,
+  loadAutoApplyPolicy,
+  policyKeyForAction,
+  type RiskTier,
+} from "./autoapplyPolicy.ts";
 
-// Actions safe to apply with NO human review: idempotent / reversible and
-// non-customer-facing. This set is deliberately tiny. Service restarts, pipeline
-// resume, GPU tunnel restarts, model blocks, and budget changes are EXCLUDED —
-// they remain review-tier (a human clicks Apply). Expanding this allowlist is a
-// deliberate decision, not a default.
-export const SAFE_AUTO_ACTIONS: ReadonlySet<string> = new Set<string>([
-  // Re-run model discovery — exactly what model-health-check.timer does every 5h.
-  "start-job:model-health:all",
-  // Rotate/truncate the diagnostics log once a detector confirms size pressure.
-  "start-job:infra:doctor-log-rotate",
-]);
+export { SAFE_AUTO_ACTIONS, isSafeAutoAction, riskTierFor, type RiskTier };
 
-export type RiskTier = "auto" | "review" | "none";
-
-export function isSafeAutoAction(actionId: string | null | undefined): boolean {
-  if (!actionId) return false;
-  if (SAFE_AUTO_ACTIONS.has(actionId)) return true;
-  return actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear");
-}
-
-export function riskTierFor(insight: Pick<Insight, "actionDescriptorId">): RiskTier {
-  if (!insight.actionDescriptorId) return "none";
-  return isSafeAutoAction(insight.actionDescriptorId) ? "auto" : "review";
-}
+export type AutoApplyPreviewRow = {
+  insightId: string;
+  sourceKey: string;
+  actionDescriptorId: string | null;
+  tier: RiskTier;
+  wouldApply: boolean;
+  reason: string;
+};
 
 let autoApplyInFlight = false;
+let nowProvider = () => Date.now();
+
+export function _setAutoApplyNowForTests(fn: (() => number) | null): void {
+  nowProvider = fn ?? (() => Date.now());
+}
+
+function requestJsonContainsSourceKey(requestJson: string | null, sourceKey: string): boolean {
+  if (!requestJson) return false;
+  try {
+    const parsed = JSON.parse(requestJson) as { sourceKey?: unknown };
+    return parsed.sourceKey === sourceKey;
+  } catch {
+    return false;
+  }
+}
+
+function autoApplyCountInTrailingHour(now: number): number {
+  const db = getDashboardDb();
+  if (!db) return 0;
+  try {
+    const row = db.query(`
+      SELECT COUNT(*) AS count
+      FROM action_audit
+      WHERE action_kind = 'insights.auto-apply'
+        AND result_status = 'success'
+        AND ts >= ?
+    `).get(now - 60 * 60_000) as { count: number } | null;
+    return row?.count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function failedAutoApplyCountForSource(sourceKey: string, since: number): number {
+  const db = getDashboardDb();
+  if (!db) return 0;
+  try {
+    const rows = db.query(`
+      SELECT request_json
+      FROM action_audit
+      WHERE action_kind = 'insights.auto-apply'
+        AND result_status = 'failed'
+        AND ts >= ?
+      ORDER BY ts DESC
+      LIMIT 200
+    `).all(since) as Array<{ request_json: string | null }>;
+    return rows.filter((row) => requestJsonContainsSourceKey(row.request_json, sourceKey)).length;
+  } catch {
+    return 0;
+  }
+}
+
+function emitFlappingInsight(insight: Insight, failures: number): void {
+  const sourceKey = insight.sourceKey ?? insight.id;
+  upsertInsight({
+    id: `insight_autoapply_flapping_${sourceKey.replace(/[^a-z0-9]+/gi, "_").slice(0, 120)}`,
+    sourceKey: `security:autoapply-flapping:${sourceKey}`,
+    domain: "security",
+    severity: "high",
+    title: "Auto-apply circuit breaker tripped",
+    plainSummary: `Auto-apply failed ${failures} times for ${sourceKey}. The remediation has been left for operator review.`,
+    confidence: 0.9,
+    evidenceRefs: [
+      { label: "Auto-apply audit", kind: "db", ref: "action_audit", redacted: true },
+      { label: "Original finding", kind: "db", ref: `insights:${insight.id}`, redacted: true },
+    ],
+    actionDescriptorId: null,
+    manualPageHref: `/insights?focus=${encodeURIComponent(sourceKey)}`,
+    createdAt: nowProvider(),
+  });
+}
+
+export function previewAutoApplyCandidates(insights: Insight[], limit = 4): AutoApplyPreviewRow[] {
+  const policy = loadAutoApplyPolicy();
+  const now = nowProvider();
+  const appliedThisHour = autoApplyCountInTrailingHour(now);
+  let remaining = Math.max(0, policy.maxAutoAppliesPerHour - appliedThisHour);
+  const rows: AutoApplyPreviewRow[] = [];
+
+  for (const insight of insights.filter((i) => i.status === "open" && i.actionDescriptorId).slice(0, limit)) {
+    const tier = riskTierFor(insight);
+    const sourceKey = insight.sourceKey ?? insight.id;
+    const failures = failedAutoApplyCountForSource(sourceKey, now - policy.circuitBreakerWindowMs);
+    let wouldApply = tier === "auto";
+    let reason = tier === "auto"
+      ? `policy key ${policyKeyForAction(insight.actionDescriptorId ?? "")} allows auto`
+      : tier === "review"
+        ? "policy requires operator review"
+        : "policy is off or no action is available";
+
+    if (wouldApply && remaining <= 0) {
+      wouldApply = false;
+      reason = `rate limit reached (${policy.maxAutoAppliesPerHour}/hour)`;
+    } else if (wouldApply && failures >= policy.circuitBreakerThreshold) {
+      wouldApply = false;
+      reason = `circuit breaker tripped after ${failures} failed attempt(s)`;
+    }
+
+    if (wouldApply) remaining--;
+    rows.push({
+      insightId: insight.id,
+      sourceKey,
+      actionDescriptorId: insight.actionDescriptorId,
+      tier,
+      wouldApply,
+      reason,
+    });
+  }
+
+  return rows;
+}
 
 // Auto-apply the safe remediation for any open finding whose action is on the
 // allowlist. Audited (trigger=auto), capped, guarded against overlap, and a
@@ -41,10 +145,22 @@ export async function autoApplySafeInsights(insights: Insight[], limit = 4): Pro
 
   autoApplyInFlight = true;
   try {
+    const policy = loadAutoApplyPolicy();
+    const now = nowProvider();
+    let remaining = Math.max(0, policy.maxAutoAppliesPerHour - autoApplyCountInTrailingHour(now));
+    if (remaining <= 0) return 0;
     const candidates = insights.filter((i) => i.status === "open" && isSafeAutoAction(i.actionDescriptorId));
     let applied = 0;
     for (const insight of candidates.slice(0, limit)) {
+      if (remaining <= 0) break;
+      const sourceKey = insight.sourceKey ?? insight.id;
+      const failures = failedAutoApplyCountForSource(sourceKey, now - policy.circuitBreakerWindowMs);
+      if (failures >= policy.circuitBreakerThreshold) {
+        emitFlappingInsight(insight, failures);
+        continue;
+      }
       if (await runAutoApply(insight, token)) applied++;
+      remaining--;
     }
     return applied;
   } finally {
@@ -54,6 +170,7 @@ export async function autoApplySafeInsights(insights: Insight[], limit = 4): Pro
 
 async function runAutoApply(insight: Insight, token: string): Promise<boolean> {
   try {
+    const { executeActionHandler } = await import("../api/execute.ts");
     const req = new Request("http://localhost/api/actions/execute", {
       method: "POST",
       headers: {
@@ -79,9 +196,17 @@ async function runAutoApply(insight: Insight, token: string): Promise<boolean> {
       targetType: "insight",
       targetId: insight.id,
       risk: "low",
-      request: { insightId: insight.id, trigger: "auto", sourceKey: insight.sourceKey ?? insight.id },
+      request: {
+        insightId: insight.id,
+        trigger: "auto",
+        sourceKey: insight.sourceKey ?? insight.id,
+        confidence: insight.confidence,
+        policyKey: policyKeyForAction(insight.actionDescriptorId ?? ""),
+        tier: riskTierFor(insight),
+      },
       resultStatus: ok ? "success" : "failed",
       result: ok ? "auto-applied safe remediation" : (body.error ?? "auto-apply failed"),
+      rollbackHint: undefined,
     });
 
     if (ok) updateInsightStatus(insight.id, "applied");

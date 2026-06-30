@@ -1,5 +1,71 @@
-import { describe, expect, test } from "bun:test";
-import { SAFE_AUTO_ACTIONS, isSafeAutoAction, riskTierFor } from "./autoapply.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { writeActionAudit } from "../db/writer.ts";
+import {
+  SAFE_AUTO_ACTIONS,
+  _setAutoApplyNowForTests,
+  autoApplySafeInsights,
+  isSafeAutoAction,
+  previewAutoApplyCandidates,
+  riskTierFor,
+} from "./autoapply.ts";
+import { getInsight, upsertInsight } from "./store.ts";
+
+let tempDir: string;
+let prevDb: string | undefined;
+let prevDbPath: string | undefined;
+let prevToken: string | undefined;
+
+beforeEach(() => {
+  closeDashboardDb();
+  tempDir = mkdtempSync(join(tmpdir(), "autoapply-test-"));
+  prevDb = process.env.DASHBOARD_DB;
+  prevDbPath = process.env.DASHBOARD_DB_PATH;
+  prevToken = process.env.OPERATOR_TOKEN;
+  process.env.DASHBOARD_DB = "1";
+  process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  process.env.OPERATOR_TOKEN = "test-token";
+  initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
+  _setAutoApplyNowForTests(() => 1_700_000_000_000);
+});
+
+afterEach(() => {
+  _setAutoApplyNowForTests(null);
+  closeDashboardDb();
+  if (prevDb === undefined) delete process.env.DASHBOARD_DB;
+  else process.env.DASHBOARD_DB = prevDb;
+  if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
+  else process.env.DASHBOARD_DB_PATH = prevDbPath;
+  if (prevToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = prevToken;
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+function savePolicy(value: unknown) {
+  getDashboardDb()!.query(`
+    INSERT OR REPLACE INTO system_configs (key, value_json, updated_at, updated_by)
+    VALUES ('autoapply.policy', ?, ?, 'test')
+  `).run(JSON.stringify(value), 1_700_000_000_000);
+}
+
+function safeInsight(id: string, sourceKey: string) {
+  return upsertInsight({
+    id,
+    sourceKey,
+    domain: "ops",
+    severity: "high",
+    title: "Safe action candidate",
+    plainSummary: "A seeded auto-apply candidate.",
+    confidence: 0.91,
+    evidenceRefs: [],
+    actionDescriptorId: "start-job:model-health:all",
+    manualPageHref: "/models",
+    createdAt: 1_700_000_000_000,
+  })!;
+}
 
 describe("insights auto-apply: risk tiering", () => {
   test("the safe allowlist is intentionally minimal and excludes mutating/customer-facing actions", () => {
@@ -28,5 +94,67 @@ describe("insights auto-apply: risk tiering", () => {
     expect(riskTierFor({ actionDescriptorId: "mutate-policy:model:editorial-heavy:cooldown-clear" })).toBe("auto");
     expect(riskTierFor({ actionDescriptorId: "start-job:service:vast-tunnel" })).toBe("review");
     expect(riskTierFor({ actionDescriptorId: null })).toBe("none");
+  });
+
+  test("preview returns candidates without executing them", () => {
+    const insight = safeInsight("insight-preview", "ops:preview");
+
+    const rows = previewAutoApplyCandidates([insight]);
+
+    expect(rows).toEqual([{
+      insightId: "insight-preview",
+      sourceKey: "ops:preview",
+      actionDescriptorId: "start-job:model-health:all",
+      tier: "auto",
+      wouldApply: true,
+      reason: "policy key start-job:model-health:all allows auto",
+    }]);
+    expect(getInsight("insight-preview")?.status).toBe("open");
+  });
+
+  test("rate limit blocks the next auto-apply within the trailing hour", async () => {
+    savePolicy({ tiers: {}, maxAutoAppliesPerHour: 1, circuitBreakerThreshold: 3, circuitBreakerWindowMs: 60 * 60_000 });
+    writeActionAudit({
+      actor: "system",
+      actionKind: "insights.auto-apply",
+      targetType: "insight",
+      targetId: "old",
+      risk: "low",
+      request: { trigger: "auto", sourceKey: "ops:old" },
+      resultStatus: "success",
+      result: "already applied",
+    });
+    const insight = safeInsight("insight-rate", "ops:rate");
+
+    const applied = await autoApplySafeInsights([insight]);
+    const preview = previewAutoApplyCandidates([insight]);
+
+    expect(applied).toBe(0);
+    expect(preview[0].wouldApply).toBe(false);
+    expect(preview[0].reason).toContain("rate limit reached");
+    expect(getInsight("insight-rate")?.status).toBe("open");
+  });
+
+  test("circuit breaker trips after repeated failures and emits a finding", async () => {
+    savePolicy({ tiers: {}, maxAutoAppliesPerHour: 10, circuitBreakerThreshold: 2, circuitBreakerWindowMs: 60 * 60_000 });
+    for (let i = 0; i < 2; i++) {
+      writeActionAudit({
+        actor: "system",
+        actionKind: "insights.auto-apply",
+        targetType: "insight",
+        targetId: `failed-${i}`,
+        risk: "low",
+        request: { trigger: "auto", sourceKey: "ops:flap" },
+        resultStatus: "failed",
+        result: "failed",
+      });
+    }
+    const insight = safeInsight("insight-flap", "ops:flap");
+
+    const applied = await autoApplySafeInsights([insight]);
+
+    expect(applied).toBe(0);
+    expect(getInsight("insight-flap")?.status).toBe("open");
+    expect(getInsight("insight_autoapply_flapping_ops_flap")?.sourceKey).toBe("security:autoapply-flapping:ops:flap");
   });
 });

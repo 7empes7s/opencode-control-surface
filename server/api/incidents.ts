@@ -1,16 +1,19 @@
-import { readFileSync } from "node:fs";
 import { ok, type ApiEnvelope } from "./types.ts";
-import { getDoctorEntryErrorType, getFullLog } from "../adapters/doctor.ts";
-
-const ALERTS_PATH = "/var/lib/mimule/pipeline-alerts.json";
+import { listInsights } from "../insights/store.ts";
+import type { Insight } from "../insights/types.ts";
 
 export interface IncidentEntry {
   ts: number;
-  type: "pipeline-failed" | "doctor-abandoned";
+  type: "pipeline-failed" | "doctor-abandoned" | "insight";
   slug: string;
   stage: string;
   errorType: string;
   severity: "error" | "warning";
+  insightId?: string;
+  sourceKey?: string | null;
+  title?: string;
+  manualPageHref?: string;
+  detectionsHref?: string;
 }
 
 export interface IncidentsDetail {
@@ -23,50 +26,36 @@ export interface IncidentsDetail {
   };
 }
 
-function readAlerts(): IncidentEntry[] {
-  let raw: Record<string, number> = {};
-  try { raw = JSON.parse(readFileSync(ALERTS_PATH, "utf8")); } catch { return []; }
-
-  const entries: IncidentEntry[] = [];
-  for (const [key, ts] of Object.entries(raw)) {
-    // key format: pipeline-failed:<slug>:<stage>:<errorType>
-    const parts = key.split(":");
-    if (parts[0] !== "pipeline-failed" || parts.length < 4) continue;
-    const slug = parts[1];
-    const stage = parts[2];
-    const errorType = parts.slice(3).join(":"); // errorType may contain colons
-    entries.push({
-      ts,
-      type: "pipeline-failed",
-      slug,
-      stage,
-      errorType,
-      severity: errorType === "transport_timeout" || errorType === "capacity_rate_limit" ? "warning" : "error",
-    });
-  }
-  return entries;
+function isIncidentGrade(insight: Insight): boolean {
+  if (insight.status !== "open") return false;
+  if (!["ops", "security", "build"].includes(insight.domain)) return false;
+  if (insight.severity === "high" || insight.severity === "critical") return true;
+  return (insight.sourceKey ?? "").startsWith("health:sentinel:");
 }
 
-function readDoctorAbandons(): IncidentEntry[] {
-  const entries = getFullLog({ });
-  return entries
-    .filter((e) => e.action === "dead-content" || e.action === "abandoned")
-    .map((e) => ({
-      ts: e.ts ? new Date(e.ts).getTime() : 0,
-      type: "doctor-abandoned" as const,
-      slug: e.slug ?? "",
-      stage: e.stage ?? "",
-      errorType: getDoctorEntryErrorType(e),
-      severity: "error" as const,
-    }))
-    .filter((e) => e.ts > 0);
+function entryFromInsight(insight: Insight): IncidentEntry {
+  const source = insight.sourceKey ?? insight.id;
+  return {
+    ts: insight.createdAt,
+    type: "insight",
+    slug: source,
+    stage: insight.domain,
+    errorType: insight.severity,
+    severity: insight.severity === "critical" || insight.severity === "high" ? "error" : "warning",
+    insightId: insight.id,
+    sourceKey: insight.sourceKey,
+    title: insight.title,
+    manualPageHref: insight.manualPageHref,
+    detectionsHref: `/insights?focus=${encodeURIComponent(source)}`,
+  };
 }
 
 export function getIncidentEntries(): IncidentEntry[] {
-  const alerts = readAlerts();
-  const abandons = readDoctorAbandons();
-
-  return [...alerts, ...abandons].sort((a, b) => b.ts - a.ts).slice(0, 500);
+  return listInsights("open")
+    .filter(isIncidentGrade)
+    .map(entryFromInsight)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 500);
 }
 
 export function buildIncidentsDetail(): IncidentsDetail {
