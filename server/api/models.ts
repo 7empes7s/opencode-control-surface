@@ -1,6 +1,36 @@
 import { readFileSync } from 'fs';
+import { getDashboardDb } from '../db/dashboard.ts';
+import { writeActionAudit } from '../db/writer.ts';
 import { getObservabilityDb, listLiteLLMRoutingLogs, listSystemConfigs, upsertSystemConfig, insertConfigChange } from '../db/observability.ts';
-import { getModelQualityEntry, readModelQuality } from './modelQuality.ts';
+import { createApprovalRequest, expireStaleRequests, listApprovalRequests, type ApprovalRequest } from '../governance/approvals.ts';
+import { getCurrentTenantContext } from '../tenancy/middleware.ts';
+import { getModelQualityEntry, readModelQuality, type ModelQualityStatus } from './modelQuality.ts';
+import { getUserIdForRequest } from '../governance/rbac.ts';
+
+export const PROMOTION_EVAL_SCORE_THRESHOLD = 0.75;
+const PROMOTION_APPROVAL_WORKFLOW_PREFIX = "model-promotion";
+const PROMOTION_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type QualityStatus = ModelQualityStatus | "unknown";
+
+export interface ModelEvalSample {
+  ts: number;
+  score: number | null;
+  latencyMs: number | null;
+  error: string | null;
+}
+
+export interface ModelPromotionReadiness {
+  gate: "ready" | "blocked" | "needs-approval";
+  reasons: string[];
+  threshold: {
+    minEvalScore: number;
+  };
+}
+
+function promotionWorkflowId(logicalName: string): string {
+  return `${PROMOTION_APPROVAL_WORKFLOW_PREFIX}:${logicalName}`;
+}
 
 function detectProviderType(modelName: string, provider: string): "openrouter" | "groq" | "github" | "cerebras" | "local" | "zen" | "nvidia" | "cloudflare" | "opencode" | "alibaba" | "other" {
   const n = modelName.toLowerCase();
@@ -36,6 +66,224 @@ function computeQualityStatus(available: boolean, hasError: boolean): "healthy" 
   if (!available) return "degraded";
   if (hasError) return "probation";
   return "healthy";
+}
+
+function safeDecodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeRecentFailures(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return 0;
+}
+
+function readHealthModel(logicalName: string): { qualityStatus: QualityStatus; recentFailures: number; consecutiveGarbage: number; resolvedModel: string | null } {
+  try {
+    const raw = readFileSync(modelHealthPath(), "utf8");
+    const health = JSON.parse(raw) as { models?: Array<Record<string, unknown>> };
+    const model = (health.models ?? []).find((candidate) => candidate.logicalName === logicalName);
+    const quality = readModelQuality();
+    const modelId = typeof model?.modelId === "string" ? model.modelId : null;
+    const qualityEntry = getModelQualityEntry(quality, logicalName, modelId);
+    const available = Boolean(model?.available);
+    const hasError = Boolean(model?.error);
+    const rawStatus = typeof model?.qualityStatus === "string" ? model.qualityStatus : qualityEntry?.status;
+    const qualityStatus = rawStatus === "healthy" || rawStatus === "probation" || rawStatus === "degraded" || rawStatus === "blocked"
+      ? rawStatus
+      : model ? computeQualityStatus(available, hasError) : "unknown";
+
+    return {
+      qualityStatus,
+      recentFailures: normalizeRecentFailures(qualityEntry?.recentFailures),
+      consecutiveGarbage: Number(qualityEntry?.consecutiveGarbage ?? 0),
+      resolvedModel: typeof model?.resolvedModel === "string"
+        ? model.resolvedModel
+        : typeof model?.modelId === "string"
+          ? model.modelId
+          : null,
+    };
+  } catch {
+    const quality = readModelQuality();
+    const qualityEntry = getModelQualityEntry(quality, logicalName);
+    const rawStatus = qualityEntry?.status;
+    return {
+      qualityStatus: rawStatus === "healthy" || rawStatus === "probation" || rawStatus === "degraded" || rawStatus === "blocked" ? rawStatus : "unknown",
+      recentFailures: normalizeRecentFailures(qualityEntry?.recentFailures),
+      consecutiveGarbage: Number(qualityEntry?.consecutiveGarbage ?? 0),
+      resolvedModel: null,
+    };
+  }
+}
+
+function readEvalHistory(logicalName: string): { history: ModelEvalSample[]; firstSeen: number | null; lastEval: number | null } {
+  const db = getDashboardDb();
+  if (!db) return { history: [], firstSeen: null, lastEval: null };
+
+  const ctx = getCurrentTenantContext();
+  const tenantId = ctx.tenantId;
+  const rows = db.query(`
+    SELECT ts, value_json
+    FROM metric_samples
+    WHERE source = 'model-eval' AND key = ? AND (tenant_id = ? OR tenant_id IS NULL)
+    ORDER BY ts DESC
+    LIMIT 30
+  `).all(logicalName, tenantId) as Array<{ ts: number; value_json: string }>;
+
+  const history = rows.reverse().map((row) => {
+    let parsed: { score?: unknown; latencyMs?: unknown; ts?: unknown; error?: unknown } = {};
+    try {
+      parsed = JSON.parse(row.value_json) as typeof parsed;
+    } catch {
+      parsed = {};
+    }
+    const sampleTs = typeof parsed.ts === "number" && Number.isFinite(parsed.ts) ? parsed.ts : row.ts;
+    return {
+      ts: sampleTs,
+      score: typeof parsed.score === "number" && Number.isFinite(parsed.score) ? parsed.score : null,
+      latencyMs: typeof parsed.latencyMs === "number" && Number.isFinite(parsed.latencyMs) ? parsed.latencyMs : null,
+      error: typeof parsed.error === "string" && parsed.error ? parsed.error : null,
+    };
+  });
+
+  const first = db.query(`
+    SELECT MIN(ts) AS firstSeen, MAX(ts) AS lastEval
+    FROM metric_samples
+    WHERE source = 'model-eval' AND key = ? AND (tenant_id = ? OR tenant_id IS NULL)
+  `).get(logicalName, tenantId) as { firstSeen: number | null; lastEval: number | null } | null;
+
+  return {
+    history,
+    firstSeen: first?.firstSeen ?? null,
+    lastEval: first?.lastEval ?? null,
+  };
+}
+
+function readRoutingReliability(logicalName: string): {
+  totalRequests: number;
+  successCount: number;
+  fallbackCount: number;
+  failedCount: number;
+  avgLatencyMs: number | null;
+} | null {
+  const db = getObservabilityDb();
+  if (!db) return null;
+  try {
+    const row = db.query(`
+      SELECT
+        COUNT(*) AS totalRequests,
+        SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS successCount,
+        SUM(CASE WHEN status = 'fallback' THEN 1 ELSE 0 END) AS fallbackCount,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
+        AVG(total_latency_ms) AS avgLatencyMs
+      FROM litellm_routing_log
+      WHERE logical_name = ?
+    `).get(logicalName) as {
+      totalRequests: number;
+      successCount: number | null;
+      fallbackCount: number | null;
+      failedCount: number | null;
+      avgLatencyMs: number | null;
+    } | null;
+    if (!row || row.totalRequests === 0) {
+      return { totalRequests: 0, successCount: 0, fallbackCount: 0, failedCount: 0, avgLatencyMs: null };
+    }
+    return {
+      totalRequests: row.totalRequests,
+      successCount: row.successCount ?? 0,
+      fallbackCount: row.fallbackCount ?? 0,
+      failedCount: row.failedCount ?? 0,
+      avgLatencyMs: row.avgLatencyMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function latestPromotionApproval(logicalName: string): ApprovalRequest | null {
+  const ctx = getCurrentTenantContext();
+  expireStaleRequests(ctx);
+  const workflowId = promotionWorkflowId(logicalName);
+  return listApprovalRequests(undefined, ctx)
+    .filter((request) => request.workflowId === workflowId)
+    .sort((a, b) => b.requestedAt - a.requestedAt)[0] ?? null;
+}
+
+function computePromotionReadiness(input: {
+  evalHistory: ModelEvalSample[];
+  qualityStatus: QualityStatus;
+  recentFailures: number;
+  consecutiveGarbage: number;
+  approval: ApprovalRequest | null;
+}): ModelPromotionReadiness {
+  const reasons: string[] = [];
+  const latestEval = input.evalHistory[input.evalHistory.length - 1] ?? null;
+
+  if (!latestEval) {
+    reasons.push("insufficient eval history");
+  } else if (latestEval.error) {
+    reasons.push(`latest model eval has an error: ${latestEval.error}`);
+  } else if (typeof latestEval.score !== "number") {
+    reasons.push("latest model eval is missing a numeric score");
+  } else if (latestEval.score < PROMOTION_EVAL_SCORE_THRESHOLD) {
+    reasons.push(`latest eval score ${latestEval.score.toFixed(2)} is below required ${PROMOTION_EVAL_SCORE_THRESHOLD.toFixed(2)}`);
+  } else {
+    reasons.push(`latest eval score ${latestEval.score.toFixed(2)} meets required ${PROMOTION_EVAL_SCORE_THRESHOLD.toFixed(2)}`);
+  }
+
+  if (input.qualityStatus !== "healthy") {
+    reasons.push(`quality status is ${input.qualityStatus}`);
+  } else {
+    reasons.push("quality status is healthy");
+  }
+
+  if (input.recentFailures > 0) {
+    reasons.push(`quality policy reports recent failures: ${input.recentFailures}`);
+  } else {
+    reasons.push("quality policy reports no recent failures");
+  }
+
+  if (input.consecutiveGarbage > 0) {
+    reasons.push(`quality policy reports consecutive garbage outputs: ${input.consecutiveGarbage}`);
+  } else {
+    reasons.push("quality policy reports no consecutive garbage outputs");
+  }
+
+  const blocking = !latestEval
+    || Boolean(latestEval.error)
+    || typeof latestEval.score !== "number"
+    || latestEval.score < PROMOTION_EVAL_SCORE_THRESHOLD
+    || input.qualityStatus !== "healthy"
+    || input.recentFailures > 0
+    || input.consecutiveGarbage > 0
+    || input.approval?.status === "rejected";
+
+  if (input.approval?.status === "rejected") {
+    reasons.push(`promotion approval ${input.approval.id} was rejected`);
+  }
+
+  if (blocking) {
+    return { gate: "blocked", reasons, threshold: { minEvalScore: PROMOTION_EVAL_SCORE_THRESHOLD } };
+  }
+
+  if (input.approval?.status === "approved") {
+    reasons.push(`promotion approval ${input.approval.id} is approved`);
+    return { gate: "ready", reasons, threshold: { minEvalScore: PROMOTION_EVAL_SCORE_THRESHOLD } };
+  }
+
+  if (input.approval?.status === "pending") {
+    reasons.push(`promotion approval ${input.approval.id} is pending`);
+  } else if (input.approval?.status === "expired") {
+    reasons.push(`previous promotion approval ${input.approval.id} expired`);
+  } else {
+    reasons.push("promotion approval is required");
+  }
+
+  return { gate: "needs-approval", reasons, threshold: { minEvalScore: PROMOTION_EVAL_SCORE_THRESHOLD } };
 }
 
 export function modelsHandler(): Response {
@@ -126,6 +374,153 @@ export function modelsHandler(): Response {
   } catch (e) {
     console.error('modelsHandler failed:', e);
     return Response.json({ error: 'model-health.json unreadable' }, { status: 500 });
+  }
+}
+
+export function modelLifecycleHandler(logicalNameParam: string): Response {
+  try {
+    const logicalName = safeDecodePathSegment(logicalNameParam);
+    const quality = readHealthModel(logicalName);
+    const evals = readEvalHistory(logicalName);
+    const routingReliability = readRoutingReliability(logicalName);
+    const approval = latestPromotionApproval(logicalName);
+    const promotionReadiness = computePromotionReadiness({
+      evalHistory: evals.history,
+      qualityStatus: quality.qualityStatus,
+      recentFailures: quality.recentFailures,
+      consecutiveGarbage: quality.consecutiveGarbage,
+      approval,
+    });
+
+    return Response.json({
+      data: {
+        logicalName,
+        resolvedModel: quality.resolvedModel,
+        evalHistory: evals.history,
+        firstSeen: evals.firstSeen,
+        lastEval: evals.lastEval,
+        qualityStatus: quality.qualityStatus,
+        recentFailures: quality.recentFailures,
+        consecutiveGarbage: quality.consecutiveGarbage,
+        routingReliability,
+        approval: approval ? {
+          id: approval.id,
+          workflowId: approval.workflowId,
+          runId: approval.runId,
+          status: approval.status,
+          requestedAt: approval.requestedAt,
+          requestedBy: approval.requestedBy,
+          requiredCount: approval.requiredCount,
+          expiresAt: approval.expiresAt ?? null,
+          decidedAt: approval.decidedAt ?? null,
+          decidedBy: approval.decidedBy ?? null,
+        } : null,
+        promotionReadiness,
+        unavailableCapabilities: [
+          "Fairness and bias analysis is not available in this deployment because fairness datasets are not configured.",
+          "XAI artifacts are not available in this deployment because no SHAP/LIME evaluator output exists.",
+          "Adversarial model scans are not available in this deployment because model-scanning infrastructure is not configured.",
+          "PDF compliance reports are not available in this deployment because no report generator is configured for model GRC evidence.",
+        ],
+      },
+    });
+  } catch (e) {
+    console.error("modelLifecycleHandler failed:", e);
+    return Response.json({ error: "Failed to load model lifecycle" }, { status: 500 });
+  }
+}
+
+export async function modelPromotionRequestHandler(req: Request, logicalNameParam: string): Promise<Response> {
+  try {
+    const logicalName = safeDecodePathSegment(logicalNameParam);
+    const body = await req.json().catch(() => ({})) as { reason?: unknown };
+    const reason = typeof body.reason === "string" && body.reason.trim()
+      ? body.reason.trim()
+      : "Request model promotion approval";
+    const quality = readHealthModel(logicalName);
+    const evals = readEvalHistory(logicalName);
+    const approval = latestPromotionApproval(logicalName);
+    const promotionReadiness = computePromotionReadiness({
+      evalHistory: evals.history,
+      qualityStatus: quality.qualityStatus,
+      recentFailures: quality.recentFailures,
+      consecutiveGarbage: quality.consecutiveGarbage,
+      approval,
+    });
+
+    if (promotionReadiness.gate === "blocked") {
+      return Response.json({
+        error: "promotion gate is blocked",
+        promotionReadiness,
+      }, { status: 409 });
+    }
+
+    if (approval?.status === "pending" || approval?.status === "approved") {
+      return Response.json({
+        data: {
+          logicalName,
+          approval,
+          promotionReadiness,
+        },
+      });
+    }
+
+    const requestedBy = getUserIdForRequest(req) ?? "operator";
+    const request = createApprovalRequest(
+      promotionWorkflowId(logicalName),
+      `${PROMOTION_APPROVAL_WORKFLOW_PREFIX}:${logicalName}:${Date.now()}`,
+      requestedBy,
+      1,
+      Date.now() + PROMOTION_APPROVAL_TTL_MS,
+      getCurrentTenantContext(),
+    );
+
+    writeActionAudit({
+      userId: getUserIdForRequest(req),
+      actionKind: "models.promotion.request",
+      reason,
+      target: logicalName,
+      targetType: "model",
+      targetId: logicalName,
+      risk: "high",
+      request: {
+        logicalName,
+        gateBeforeRequest: promotionReadiness.gate,
+        reasons: promotionReadiness.reasons,
+        threshold: promotionReadiness.threshold,
+      },
+      resultStatus: "success",
+      resultJson: {
+        approvalId: request.id,
+        workflowId: request.workflowId,
+        runId: request.runId,
+        status: request.status,
+      },
+      evidence: [
+        { label: "Model lifecycle", ref: `/api/models/${encodeURIComponent(logicalName)}/lifecycle` },
+        { label: "Approval request", ref: `governance_approvals:${request.id}` },
+      ],
+      rollbackHint: "Reject or expire the approval request before promotion is applied.",
+    });
+
+    const nextReadiness = computePromotionReadiness({
+      evalHistory: evals.history,
+      qualityStatus: quality.qualityStatus,
+      recentFailures: quality.recentFailures,
+      consecutiveGarbage: quality.consecutiveGarbage,
+      approval: request,
+    });
+
+    return Response.json({
+      data: {
+        logicalName,
+        approval: request,
+        promotionReadiness: nextReadiness,
+      },
+    }, { status: 201 });
+  } catch (e) {
+    console.error("modelPromotionRequestHandler failed:", e);
+    return Response.json({ error: "Failed to request model promotion approval" }, { status: 500 });
   }
 }
 

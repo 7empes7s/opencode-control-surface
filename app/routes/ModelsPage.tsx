@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { ChevronDown, ChevronRight, GitBranch, ShieldCheck } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
+import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
@@ -31,13 +33,220 @@ type Modal =
   | { type: "unblock"; model: string }
   | { type: "probation-clear"; model: string }
   | { type: "cooldown-clear"; model: string }
+  | { type: "promotion-request"; model: string }
   | { type: "run-check" };
 
 export type ModelsSortKey = "logicalName" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
 
+interface ModelLifecycle {
+  logicalName: string;
+  resolvedModel: string | null;
+  evalHistory: Array<{ ts: number; score: number | null; latencyMs: number | null; error: string | null }>;
+  firstSeen: number | null;
+  lastEval: number | null;
+  qualityStatus: string;
+  recentFailures: number;
+  consecutiveGarbage: number;
+  routingReliability: {
+    totalRequests: number;
+    successCount: number;
+    fallbackCount: number;
+    failedCount: number;
+    avgLatencyMs: number | null;
+  } | null;
+  approval: {
+    id: string;
+    status: "pending" | "approved" | "rejected" | "expired";
+    requestedAt: number;
+    requestedBy?: string | null;
+    expiresAt?: number | null;
+    decidedAt?: number | null;
+  } | null;
+  promotionReadiness: {
+    gate: "ready" | "blocked" | "needs-approval";
+    reasons: string[];
+    threshold: { minEvalScore: number };
+  };
+  unavailableCapabilities: string[];
+}
+
+function fmtTs(ts: number | null | undefined): string {
+  if (!ts) return "—";
+  return new Date(ts).toISOString().slice(0, 19).replace("T", " ") + " UTC";
+}
+
+function readinessColor(gate: ModelLifecycle["promotionReadiness"]["gate"]): string {
+  if (gate === "ready") return "green";
+  if (gate === "blocked") return "red";
+  return "amber";
+}
+
+function Sparkline({
+  samples,
+  field,
+  label,
+}: {
+  samples: ModelLifecycle["evalHistory"];
+  field: "score" | "latencyMs";
+  label: string;
+}) {
+  const values = samples
+    .map((sample) => sample[field])
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (values.length === 0) {
+    return (
+      <div className="model-lifecycle-chart empty">
+        <div className="model-lifecycle-chart-label">{label}</div>
+        <div className="loading-dim">No {label.toLowerCase()} samples yet</div>
+      </div>
+    );
+  }
+  const min = field === "score" ? 0 : Math.min(...values);
+  const max = field === "score" ? 1 : Math.max(...values);
+  const span = Math.max(0.001, max - min);
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100;
+    const y = 34 - ((value - min) / span) * 28;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  const latest = values[values.length - 1];
+
+  return (
+    <div className="model-lifecycle-chart">
+      <div className="model-lifecycle-chart-head">
+        <span>{label}</span>
+        <span className="mono dim">{field === "score" ? latest.toFixed(2) : `${Math.round(latest)}ms`}</span>
+      </div>
+      <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-label={`${label} trend`}>
+        <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.4" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  );
+}
+
+function ModelLifecyclePanel({
+  logicalName,
+  refreshNonce,
+  onRequestPromotion,
+}: {
+  logicalName: string;
+  refreshNonce: number;
+  onRequestPromotion: (model: string) => void;
+}) {
+  const { data, loading, error, refresh } = useApi<ModelLifecycle>(`/api/models/${encodeURIComponent(logicalName)}/lifecycle?refresh=${refreshNonce}`, 0);
+
+  if (loading && !data) {
+    return <div className="model-lifecycle-panel"><div className="loading-dim">Loading model lifecycle…</div></div>;
+  }
+  if (error && !data) {
+    return (
+      <div className="model-lifecycle-panel">
+        <div className="loading-dim error">Lifecycle did not load: {error}</div>
+        <button className="btn btn-sm btn-ghost model-lifecycle-action" onClick={refresh}>Retry</button>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const gate = data.promotionReadiness.gate;
+  const approval = data.approval;
+
+  return (
+    <div className="model-lifecycle-panel">
+      <div className="model-lifecycle-grid">
+        <section className="model-lifecycle-section">
+          <div className="model-lifecycle-title"><GitBranch size={15} /> Evaluation timeline</div>
+          {data.evalHistory.length === 0 ? (
+            <div className="model-lifecycle-empty">No eval history yet for this model</div>
+          ) : (
+            <>
+              <div className="model-lifecycle-charts">
+                <Sparkline samples={data.evalHistory} field="score" label="Eval score" />
+                <Sparkline samples={data.evalHistory} field="latencyMs" label="Latency" />
+              </div>
+              <div className="model-lifecycle-samples">
+                {data.evalHistory.slice(-5).map((sample) => (
+                  <div key={`${sample.ts}-${sample.score}-${sample.latencyMs}`} className="model-lifecycle-sample">
+                    <span className="mono">{fmtTs(sample.ts)}</span>
+                    <span>score {sample.score == null ? "—" : sample.score.toFixed(2)}</span>
+                    <span>{sample.latencyMs == null ? "latency —" : `${Math.round(sample.latencyMs)}ms`}</span>
+                    {sample.error ? <Pill color="red">error</Pill> : null}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="model-lifecycle-section">
+          <div className="model-lifecycle-title">Quality and routing</div>
+          <div className="model-lifecycle-facts">
+            <div><span className="dim">Quality</span><Pill color={qualityColor(data.qualityStatus)}>{data.qualityStatus}</Pill></div>
+            <div><span className="dim">Recent failures</span><span className="mono">{data.recentFailures}</span></div>
+            <div><span className="dim">Consecutive garbage</span><span className="mono">{data.consecutiveGarbage}</span></div>
+            <div><span className="dim">First seen</span><span className="mono">{fmtTs(data.firstSeen)}</span></div>
+            <div><span className="dim">Last eval</span><span className="mono">{fmtTs(data.lastEval)}</span></div>
+          </div>
+          <div className="model-lifecycle-note">
+            Quality transitions are not stored in this deployment; current policy state is shown from the model quality file.
+          </div>
+          {data.routingReliability ? (
+            <div className="model-lifecycle-routing">
+              <span className="mono">{data.routingReliability.totalRequests}</span> routed calls,
+              <span className="mono"> {data.routingReliability.successCount}</span> ok,
+              <span className="mono"> {data.routingReliability.failedCount}</span> failed,
+              avg latency <span className="mono">{data.routingReliability.avgLatencyMs == null ? "—" : `${Math.round(data.routingReliability.avgLatencyMs)}ms`}</span>
+            </div>
+          ) : (
+            <div className="model-lifecycle-note">Routing reliability is not available because the observability database is not open.</div>
+          )}
+        </section>
+
+        <section className="model-lifecycle-section model-lifecycle-grc">
+          <div className="model-lifecycle-title"><ShieldCheck size={15} /> GRC readiness</div>
+          <div className="model-lifecycle-gate">
+            <Pill color={readinessColor(gate)}>{gate}</Pill>
+            <span className="dim">eval threshold {data.promotionReadiness.threshold.minEvalScore.toFixed(2)}</span>
+          </div>
+          <ul className="model-lifecycle-reasons">
+            {data.promotionReadiness.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+          </ul>
+          {approval ? (
+            <div className="model-lifecycle-approval">
+              <span>Approval</span>
+              <Pill color={approval.status === "approved" ? "green" : approval.status === "pending" ? "amber" : "red"}>{approval.status}</Pill>
+              <span className="mono dim">{approval.id}</span>
+            </div>
+          ) : (
+            <div className="model-lifecycle-note">No promotion approval exists for this model.</div>
+          )}
+          <button
+            className="btn btn-sm btn-primary model-lifecycle-action"
+            disabled={gate !== "needs-approval"}
+            onClick={() => onRequestPromotion(logicalName)}
+          >
+            Request promotion approval
+          </button>
+        </section>
+      </div>
+
+      <div className="model-lifecycle-unavailable">
+        {data.unavailableCapabilities.map((text) => <div key={text}>{text}</div>)}
+      </div>
+    </div>
+  );
+}
+
 export function ModelsPage() {
   const { data, loading, error, refresh } = useApi<ModelsDetail>("/api/models", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [lifecycleRefreshNonce, setLifecycleRefreshNonce] = useState(0);
+  const [promotionState, setPromotionState] = useState<{ loading: boolean; error: string | null; success: string | null }>({
+    loading: false,
+    error: null,
+    success: null,
+  });
   const action = useAction("/api/models/action");
 
   const modelsCtrl = useTableControls<NonNullable<ModelsDetail["models"]>[number], ModelsSortKey>({
@@ -100,6 +309,7 @@ export function ModelsPage() {
             modal.type === "unblock" ? `Unblock ${modal.model}?` :
             modal.type === "probation-clear" ? `Clear probation for ${modal.model}?` :
             modal.type === "cooldown-clear" ? `Clear cooldown for ${modal.model}?` :
+            modal.type === "promotion-request" ? `Request promotion approval for ${modal.model}?` :
             "Run model health check?"
           }
           message={
@@ -111,6 +321,8 @@ export function ModelsPage() {
               ? `${modal.model} will be cleared from probation and restored to healthy status.`
               : modal.type === "cooldown-clear"
               ? `The active cooldown for ${modal.model} will be removed immediately.`
+              : modal.type === "promotion-request"
+              ? "Creates an auditable governance approval request. It does not promote the model by itself."
               : "Triggers the model-health-check.service immediately."
           }
           confirmLabel={
@@ -118,13 +330,41 @@ export function ModelsPage() {
             modal.type === "unblock" ? "Unblock" :
             modal.type === "probation-clear" ? "Clear probation" :
             modal.type === "cooldown-clear" ? "Clear cooldown" :
+            modal.type === "promotion-request" ? "Request approval" :
             "Run"
           }
           danger={modal.type === "block"}
-          loading={action.loading}
-          error={action.error}
-          onCancel={() => { setModal(null); action.reset(); }}
+          loading={modal.type === "promotion-request" ? promotionState.loading : action.loading}
+          error={modal.type === "promotion-request" ? promotionState.error : action.error}
+          onCancel={() => {
+            setModal(null);
+            action.reset();
+            setPromotionState({ loading: false, error: null, success: null });
+          }}
           onConfirm={async () => {
+            if (modal.type === "promotion-request") {
+              setPromotionState({ loading: true, error: null, success: null });
+              try {
+                const res = await authFetch(`/api/models/${encodeURIComponent(modal.model)}/promotion-request`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ reason: "Operator requested model promotion approval from /models lifecycle panel." }),
+                });
+                const json = await res.json().catch(() => ({})) as { error?: string };
+                if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+                setPromotionState({ loading: false, error: null, success: "Promotion approval requested" });
+                setLifecycleRefreshNonce((n) => n + 1);
+                setModal(null);
+                return;
+              } catch (e) {
+                setPromotionState({
+                  loading: false,
+                  error: e instanceof Error ? e.message : String(e),
+                  success: null,
+                });
+                return;
+              }
+            }
             let body: unknown;
             if (modal.type === "block") body = { action: "block", model: modal.model };
             else if (modal.type === "unblock") body = { action: "unblock", model: modal.model };
@@ -154,6 +394,7 @@ export function ModelsPage() {
         </button>
         {action.success && <span className="action-feedback ok">{action.success}</span>}
         {action.error && <span className="action-feedback err">{action.error}</span>}
+        {promotionState.success && <span className="action-feedback ok">{promotionState.success}</span>}
       </div>
 
       {/* All models table */}
@@ -191,40 +432,63 @@ export function ModelsPage() {
             </tr></thead>
             <tbody>
               {modelsCtrl.rows.map((m) => (
-                <tr key={m.logicalName}>
-                  <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>{m.logicalName}</td>
-                  <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
-                  <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                  <td className="actions-col">
-                    <div style={{ display: "flex", gap: 4 }}>
-                      {m.qualityStatus === "blocked" ? (
-                        <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
-                      ) : m.qualityStatus === "probation" ? (
-                        <>
-                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                <Fragment key={m.logicalName}>
+                  <tr className={expandedModel === m.logicalName ? "model-row expanded" : "model-row"}>
+                    <td className="mono model-name-cell" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>
+                      <button
+                        className="model-expand-btn"
+                        onClick={() => setExpandedModel(expandedModel === m.logicalName ? null : m.logicalName)}
+                        aria-expanded={expandedModel === m.logicalName}
+                        aria-label={`Toggle lifecycle for ${m.logicalName}`}
+                      >
+                        {expandedModel === m.logicalName ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      </button>
+                      <span>{m.logicalName}</span>
+                    </td>
+                    <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
+                    <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
+                    <td className="actions-col">
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {m.qualityStatus === "blocked" ? (
+                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
+                        ) : m.qualityStatus === "probation" ? (
+                          <>
+                            <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                            <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                          </>
+                        ) : (
                           <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
-                        </>
-                      ) : (
-                        <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
-                      )}
-                    </div>
-                  </td>
-                  <td className="price-col">
-                    {m.isFree && <Pill color="green">free</Pill>}
-                    {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
-                    {m.isOpenCode && <span className="text-xs" style={{ marginLeft: 4 }} title="OpenCode native">🔷</span>}
-                  </td>
-                  <td className="type-col"><Pill>{m.providerType}</Pill></td>
-                  <td className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
-                  <td className="dim mono models-col-provider provider-col">{m.provider}</td>
-                  <td className="mono dim ctx-col">{fmtContextWindow(m.contextWindow)}</td>
-                  <td className="mono dim rating-col">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
-                  <td className="mono dim latency-col models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
-                  <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
-                  <td className="mono dim models-col-failures">
-                    {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
-                  </td>
-                </tr>
+                        )}
+                      </div>
+                    </td>
+                    <td className="price-col">
+                      {m.isFree && <Pill color="green">free</Pill>}
+                      {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
+                      {m.isOpenCode && <span className="text-xs" style={{ marginLeft: 4 }} title="OpenCode native">🔷</span>}
+                    </td>
+                    <td className="type-col"><Pill>{m.providerType}</Pill></td>
+                    <td className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
+                    <td className="dim mono models-col-provider provider-col">{m.provider}</td>
+                    <td className="mono dim ctx-col">{fmtContextWindow(m.contextWindow)}</td>
+                    <td className="mono dim rating-col">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
+                    <td className="mono dim latency-col models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
+                    <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
+                    <td className="mono dim models-col-failures">
+                      {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
+                    </td>
+                  </tr>
+                  {expandedModel === m.logicalName ? (
+                    <tr className="model-lifecycle-row">
+                      <td colSpan={13}>
+                        <ModelLifecyclePanel
+                          logicalName={m.logicalName}
+                          refreshNonce={lifecycleRefreshNonce}
+                          onRequestPromotion={(model) => setModal({ type: "promotion-request", model })}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>

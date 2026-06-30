@@ -24,6 +24,8 @@ import { getDossierArtifacts, injectDossierNotes } from "./dossier.ts";
 import { dataExplorerTableHandler, dataExplorerTablesHandler } from "./dataExplorer.ts";
 import {
   modelsHandler,
+  modelLifecycleHandler,
+  modelPromotionRequestHandler,
   getRoutingLogs,
   getRoutingStats,
   forceRouteModel,
@@ -646,6 +648,8 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/autopipeline") return autopipelineHandler();
   if (method === "GET" && pathname === "/api/doctor") return doctorHandler(url);
   if (method === "GET" && pathname === "/api/models") return modelsHandler();
+  const modelLifecycleEarlyMatch = pathname.match(/^\/api\/models\/([^/]+)\/lifecycle$/);
+  if (method === "GET" && modelLifecycleEarlyMatch) return modelLifecycleHandler(modelLifecycleEarlyMatch[1]);
   if (method === "GET" && pathname === "/api/agent-team") return agentTeamHandler();
   const agentTeamJobMatch = pathname.match(/^\/api\/agent-team\/job\/([^/]+)$/);
   if (method === "GET" && agentTeamJobMatch) return agentTeamJobHandler(decodeURIComponent(agentTeamJobMatch[1]));
@@ -941,6 +945,12 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Model Routing ────────────────────────────────────────────────────────────
+  const modelPromotionRequestMatch = pathname.match(/^\/api\/models\/([^/]+)\/promotion-request$/);
+  if (method === "POST" && modelPromotionRequestMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return modelPromotionRequestHandler(req, modelPromotionRequestMatch[1]);
+  }
   if (method === "GET" && pathname === "/api/models/routing-log") return getRoutingLogs(req);
   if (method === "GET" && pathname === "/api/models/routing-stats") return getRoutingStats(req);
   if (method === "POST" && pathname === "/api/models/force-route") {
