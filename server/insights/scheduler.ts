@@ -5,6 +5,7 @@ import { runRegistryScan } from "./scanners/registry.ts";
 import { runBudgetScan } from "./scanners/budget.ts";
 import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
+import { autoResolveStaleIncidents } from "../reasoner/lifecycle.ts";
 import { runOpsScan } from "./scanners/ops.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
 import { runEdgeScan } from "./scanners/edge.ts";
@@ -34,6 +35,7 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
   budgetFindings: number;
   anomalies: number;
   sentinelIncidents: number;
+  incidentsAutoResolved: number;
   opsFindings: number;
   discoveryFindings: number;
   edgeFindings: number;
@@ -51,6 +53,15 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     sentinelIncidents = runSentinelIncidentScan().createdOrUpdated;
   } catch (error) {
     console.error("[insights] sentinel incident scan failed", error);
+  }
+  let incidentsAutoResolved = 0;
+  try {
+    incidentsAutoResolved = autoResolveStaleIncidents().resolvedIds.length;
+    if (incidentsAutoResolved > 0) {
+      console.log(`[incidents] auto-resolved ${incidentsAutoResolved} stale incidents`);
+    }
+  } catch (error) {
+    console.error("[insights] incident auto-resolve failed", error);
   }
   let opsFindings = 0;
   try {
@@ -118,7 +129,7 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     await runDailyDigestGate(!!opts.firstBootTick);
   }
 
-  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, opsFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
+  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, incidentsAutoResolved, opsFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {
