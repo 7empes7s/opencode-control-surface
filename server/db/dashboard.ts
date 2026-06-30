@@ -1204,6 +1204,8 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
   ensureColumn(db, "reasoner_incidents", "acknowledged_by", "TEXT");
   ensureColumn(db, "reasoner_incidents", "mitigated_at", "INTEGER");
   ensureColumn(db, "reasoner_incidents", "mitigated_by", "TEXT");
+  ensureColumn(db, "reasoner_incidents", "resolved_at", "INTEGER");
+  ensureColumn(db, "reasoner_incidents", "post_mortem", "TEXT");
   ensureColumn(db, "reasoner_incident_members", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_playbooks", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_playbook_runs", "tenant_id", "TEXT");

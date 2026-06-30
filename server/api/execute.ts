@@ -336,9 +336,17 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       const now = Date.now();
       const ctx = getCurrentTenantContext();
       const actor = ctx.actor ?? "operator";
-      db.query(
-        `UPDATE reasoner_incidents SET acknowledged_at = ?, acknowledged_by = ? WHERE id = ? AND acknowledged_at IS NULL`
-      ).run(now, actor, targetId);
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+      db.query(`
+        UPDATE reasoner_incidents
+        SET acknowledged_at = COALESCE(acknowledged_at, ?),
+            acknowledged_by = COALESCE(acknowledged_by, ?)
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(now, actor, targetId, ctx.tenantId);
       return { ok: true, action: "acknowledge", message: `incident ${targetId} acknowledged` };
     } catch {
       return { ok: false, error: "database error", code: "EXEC_ERROR" };
@@ -354,17 +362,47 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       const now = Date.now();
       const ctx = getCurrentTenantContext();
       const actor = ctx.actor ?? "operator";
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
       db.query(
-        `UPDATE reasoner_incidents SET mitigated_at = ?, mitigated_by = ? WHERE id = ?`
-      ).run(now, actor, targetId);
+        `UPDATE reasoner_incidents SET mitigated_at = ?, mitigated_by = ? WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)`
+      ).run(now, actor, targetId, ctx.tenantId);
       return { ok: true, action: "mitigate", message: `incident ${targetId} marked mitigating` };
     } catch {
       return { ok: false, error: "database error", code: "EXEC_ERROR" };
     }
   }
 
-  if ((kind === "resolve" || kind === "mute") && targetType === "incident") {
-    return { ok: false, error: "use /api/reasoner/incidents/:id POST to resolve", code: "NOT_IMPLEMENTED" };
+  if (kind === "resolve" && targetType === "incident") {
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const now = Date.now();
+      const ctx = getCurrentTenantContext();
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+      db.query(`
+        UPDATE reasoner_incidents
+        SET status = 'resolved',
+            resolved_at = COALESCE(resolved_at, ?)
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(now, targetId, ctx.tenantId);
+      return { ok: true, action: "resolve", message: `incident ${targetId} resolved` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "mute" && targetType === "incident") {
+    return { ok: false, error: "incident mute is not implemented", code: "NOT_IMPLEMENTED" };
   }
 
   return { ok: false, error: "action not supported: " + kind, code: "NOT_FOUND" };

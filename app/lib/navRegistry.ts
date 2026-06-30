@@ -50,6 +50,7 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/channels": { status: "advanced" },
   "/content-health": { status: "advanced", experimental: true },
   "/reports": { status: "advanced" },
+  "/data-explorer": { status: "advanced", experimental: true },
   "/status": { status: "hidden" },
 };
 

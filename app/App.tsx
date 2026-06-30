@@ -33,6 +33,7 @@ import { DossierInspectorPage } from "./routes/DossierInspectorPage";
 import { ChannelsPage } from "./routes/ChannelsPage";
 import { ContentHealthPage } from "./routes/ContentHealthPage";
 import { ReportsPage } from "./routes/ReportsPage";
+import { DataExplorerPage } from "./routes/DataExplorerPage";
 import ScoutPage from "./routes/ScoutPage";
 import BrainstormPage from "./routes/BrainstormPage";
 import { CostPage } from "./routes/CostPage";
@@ -208,6 +209,9 @@ export function App() {
         </Route>
         <Route path="/reports">
           <DashLayout><ReportsPage /></DashLayout>
+        </Route>
+        <Route path="/data-explorer">
+          <DashLayout><DataExplorerPage /></DashLayout>
         </Route>
         <Route path="/compliance">
           <DashLayout><CompliancePage /></DashLayout>

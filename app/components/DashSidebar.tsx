@@ -39,6 +39,7 @@ import {
   FileCheck2,
   FileText,
   ShieldAlert,
+  Database,
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
@@ -94,6 +95,7 @@ const NAV: NavItem[] = [
   { href: "/channels", label: "Channels", icon: Bell },
   { href: "/content-health", label: "Content Health", icon: FileCheck2 },
   { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/data-explorer", label: "Data Explorer", icon: Database },
 ];
 
 const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");

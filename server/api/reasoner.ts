@@ -344,7 +344,7 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
   const row = db.query(`
     SELECT id, cluster_key, failure_class, title, first_seen, last_seen,
            occurrence_count, representative_pass_id, representative_diagnosis_id, status,
-           acknowledged_at, acknowledged_by, mitigated_at, mitigated_by
+           acknowledged_at, acknowledged_by, mitigated_at, mitigated_by, resolved_at, post_mortem
     FROM reasoner_incidents
     WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
   `).get(id, tenantId) as {
@@ -362,6 +362,8 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
     acknowledged_by: string | null;
     mitigated_at: number | null;
     mitigated_by: string | null;
+    resolved_at: number | null;
+    post_mortem: string | null;
   } | null;
   if (!row) return json({ error: "not found" }, 404);
 
@@ -397,6 +399,8 @@ export async function reasonerIncidentByIdHandler(id: string): Promise<Response>
     acknowledgedBy: row.acknowledged_by ?? null,
     mitigatedAt: row.mitigated_at ?? null,
     mitigatedBy: row.mitigated_by ?? null,
+    resolvedAt: row.resolved_at ?? null,
+    postMortem: row.post_mortem ?? null,
     members: members.map((m) => ({
       id: m.id,
       passId: m.pass_id,
@@ -420,7 +424,20 @@ export async function reasonerResolveIncidentHandler(id: string): Promise<Respon
     WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
   `).get(id, tenantId) as IncidentRow | undefined;
   if (!existing) return json({ error: "not found" }, 404);
-  db.query(`UPDATE reasoner_incidents SET status = 'resolved' WHERE id = ?`).run(id);
+  db.query(`
+    UPDATE reasoner_incidents
+    SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?)
+    WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+  `).run(Date.now(), id, tenantId);
+  writeActionAudit({
+    actionKind: "resolve.incident",
+    actionId: `resolve:incident:${id}`,
+    targetType: "incident",
+    targetId: id,
+    risk: "low",
+    result: `incident ${id} resolved`,
+    resultStatus: "success",
+  });
   const incidentForPostMortem: IncidentRow = { ...existing, status: "resolved" };
 
   let postMortemId: number | null = null;

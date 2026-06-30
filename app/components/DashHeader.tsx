@@ -17,6 +17,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/newsbites": { title: "NewsBites", sub: "Articles, deploys, site health" },
   "/infra": { title: "Infrastructure", sub: "Hetzner · Vast · GPU · services" },
   "/incidents": { title: "Incidents", sub: "Cross-cutting failure timeline" },
+  "/data-explorer": { title: "Data Explorer", sub: "Read-only allowlisted operational tables" },
   "/opencode": { title: "OpenCode", sub: "Agent sessions" },
   "/codex": { title: "Codex", sub: "Headless codex exec" },
   "/claude": { title: "Claude Code", sub: "Headless claude wrapper (planned)" },

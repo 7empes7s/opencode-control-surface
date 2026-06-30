@@ -21,6 +21,7 @@ import {
 } from "./paperclip.ts";
 import { fsBrowseHandler } from "./fs.ts";
 import { getDossierArtifacts, injectDossierNotes } from "./dossier.ts";
+import { dataExplorerTableHandler, dataExplorerTablesHandler } from "./dataExplorer.ts";
 import {
   modelsHandler,
   getRoutingLogs,
@@ -31,7 +32,7 @@ import {
 import { newsBitesHandler } from "./newsbites.ts";
 import { deleteArticleHandler, articleDossierPathHandler, refreshArticleImageHandler, uploadArticleImageHandler } from "./newsbites-actions.ts";
 import { infraHandler } from "./infra.ts";
-import { incidentsHandler } from "./incidents.ts";
+import { incidentAckHandler, incidentPostMortemHandler, incidentResolveHandler, incidentsHandler } from "./incidents.ts";
 import { streamHandler } from "./stream.ts";
 import { actionCatalogHandler } from "./actionDescriptors.ts";
 import { actionAuditHandler, auditExportHandler } from "./audit.ts";
@@ -705,6 +706,29 @@ if (method === "GET" && pathname === "/api/stream") {
     return notificationRulesHandler(url);
   }
   if (method === "GET" && pathname === "/api/incidents") return incidentsHandler();
+  const incidentAckMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/ack$/);
+  if (method === "POST" && incidentAckMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentAckHandler(decodeURIComponent(incidentAckMatch[1]));
+  }
+  const incidentResolveMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/resolve$/);
+  if (method === "POST" && incidentResolveMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentResolveHandler(decodeURIComponent(incidentResolveMatch[1]), req);
+  }
+  const incidentPostMortemMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/post-mortem$/);
+  if (method === "POST" && incidentPostMortemMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentPostMortemHandler(decodeURIComponent(incidentPostMortemMatch[1]), req);
+  }
+  if (method === "GET" && pathname === "/api/data-explorer/tables") return dataExplorerTablesHandler();
+  const dataExplorerTableMatch = pathname.match(/^\/api\/data-explorer\/table\/([^/]+)$/);
+  if (method === "GET" && dataExplorerTableMatch) {
+    return dataExplorerTableHandler(decodeURIComponent(dataExplorerTableMatch[1]), url);
+  }
   if (method === "GET" && pathname === "/api/agents/skills") return agentsSkillsHandler(url);
   if (method === "GET" && pathname === "/api/agents/quick-prompts") return agentsQuickPromptsHandler(url);
   if (method === "GET" && pathname === "/api/agents/summary") return agentsSummaryHandler();
