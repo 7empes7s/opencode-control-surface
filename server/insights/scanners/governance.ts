@@ -256,11 +256,63 @@ export function readSecurityPostureSignal(): SecurityPostureSignal | null {
   }
 }
 
+const STALE_FLAG_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const STALE_UNTOUCHED_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
 export function readStaleFeatureFlagFindings(): InsightInput[] {
-  // Phase 15: feature flag storage is intentionally not created here. When the
-  // feature_flags table lands, this can scan rollout state and updated_at.
   if (!hasTable("feature_flags")) return [];
-  return [];
+  const db = getDashboardDb();
+  if (!db) return [];
+  const now = Date.now();
+  const staleThreshold = now - STALE_FLAG_WINDOW_MS;
+  const untouchedThreshold = now - STALE_UNTOUCHED_WINDOW_MS;
+
+  type FlagRow = { id: string; key: string; label: string | null; enabled: number; rollout_percentage: number; updated_at: number };
+
+  const flags = db.query<FlagRow, [number, number]>(
+    `SELECT id, key, label, enabled, rollout_percentage, updated_at
+     FROM feature_flags
+     WHERE (
+       (enabled = 1 AND rollout_percentage = 100 AND updated_at < ?)
+       OR
+       (updated_at < ?)
+     )`,
+  ).all(staleThreshold, untouchedThreshold) as FlagRow[];
+
+  const findings: InsightInput[] = [];
+  for (const flag of flags) {
+    const name = flag.label ?? flag.key;
+    if (flag.enabled && flag.rollout_percentage >= 100 && flag.updated_at < staleThreshold) {
+      findings.push({
+        id: `insight_ops_stale_ff_${safeKey(flag.key)}`,
+        sourceKey: `ops:stale-feature-flag:${flag.key}`,
+        domain: "ops",
+        severity: "low",
+        title: `Feature flag "${name}" is fully rolled out and can be removed`,
+        plainSummary: `Flag "${flag.key}" has been enabled at 100% rollout for over 30 days without changes. If this feature is stable and permanent, remove the flag from the codebase to reduce dead code and branching complexity.`,
+        confidence: 0.85,
+        evidenceRefs: [evidence("Feature flags table", "db", "feature_flags")],
+        actionDescriptorId: null,
+        manualPageHref: "/feature-flags",
+        createdAt: now,
+      });
+    } else if (flag.updated_at < untouchedThreshold) {
+      findings.push({
+        id: `insight_ops_inactive_ff_${safeKey(flag.key)}`,
+        sourceKey: `ops:stale-feature-flag:${flag.key}`,
+        domain: "ops",
+        severity: "info",
+        title: `Feature flag "${name}" has not been modified in 90 days`,
+        plainSummary: `Flag "${flag.key}" hasn't changed in over 90 days. Review whether it is still needed — stale flags add maintenance burden and make the codebase harder to reason about.`,
+        confidence: 0.75,
+        evidenceRefs: [evidence("Feature flags table", "db", "feature_flags")],
+        actionDescriptorId: null,
+        manualPageHref: "/feature-flags",
+        createdAt: now,
+      });
+    }
+  }
+  return findings;
 }
 
 export function mapConfigSelfCheckFindings(checks: ConfigSelfCheck[], now: number): InsightInput[] {
@@ -403,6 +455,7 @@ export function runGovernanceScan(): ScanResult {
     ...resolveStaleInsights("security:posture-regression", emittedSourceKeys, "The governance scanner confirmed security posture recovered."),
     ...resolveStaleInsights("security:compliance-", emittedSourceKeys, "The governance scanner confirmed this compliance gap cleared."),
     ...resolveStaleInsights("ops:sla-breach:", emittedSourceKeys, "The governance scanner confirmed this SLA breach is no longer open."),
+    ...resolveStaleInsights("ops:stale-feature-flag:", emittedSourceKeys, "The feature flag is no longer stale or has been removed."),
   ];
   for (const insight of resolved) {
     writeActionAudit({

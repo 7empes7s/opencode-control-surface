@@ -1443,6 +1443,27 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     CREATE INDEX IF NOT EXISTS idx_config_changes_key ON config_changes (key, ts DESC);
   `);
 
+  // ── Phase 15: feature flags ───────────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS feature_flags (
+      id TEXT PRIMARY KEY,
+      key TEXT NOT NULL,
+      label TEXT,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      rollout_percentage INTEGER NOT NULL DEFAULT 0,
+      targeting_json TEXT,
+      created_at INTEGER,
+      updated_at INTEGER,
+      created_by TEXT,
+      tenant_id TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_flags_tenant_key
+      ON feature_flags (tenant_id, key);
+    CREATE INDEX IF NOT EXISTS idx_feature_flags_tenant_updated
+      ON feature_flags (tenant_id, updated_at);
+  `);
+
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
   // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to

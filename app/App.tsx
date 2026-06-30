@@ -38,6 +38,7 @@ import ScoutPage from "./routes/ScoutPage";
 import BrainstormPage from "./routes/BrainstormPage";
 import { CostPage } from "./routes/CostPage";
 import { InsightsPage } from "./routes/InsightsPage";
+import { FeatureFlagsPage } from "./routes/FeatureFlagsPage";
 import { SecurityPage } from "./routes/SecurityPage";
 import { AgentRegistryPage } from "./routes/AgentRegistryPage";
 import { StatusPage } from "./routes/StatusPage";
@@ -215,6 +216,9 @@ export function App() {
         </Route>
         <Route path="/compliance">
           <DashLayout><CompliancePage /></DashLayout>
+        </Route>
+        <Route path="/feature-flags">
+          <DashLayout><FeatureFlagsPage /></DashLayout>
         </Route>
 
         <Route>

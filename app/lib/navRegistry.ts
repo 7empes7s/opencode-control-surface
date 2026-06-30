@@ -52,6 +52,7 @@ export const NAV_REGISTRY: Record<string, RouteEntry> = {
   "/reports": { status: "advanced" },
   "/data-explorer": { status: "advanced", experimental: true },
   "/status": { status: "hidden" },
+  "/feature-flags": { status: "advanced" },
 };
 
 export function getRouteStatus(href: string): RouteStatus {

@@ -278,6 +278,14 @@ import { ok, type ApiEnvelope } from "./types.ts";
 import { getActiveLicense } from "../licensing/index.ts";
 import { getTelemetryConsent, setTelemetryConsent, collectTelemetryPayload } from "../telemetry/index.ts";
 import { onboardingStatusHandler, onboardingStepHandler } from "./onboarding.ts";
+import {
+  featureFlagsListHandler,
+  featureFlagsCreateHandler,
+  featureFlagsGetHandler,
+  featureFlagsUpdateHandler,
+  featureFlagsDeleteHandler,
+  featureFlagsHistoryHandler,
+} from "./featureFlags.ts";
 import { installStatusHandler } from "./install.ts";
 import { docsTutorialsHandler } from "./docs.ts";
 import { cloudTierStatusHandler } from "./cloud-tier.ts";
@@ -1536,6 +1544,33 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
     const roleErr = requireInsightPermission(req, "insights.view");
     if (roleErr) return roleErr;
     return complianceEvidencePackGetHandler(req, decodeURIComponent(evidencePackMatch[1]));
+  }
+
+  // ── Feature Flags (Phase 15) ─────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/feature-flags") return featureFlagsListHandler(req);
+  if (method === "POST" && pathname === "/api/feature-flags") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return featureFlagsCreateHandler(req);
+  }
+  const featureFlagMatch = pathname.match(/^\/api\/feature-flags\/([^/]+)$/);
+  if (featureFlagMatch) {
+    const flagId = decodeURIComponent(featureFlagMatch[1]);
+    if (method === "GET") return featureFlagsGetHandler(req, flagId);
+    if (method === "PATCH" || method === "POST") {
+      const denied = requireMutation(req);
+      if (denied) return denied;
+      return featureFlagsUpdateHandler(req, flagId);
+    }
+    if (method === "DELETE") {
+      const denied = requireMutation(req);
+      if (denied) return denied;
+      return featureFlagsDeleteHandler(req, flagId);
+    }
+  }
+  const featureFlagHistoryMatch = pathname.match(/^\/api\/feature-flags\/([^/]+)\/history$/);
+  if (method === "GET" && featureFlagHistoryMatch) {
+    return featureFlagsHistoryHandler(req, decodeURIComponent(featureFlagHistoryMatch[1]));
   }
 
   // ── Brainstormer ─────────────────────────────────────────────────────────────────
