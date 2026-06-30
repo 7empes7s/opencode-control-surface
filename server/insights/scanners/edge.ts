@@ -148,7 +148,7 @@ export function discoverPublicTargets(): EdgeTarget[] {
 async function defaultHttpProbe(target: EdgeTarget): Promise<HttpProbeResult> {
   try {
     let res = await fetch(target.url, { method: "HEAD", signal: AbortSignal.timeout(5000) });
-    if (res.status === 405) {
+    if (res.status >= 400) {
       res = await fetch(target.url, { method: "GET", signal: AbortSignal.timeout(5000) });
     }
     return { ok: res.status >= 200 && res.status < 300, status: res.status };
