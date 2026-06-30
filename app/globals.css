@@ -5732,6 +5732,51 @@ body {
   .topnav-mode-cycle { display: inline-flex; }
 }
 
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  [role="tab"],
+  select,
+  input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  .btn,
+  .btn-sm {
+    min-height: 44px;
+  }
+
+  .filter-input,
+  .filter-select,
+  .table-filter-bar select,
+  .table-controls select,
+  .audit-select,
+  .form-select {
+    min-height: 44px;
+  }
+
+  .table-controls-search {
+    min-height: 44px;
+  }
+
+  .table-controls-pagination .table-page-btn {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .topnav-hamburger {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .ctx-pill {
+    min-height: 44px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+}
+
 /* Desktop: show the cycling button only when explicitly enabled, hide otherwise. */
 @media (min-width: 601px) {
   .topnav-mode-cycle { display: none !important; }
