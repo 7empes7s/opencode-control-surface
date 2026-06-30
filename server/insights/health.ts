@@ -27,10 +27,22 @@ export type AdminHealthScore = {
 export type AdminHealthTrendPoint = { ts: number; score: number };
 
 const HEALTH_PATH = "/var/lib/mimule/product-health.json";
-const BRIEFING_CACHE_MS = 6 * 60 * 60 * 1000;
+const BRIEFING_RETRY_MS = 30 * 60 * 1000;
 const BRIEFING_MODEL = "editorial-heavy";
+const BRIEFING_CONFIG_PREFIX = "admin_state_of_stack_briefing:";
 
 type ProductHealth = { score: number | null; fails: number; warns: number; findings: unknown[] };
+export type AdminBriefing = {
+  text: string;
+  model: string;
+  generatedAt: number;
+  dateKey: string;
+  source: "llm" | "fallback";
+};
+type AdminBriefingPromptContext = {
+  recentHistory: string[];
+  relatedFindings: string[];
+};
 
 function readProductHealth(): ProductHealth {
   try {
@@ -137,31 +149,180 @@ export function getAdminHealthTrend(limit = 24): AdminHealthTrendPoint[] {
   }
 }
 
-// In-memory cache for the AI briefing (6h TTL, never blocks callers)
-let briefingCache: { text: string; model: string; generatedAt: number } | null = null;
+// In-memory cache for the daily AI briefing (never blocks callers).
+let briefingCache: AdminBriefing | null = null;
 let briefingInFlight = false;
+let lastBriefingAttemptAt = 0;
 
-export function getAdminBriefing(): { text: string; model: string; generatedAt: number } | null {
+function getUtcDateKey(ts = Date.now()): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function getBriefingConfigKey(dateKey = getUtcDateKey()): string {
+  return `${BRIEFING_CONFIG_PREFIX}${dateKey}`;
+}
+
+function parseAdminBriefing(value: string | null | undefined): AdminBriefing | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<AdminBriefing>;
+    if (
+      typeof parsed.text === "string" &&
+      parsed.text.trim() &&
+      typeof parsed.model === "string" &&
+      typeof parsed.generatedAt === "number" &&
+      typeof parsed.dateKey === "string" &&
+      (parsed.source === "llm" || parsed.source === "fallback")
+    ) {
+      return {
+        text: parsed.text,
+        model: parsed.model,
+        generatedAt: parsed.generatedAt,
+        dateKey: parsed.dateKey,
+        source: parsed.source,
+      };
+    }
+  } catch { /* ignore malformed cache */ }
+  return null;
+}
+
+function readPersistedAdminBriefing(dateKey = getUtcDateKey()): AdminBriefing | null {
+  const db = isDashboardDbEnabled() ? getDashboardDb() : null;
+  if (!db) return null;
+  try {
+    const row = db.query(
+      `SELECT value_json FROM system_configs WHERE key = ?`,
+    ).get(getBriefingConfigKey(dateKey)) as { value_json: string } | null;
+    return parseAdminBriefing(row?.value_json);
+  } catch {
+    return null;
+  }
+}
+
+function persistAdminBriefing(briefing: AdminBriefing): void {
+  const db = isDashboardDbEnabled() ? getDashboardDb() : null;
+  if (!db) return;
+  try {
+    db.query(
+      `INSERT OR REPLACE INTO system_configs (key, value_json, updated_at, updated_by)
+       VALUES (?, ?, ?, ?)`,
+    ).run(getBriefingConfigKey(briefing.dateKey), JSON.stringify(briefing), Date.now(), "admin-briefing");
+  } catch {
+    // Briefing should never break the admin page.
+  }
+}
+
+function buildFallbackAdminBriefing(score: AdminHealthScore, now = Date.now()): AdminBriefing {
+  const driverText = score.drivers.length > 0
+    ? score.drivers.slice(0, 2).map((driver) => driver.label).join("; ")
+    : "no major score drivers are open";
+  const posture = score.score >= 80 ? "stable" : score.score >= 55 ? "watch" : "degraded";
+  const text = `State of the stack is ${posture}: Admin Health is ${score.score}/100 with ${score.openCritical} critical, ${score.openHigh} high, and ${score.openMedium} medium open findings. Top signal: ${driverText}.`;
+  return {
+    text,
+    model: "local-summary",
+    generatedAt: now,
+    dateKey: getUtcDateKey(now),
+    source: "fallback",
+  };
+}
+
+function readAdminBriefingPromptContext(limit = 8): AdminBriefingPromptContext {
+  const db = isDashboardDbEnabled() ? getDashboardDb() : null;
+  if (!db) return { recentHistory: [], relatedFindings: [] };
+  try {
+    const recentRows = db.query(
+      `SELECT domain, severity, title, status, source_key, created_at
+       FROM insights
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    ).all(limit) as Array<{
+      domain: string;
+      severity: string;
+      title: string;
+      status: string;
+      source_key: string | null;
+      created_at: number;
+    }>;
+    const recentHistory = recentRows.map((row) => {
+      const ageMin = Math.max(0, Math.round((Date.now() - row.created_at) / 60000));
+      const source = row.source_key ? ` source=${row.source_key}` : "";
+      return `${row.severity}/${row.domain}/${row.status}: ${row.title}${source} (${ageMin}m ago)`;
+    });
+
+    const relatedRows = db.query(
+      `SELECT domain, severity, source_key, COUNT(*) AS count, MAX(created_at) AS last_seen
+       FROM insights
+       WHERE status = 'open'
+       GROUP BY domain, severity, COALESCE(source_key, '')
+       ORDER BY
+         CASE severity
+           WHEN 'critical' THEN 5
+           WHEN 'high' THEN 4
+           WHEN 'medium' THEN 3
+           WHEN 'low' THEN 2
+           ELSE 1
+         END DESC,
+         count DESC,
+         last_seen DESC
+       LIMIT ?`,
+    ).all(limit) as Array<{
+      domain: string;
+      severity: string;
+      source_key: string | null;
+      count: number;
+      last_seen: number;
+    }>;
+    const relatedFindings = relatedRows.map((row) => {
+      const source = row.source_key ? `source=${row.source_key}` : "no source key";
+      return `${row.count} open ${row.severity}/${row.domain} finding${row.count === 1 ? "" : "s"} (${source})`;
+    });
+
+    return { recentHistory, relatedFindings };
+  } catch {
+    return { recentHistory: [], relatedFindings: [] };
+  }
+}
+
+export function getAdminBriefing(): AdminBriefing {
+  const dateKey = getUtcDateKey();
+  if (briefingCache?.dateKey === dateKey) {
+    return briefingCache;
+  }
+  const persisted = readPersistedAdminBriefing(dateKey);
+  if (persisted) {
+    briefingCache = persisted;
+    return persisted;
+  }
+  briefingCache = buildFallbackAdminBriefing(computeAdminHealthScore());
   return briefingCache;
 }
 
 export async function refreshAdminBriefingIfStale(): Promise<void> {
   const now = Date.now();
   if (briefingInFlight) return;
-  if (briefingCache && now - briefingCache.generatedAt < BRIEFING_CACHE_MS) return;
+  const current = getAdminBriefing();
+  if (current.source === "llm" && current.dateKey === getUtcDateKey(now)) return;
+  if (now - lastBriefingAttemptAt < BRIEFING_RETRY_MS) return;
   briefingInFlight = true;
+  lastBriefingAttemptAt = now;
   try {
     const hs = computeAdminHealthScore();
+    const context = readAdminBriefingPromptContext();
     const prompt = [
       "You are a concise site-reliability advisor for an AI-operated media and software stack.",
       "Write a 2-3 sentence 'State of the Stack' briefing for the operator. Plain English only.",
-      "Be specific about what's currently wrong and what's healthy. Avoid generic filler.",
+      "Be specific about what's currently wrong and what's healthy. Use recent history and related findings to connect likely root causes. Avoid generic filler.",
       "",
       `Admin Health Score: ${hs.score}/100`,
       `Open findings: ${hs.openCritical} critical, ${hs.openHigh} high, ${hs.openMedium} medium`,
       `Product Health: ${hs.productHealthFails} fails`,
       `Security Trust: ${hs.trustScore}/100`,
       hs.drivers.length > 0 ? `Top drivers dragging score down: ${hs.drivers.map((d) => d.label).join("; ")}` : "No major score drivers right now.",
+      "",
+      context.recentHistory.length > 0 ? `Recent finding history:\n- ${context.recentHistory.join("\n- ")}` : "Recent finding history: none recorded.",
+      "",
+      context.relatedFindings.length > 0 ? `Related open finding clusters:\n- ${context.relatedFindings.join("\n- ")}` : "Related open finding clusters: none recorded.",
     ].join("\n");
     const res = await complete(BRIEFING_MODEL, [{ role: "user", content: prompt }], {
       maxTokens: 200,
@@ -170,11 +331,24 @@ export async function refreshAdminBriefingIfStale(): Promise<void> {
     });
     const text = (res.choices?.[0]?.message?.content ?? "").trim();
     if (text) {
-      briefingCache = { text, model: res.model ?? BRIEFING_MODEL, generatedAt: now };
+      briefingCache = {
+        text,
+        model: res.model ?? BRIEFING_MODEL,
+        generatedAt: now,
+        dateKey: getUtcDateKey(now),
+        source: "llm",
+      };
+      persistAdminBriefing(briefingCache);
     }
   } catch {
     // never block; stale cache or null is fine
   } finally {
     briefingInFlight = false;
   }
+}
+
+export function resetAdminBriefingCacheForTest(): void {
+  briefingCache = null;
+  briefingInFlight = false;
+  lastBriefingAttemptAt = 0;
 }

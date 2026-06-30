@@ -1,6 +1,7 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { complete } from "../gateway/client.ts";
+import { listInsights } from "./store.ts";
 import type { Insight } from "./types.ts";
 
 export interface AiAnalysis {
@@ -29,6 +30,8 @@ type AiRow = {
   model: string;
   generated_at: number;
 };
+
+type HistoryLine = { ts: number | null; text: string };
 
 function mapRow(row: AiRow): AiAnalysis {
   return {
@@ -68,6 +71,141 @@ export function getAiAnalysisBySignature(signature: string): AiAnalysis | null {
   return row ? mapRow(row) : null;
 }
 
+function sourceFamily(sourceKey: string | null | undefined): string | null {
+  if (!sourceKey) return null;
+  const parts = sourceKey.split(":").filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? null;
+  return `${parts[0]}:${parts[1]}`;
+}
+
+function formatInsightContext(insights: Insight[]): string {
+  if (insights.length === 0) return "- (none)";
+  return insights.map((item) => {
+    const age = item.createdAt ? new Date(item.createdAt).toISOString() : "unknown-time";
+    const source = item.sourceKey ? ` source=${item.sourceKey}` : "";
+    const summary = item.plainSummary.length > 140 ? `${item.plainSummary.slice(0, 137)}...` : item.plainSummary;
+    return `- [${item.status}/${item.severity}/${item.domain}] ${item.title} (${age}${source}): ${summary}`;
+  }).join("\n");
+}
+
+function formatHistoryContext(lines: HistoryLine[]): string {
+  if (lines.length === 0) return "- (none)";
+  return lines
+    .map((line) => {
+      const when = line.ts ? new Date(line.ts).toISOString() : "unknown-time";
+      return `- [${when}] ${line.text}`;
+    })
+    .join("\n");
+}
+
+function compact(value: unknown, max = 160): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function readRecentActionHistory(limit = 6): HistoryLine[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+  try {
+    const rows = db.query(`
+      SELECT ts, actor, action_kind, action_id, target_type, target_id, result_status, result, error
+      FROM action_audit
+      ORDER BY ts DESC
+      LIMIT ?
+    `).all(limit) as Array<{
+      ts: number | null;
+      actor: string | null;
+      action_kind: string;
+      action_id: string | null;
+      target_type: string | null;
+      target_id: string | null;
+      result_status: string | null;
+      result: string | null;
+      error: string | null;
+    }>;
+    return rows.map((row) => ({
+      ts: row.ts,
+      text: `action ${row.action_kind}${row.action_id ? `/${row.action_id}` : ""} by ${row.actor ?? "unknown"} -> ${row.result_status ?? "unknown"}${row.target_type || row.target_id ? ` target=${row.target_type ?? "?"}:${row.target_id ?? "?"}` : ""}${row.error ? ` error=${compact(row.error, 100)}` : row.result ? ` result=${compact(row.result, 100)}` : ""}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function readRecentConfigHistory(limit = 4): HistoryLine[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+  try {
+    const rows = db.query(`
+      SELECT ts, key, changed_by, note
+      FROM config_changes
+      ORDER BY ts DESC
+      LIMIT ?
+    `).all(limit) as Array<{ ts: number; key: string; changed_by: string | null; note: string | null }>;
+    return rows.map((row) => ({
+      ts: row.ts,
+      text: `config ${row.key} changed by ${row.changed_by ?? "unknown"}${row.note ? ` (${compact(row.note, 100)})` : ""}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function readRecentJobHistory(limit = 4): HistoryLine[] {
+  const db = getDashboardDb();
+  if (!db) return [];
+  try {
+    const rows = db.query(`
+      SELECT COALESCE(finished_at, started_at, ts) AS ts, kind, state, status, target_type, target_id, exit_code, error
+      FROM jobs
+      ORDER BY COALESCE(finished_at, started_at, ts) DESC
+      LIMIT ?
+    `).all(limit) as Array<{
+      ts: number | null;
+      kind: string;
+      state: string;
+      status: string | null;
+      target_type: string | null;
+      target_id: string | null;
+      exit_code: number | null;
+      error: string | null;
+    }>;
+    return rows.map((row) => ({
+      ts: row.ts,
+      text: `job ${row.kind} ${row.state}${row.status ? `/${row.status}` : ""}${row.target_type || row.target_id ? ` target=${row.target_type ?? "?"}:${row.target_id ?? "?"}` : ""}${row.exit_code !== null ? ` exit=${row.exit_code}` : ""}${row.error ? ` error=${compact(row.error, 100)}` : ""}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function getAnalysisPromptContext(insight: Insight): { related: Insight[]; recent: Insight[]; history: HistoryLine[] } {
+  if (!getDashboardDb()) return { related: [], recent: [], history: [] };
+  try {
+    const all = listInsights("all")
+      .filter((item) => item.id !== insight.id)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const family = sourceFamily(insight.sourceKey);
+    const related = all
+      .filter((item) => {
+        const itemFamily = sourceFamily(item.sourceKey);
+        return item.domain === insight.domain || (!!family && itemFamily === family);
+      })
+      .slice(0, 5);
+    const recent = all.slice(0, 6);
+    const history = [
+      ...readRecentActionHistory(),
+      ...readRecentConfigHistory(),
+      ...readRecentJobHistory(),
+    ]
+      .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+      .slice(0, 10);
+    return { related, recent, history };
+  } catch {
+    return { related: [], recent: [], history: [] };
+  }
+}
+
 export function upsertAiAnalysis(input: Omit<AiAnalysis, "generatedAt"> & { generatedAt?: number }): AiAnalysis | null {
   const db = getDashboardDb();
   if (!db) return null;
@@ -94,9 +232,11 @@ export function upsertAiAnalysis(input: Omit<AiAnalysis, "generatedAt"> & { gene
 
 export function buildAnalysisPrompt(insight: Insight): string {
   const evidence = insight.evidenceRefs.map((e) => `- ${e.label} (${e.kind}: ${e.ref})`).join("\n") || "- (none)";
+  const context = getAnalysisPromptContext(insight);
   return [
     "You are the site reliability advisor for an AI-operated media stack.",
     "A monitoring detector raised the finding below. Analyse it and respond with STRICT JSON only.",
+    "Use the recent history and related findings to identify correlated failures or recurring root causes.",
     "",
     `Finding title: ${insight.title}`,
     `Domain: ${insight.domain}`,
@@ -105,6 +245,15 @@ export function buildAnalysisPrompt(insight: Insight): string {
     `Operator page: ${insight.manualPageHref}`,
     "Evidence:",
     evidence,
+    "",
+    "Recent related findings (same domain or detector family):",
+    formatInsightContext(context.related),
+    "",
+    "Recent platform finding history:",
+    formatInsightContext(context.recent),
+    "",
+    "Recent platform actions, jobs, and config changes:",
+    formatHistoryContext(context.history),
     "",
     "Respond with ONLY this JSON shape (no prose, no markdown fences):",
     `{"summary": "<=2 sentence operator-facing explanation", "root_cause": "most likely root cause", "recommended_action": "the single best next action", "confidence": 0.0-1.0}`,
