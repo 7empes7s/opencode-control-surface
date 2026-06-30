@@ -12,6 +12,7 @@ import {
   previewAutoApplyCandidates,
   riskTierFor,
 } from "./autoapply.ts";
+import { signatureFor, upsertAiAnalysis } from "./ai.ts";
 import { getInsight, upsertInsight } from "./store.ts";
 
 let tempDir: string;
@@ -67,6 +68,19 @@ function safeInsight(id: string, sourceKey: string) {
   })!;
 }
 
+function seedAiAnalysis(insight: NonNullable<ReturnType<typeof safeInsight>>, confidence = 0.82) {
+  upsertAiAnalysis({
+    signature: signatureFor(insight),
+    insightId: insight.id,
+    summary: "The finding has enough AI confidence for safe automation.",
+    rootCause: "A test root cause was identified.",
+    recommendedAction: "Run the safe remediation.",
+    confidence,
+    model: "test-model",
+    generatedAt: 1_700_000_000_000,
+  });
+}
+
 describe("insights auto-apply: risk tiering", () => {
   test("the safe allowlist is intentionally minimal and excludes mutating/customer-facing actions", () => {
     expect(SAFE_AUTO_ACTIONS.has("start-job:model-health:all")).toBe(true);
@@ -98,6 +112,7 @@ describe("insights auto-apply: risk tiering", () => {
 
   test("preview returns candidates without executing them", () => {
     const insight = safeInsight("insight-preview", "ops:preview");
+    seedAiAnalysis(insight, 0.86);
 
     const rows = previewAutoApplyCandidates([insight]);
 
@@ -107,9 +122,31 @@ describe("insights auto-apply: risk tiering", () => {
       actionDescriptorId: "start-job:model-health:all",
       tier: "auto",
       wouldApply: true,
-      reason: "policy key start-job:model-health:all allows auto",
+      reason: "policy key start-job:model-health:all allows auto; AI confidence 0.86 meets threshold 0.75",
     }]);
     expect(getInsight("insight-preview")?.status).toBe("open");
+  });
+
+  test("preview waits for AI analysis before auto-applying a safe action", () => {
+    const insight = safeInsight("insight-no-ai", "ops:no-ai");
+
+    const rows = previewAutoApplyCandidates([insight]);
+
+    expect(rows[0].wouldApply).toBe(false);
+    expect(rows[0].reason).toContain("waiting for AI analysis confidence");
+  });
+
+  test("low AI confidence prevents automatic execution", async () => {
+    const insight = safeInsight("insight-low-ai", "ops:low-ai");
+    seedAiAnalysis(insight, 0.62);
+
+    const applied = await autoApplySafeInsights([insight]);
+    const preview = previewAutoApplyCandidates([insight]);
+
+    expect(applied).toBe(0);
+    expect(preview[0].wouldApply).toBe(false);
+    expect(preview[0].reason).toContain("below auto-apply threshold");
+    expect(getInsight("insight-low-ai")?.status).toBe("open");
   });
 
   test("rate limit blocks the next auto-apply within the trailing hour", async () => {

@@ -18,6 +18,7 @@ export interface AutoApplyPolicy {
   maxAutoAppliesPerHour: number;
   circuitBreakerThreshold: number;
   circuitBreakerWindowMs: number;
+  minAiConfidenceForAutoApply: number;
 }
 
 const DEFAULT_POLICY: AutoApplyPolicy = {
@@ -25,6 +26,7 @@ const DEFAULT_POLICY: AutoApplyPolicy = {
   maxAutoAppliesPerHour: 10,
   circuitBreakerThreshold: 3,
   circuitBreakerWindowMs: 60 * 60_000,
+  minAiConfidenceForAutoApply: 0.75,
 };
 
 function parsePolicy(value: string | null | undefined): AutoApplyPolicy {
@@ -38,6 +40,7 @@ function parsePolicy(value: string | null | undefined): AutoApplyPolicy {
     const maxAutoAppliesPerHour = Number(parsed.maxAutoAppliesPerHour);
     const circuitBreakerThreshold = Number(parsed.circuitBreakerThreshold);
     const circuitBreakerWindowMs = Number(parsed.circuitBreakerWindowMs);
+    const minAiConfidenceForAutoApply = Number(parsed.minAiConfidenceForAutoApply);
     return {
       tiers,
       maxAutoAppliesPerHour: Number.isFinite(maxAutoAppliesPerHour) && maxAutoAppliesPerHour > 0
@@ -49,6 +52,9 @@ function parsePolicy(value: string | null | undefined): AutoApplyPolicy {
       circuitBreakerWindowMs: Number.isFinite(circuitBreakerWindowMs) && circuitBreakerWindowMs >= 60_000
         ? Math.min(24 * 60 * 60_000, Math.floor(circuitBreakerWindowMs))
         : DEFAULT_POLICY.circuitBreakerWindowMs,
+      minAiConfidenceForAutoApply: Number.isFinite(minAiConfidenceForAutoApply)
+        ? Math.max(0, Math.min(1, minAiConfidenceForAutoApply))
+        : DEFAULT_POLICY.minAiConfidenceForAutoApply,
     };
   } catch {
     return { ...DEFAULT_POLICY, tiers: {} };

@@ -1,5 +1,6 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { writeActionAudit } from "../db/writer.ts";
+import { getAiAnalysisBySignature, signatureFor } from "./ai.ts";
 import { updateInsightStatus, upsertInsight } from "./store.ts";
 import type { Insight } from "./types.ts";
 import {
@@ -95,6 +96,25 @@ function emitFlappingInsight(insight: Insight, failures: number): void {
   });
 }
 
+function aiConfidenceGate(insight: Insight, threshold: number): { ok: boolean; confidence: number | null; reason: string } {
+  const analysis = getAiAnalysisBySignature(signatureFor(insight));
+  if (!analysis) {
+    return { ok: false, confidence: null, reason: `waiting for AI analysis confidence >= ${threshold}` };
+  }
+  if (analysis.confidence < threshold) {
+    return {
+      ok: false,
+      confidence: analysis.confidence,
+      reason: `AI confidence ${analysis.confidence.toFixed(2)} is below auto-apply threshold ${threshold}`,
+    };
+  }
+  return {
+    ok: true,
+    confidence: analysis.confidence,
+    reason: `AI confidence ${analysis.confidence.toFixed(2)} meets threshold ${threshold}`,
+  };
+}
+
 export function previewAutoApplyCandidates(insights: Insight[], limit = 4): AutoApplyPreviewRow[] {
   const policy = loadAutoApplyPolicy();
   const now = nowProvider();
@@ -119,6 +139,10 @@ export function previewAutoApplyCandidates(insights: Insight[], limit = 4): Auto
     } else if (wouldApply && failures >= policy.circuitBreakerThreshold) {
       wouldApply = false;
       reason = `circuit breaker tripped after ${failures} failed attempt(s)`;
+    } else if (wouldApply) {
+      const gate = aiConfidenceGate(insight, policy.minAiConfidenceForAutoApply);
+      wouldApply = gate.ok;
+      reason = gate.ok ? `${reason}; ${gate.reason}` : gate.reason;
     }
 
     if (wouldApply) remaining--;
@@ -159,6 +183,8 @@ export async function autoApplySafeInsights(insights: Insight[], limit = 4): Pro
         emitFlappingInsight(insight, failures);
         continue;
       }
+      const gate = aiConfidenceGate(insight, policy.minAiConfidenceForAutoApply);
+      if (!gate.ok) continue;
       if (await runAutoApply(insight, token)) applied++;
       remaining--;
     }
@@ -170,6 +196,8 @@ export async function autoApplySafeInsights(insights: Insight[], limit = 4): Pro
 
 async function runAutoApply(insight: Insight, token: string): Promise<boolean> {
   try {
+    const policy = loadAutoApplyPolicy();
+    const aiConfidence = getAiAnalysisBySignature(signatureFor(insight))?.confidence ?? null;
     const { executeActionHandler } = await import("../api/execute.ts");
     const req = new Request("http://localhost/api/actions/execute", {
       method: "POST",
@@ -201,6 +229,8 @@ async function runAutoApply(insight: Insight, token: string): Promise<boolean> {
         trigger: "auto",
         sourceKey: insight.sourceKey ?? insight.id,
         confidence: insight.confidence,
+        aiConfidence,
+        minAiConfidenceForAutoApply: policy.minAiConfidenceForAutoApply,
         policyKey: policyKeyForAction(insight.actionDescriptorId ?? ""),
         tier: riskTierFor(insight),
       },
