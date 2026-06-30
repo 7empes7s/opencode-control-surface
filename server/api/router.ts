@@ -201,7 +201,7 @@ import {
   requireInsightPermission,
 } from "./insights.ts";
 import { policyRegistryHandler } from "./policyRegistry.ts";
-import { securityPostureHandler, trustScoreHandler } from "./security.ts";
+import { securityPostureHandler, securitySecretsHandler, trustScoreHandler } from "./security.ts";
 import {
   adminHealthHandler,
   adminBriefingHandler,
@@ -524,6 +524,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/security/posture") {
     if (!checkToken(req)) return unauthorized();
     return securityPostureHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/security/secrets") {
+    if (!checkToken(req)) return unauthorized();
+    return securitySecretsHandler(req);
   }
   if (method === "GET" && pathname === "/api/security/trust-score") {
     if (!checkToken(req)) return unauthorized();

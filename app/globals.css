@@ -1700,6 +1700,94 @@ body {
 }
 .trust-history-empty { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
 
+.security-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 18px;
+}
+.security-section-nav a {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+}
+.security-section-nav a:hover {
+  background: var(--bg-hover);
+  color: var(--text-bright);
+}
+.security-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.security-section-head h2 {
+  margin: 4px 0 6px;
+  font-size: 20px;
+  color: var(--text-bright);
+}
+.security-section-head p {
+  margin: 0;
+  max-width: 720px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.security-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.security-secrets-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.security-secrets-table {
+  min-width: 860px;
+}
+.security-secret-age,
+.security-exposure-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.security-exposure-links a {
+  text-decoration: none;
+}
+.security-not-configured-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.security-not-configured-panel {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--bg-base);
+}
+.security-not-configured-panel h3 {
+  margin: 10px 0 6px;
+  font-size: 15px;
+  color: var(--text-bright);
+}
+.security-not-configured-panel p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .trust-improvements {
   padding: 18px;
   border: 1px solid var(--border);
@@ -1792,6 +1880,9 @@ body {
   .trust-check-actions > a { flex: 1 1 auto; justify-content: center; }
   .trust-check-confirm { width: 100%; }
   .trust-check-confirm .insight-reason-input { flex: 1 1 100%; min-width: 0; }
+  .security-section-head { flex-direction: column; }
+  .security-section-actions { justify-content: flex-start; width: 100%; }
+  .security-not-configured-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 700px) {

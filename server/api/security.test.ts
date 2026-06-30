@@ -85,4 +85,45 @@ describe("Security Posture API", () => {
     expect(finding.severity).toBe("high");
     expect(finding.actionDescriptorId).toBe("mutate-policy:budget:global:set-cap");
   });
+
+  test("Secrets endpoint returns metadata only and recommends stale rotations", async () => {
+    const now = Date.now();
+    const staleUpdatedAt = now - 91 * 24 * 60 * 60 * 1000;
+    db().query(`
+      INSERT INTO governance_secrets
+        (id, name, description, encrypted_value, encrypted_dek, iv, key_id, created_at, updated_at, tenant_id)
+      VALUES
+        ('sec-stale-weak', 'API_TOKEN', 'token used by a worker', '', '', '', 'plain', ?, ?, 'mimule')
+    `).run(staleUpdatedAt, staleUpdatedAt);
+
+    const req = apiReq("/api/security/secrets", {
+      headers: { "x-operator-token": "test-token" },
+    });
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.rotationRecommendedAfterDays).toBe(90);
+    expect(body.data.secrets).toHaveLength(1);
+
+    const secret = body.data.secrets[0];
+    expect(secret.name).toBe("API_TOKEN");
+    expect(secret.description).toBe("token used by a worker");
+    expect(secret.createdAt).toBe(staleUpdatedAt);
+    expect(secret.updatedAt).toBe(staleUpdatedAt);
+    expect(secret.ageDays).toBeGreaterThanOrEqual(90);
+    expect(secret.rotationRecommended).toBe(true);
+    expect(secret.exposureFindingCount).toBe(1);
+    expect(secret.exposureFindings[0].sourceKey).toBe("security:weak_secret:sec-stale-weak");
+    expect(secret.exposureFindings[0].href).toBe("/insights?focus=security%3Aweak_secret%3Asec-stale-weak");
+
+    for (const unsafeKey of ["value", "plaintext", "encryptedValue", "encrypted_value", "encryptedDek", "encrypted_dek", "iv", "keyId", "key_id"]) {
+      expect(unsafeKey in secret).toBe(false);
+    }
+  });
+
+  test("Secrets endpoint returns 401 without an operator token", async () => {
+    const req = apiReq("/api/security/secrets");
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(401);
+  });
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, RefreshCw, Shield, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, KeyRound, RefreshCw, Shield, ShieldCheck, XCircle } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
 import type { ApiEnvelope, EvidenceRef } from "../../server/api/types";
@@ -34,11 +34,53 @@ type SecurityPosturePayload = {
   findings: Insight[];
 };
 
+type SecuritySecretExposureFinding = {
+  id: string;
+  sourceKey: string;
+  title: string;
+  severity: Insight["severity"];
+  status: Insight["status"];
+  href: string;
+};
+
+type SecuritySecret = {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+  ageDays: number;
+  rotationRecommended: boolean;
+  exposureFindingCount: number;
+  exposureFindings: SecuritySecretExposureFinding[];
+};
+
+type SecuritySecretsPayload = {
+  rotationRecommendedAfterDays: number;
+  secrets: SecuritySecret[];
+};
+
 function severityClass(severity: Insight["severity"]): string {
   if (severity === "critical" || severity === "high") return "red";
   if (severity === "medium") return "amber";
   if (severity === "low") return "blue";
   return "gray";
+}
+
+function formatTimestamp(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "Unknown";
+  return new Date(ts).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatSecretAge(days: number): string {
+  if (days <= 0) return "today";
+  if (days === 1) return "1 day";
+  return `${days} days`;
 }
 
 function TrustScoreDial({ score, maxScore }: { score: number; maxScore: number }) {
@@ -142,7 +184,7 @@ function TrustCheckRow({
               <input 
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Reason..."
+                aria-label={`Reason for ${check.name}`}
                 autoFocus
                 className="insight-reason-input"
               />
@@ -197,9 +239,146 @@ function EvidenceDrawer({ evidenceRefs }: { evidenceRefs: EvidenceRef[] }) {
   );
 }
 
+function SecuritySecretsSection({
+  data,
+  loading,
+  error,
+  refresh,
+}: {
+  data: SecuritySecretsPayload | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+}) {
+  const secretsNeedingRotation = data?.secrets.filter((secret) => secret.rotationRecommended).length ?? 0;
+
+  return (
+    <section id="secrets" className="dash-section security-secrets-section">
+      <div className="security-section-head">
+        <div>
+          <div className="dash-section-title">secrets</div>
+          <h2>Secrets lifecycle</h2>
+          <p>
+            Inventory is metadata-only. Secret values, encryption material, IVs, and key identifiers are never returned to this page.
+          </p>
+        </div>
+        <div className="security-section-actions">
+          {data && (
+            <span className={`pill ${secretsNeedingRotation > 0 ? "amber" : "green"}`}>
+              {secretsNeedingRotation} rotation recommended
+            </span>
+          )}
+          <button type="button" className="btn btn-ghost" onClick={refresh} disabled={loading}>
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {loading && !data && <div className="loading-panel">Loading secrets inventory.</div>}
+
+      {error && !data && (
+        <div className="loading-panel error">
+          <p>The secrets inventory did not load. {error}</p>
+          <button type="button" className="btn" onClick={refresh}>Retry</button>
+        </div>
+      )}
+
+      {data && data.secrets.length === 0 && (
+        <div className="empty-state">
+          <KeyRound size={18} />
+          <strong>No secrets registered yet.</strong>
+        </div>
+      )}
+
+      {data && data.secrets.length > 0 && (
+        <div className="table-wrap security-secrets-table-wrap">
+          <table className="data-table security-secrets-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Age</th>
+                <th>Last rotated</th>
+                <th>Exposure findings</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.secrets.map((secret) => (
+                <tr key={secret.id}>
+                  <td className="mono">{secret.name}</td>
+                  <td className="dim">{secret.description || "No description"}</td>
+                  <td>
+                    <div className="security-secret-age">
+                      <span>{formatSecretAge(secret.ageDays)}</span>
+                      {secret.rotationRecommended && (
+                        <span className="pill amber">Rotation recommended</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="dim">{formatTimestamp(secret.updatedAt)}</td>
+                  <td>
+                    {secret.exposureFindingCount === 0 ? (
+                      <span className="pill green">No exposure signal</span>
+                    ) : (
+                      <div className="security-exposure-links">
+                        {secret.exposureFindings.map((finding) => (
+                          <Link key={finding.id} href={finding.href} className={`pill ${severityClass(finding.severity)}`}>
+                            {finding.title}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <Link href="/governance" className="btn btn-ghost btn-sm">
+                      <ExternalLink size={13} />
+                      Rotate
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SecurityVulnerabilitiesSection() {
+  return (
+    <section id="vulnerabilities" className="dash-section security-not-configured-section">
+      <div className="security-section-head">
+        <div>
+          <div className="dash-section-title">vulnerabilities</div>
+          <h2>Vulnerability scanners</h2>
+          <p>
+            No vulnerability/CVE scanner is connected. When a scanner, such as SCA or SAST, is configured, findings appear here.
+          </p>
+        </div>
+      </div>
+      <div className="security-not-configured-grid">
+        <div className="security-not-configured-panel">
+          <span className="pill gray">Not configured</span>
+          <h3>Application and dependency scanning</h3>
+          <p>SAST, DAST, SCA, container image, and dependency scanners are not connected to this control surface.</p>
+        </div>
+        <div className="security-not-configured-panel">
+          <span className="pill gray">Not configured</span>
+          <h3>Cloud posture scanning</h3>
+          <p>CSPM/cloud-posture scanning is not configured for this single-host deployment.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function SecurityPage() {
   const { data, loading, error, refresh } = useApi<SecurityPosturePayload>(`/api/security/posture`, 5_000);
   const { data: trustData, loading: trustLoading, error: trustError, refresh: refreshTrust } = useApi<TrustScorePayload>(`/api/security/trust-score`, 10_000);
+  const { data: secretsData, loading: secretsLoading, error: secretsError, refresh: refreshSecrets } = useApi<SecuritySecretsPayload>(`/api/security/secrets`, 15_000);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
@@ -278,6 +457,7 @@ export function SecurityPage() {
   );
 
   const { posture, openCount, resolvedCount, lastScanAt, checksRun, findings } = data!;
+  const secretsNeedingRotation = secretsData?.secrets.filter((secret) => secret.rotationRecommended).length ?? 0;
 
   const postureText = posture === "good" 
     ? "Your security posture is good — no open findings."
@@ -290,7 +470,7 @@ export function SecurityPage() {
           <div className="dash-section-title">security posture</div>
           <h1>{postureText}</h1>
           <p>
-            This admin center monitors for credential leaks, owner sprawl, and agent budget caps across your tenant.
+            Real summary: posture is {posture.replace("-", " ")}, {openCount} open security finding{openCount === 1 ? "" : "s"}, and {secretsNeedingRotation} secret{secretsNeedingRotation === 1 ? "" : "s"} need rotation.
           </p>
         </div>
         <div className="insights-hero-actions">
@@ -310,6 +490,11 @@ export function SecurityPage() {
             <small>checks run</small>
           </div>
           <div className="insights-count">
+            <KeyRound size={18} />
+            <span>{secretsNeedingRotation}</span>
+            <small>rotate</small>
+          </div>
+          <div className="insights-count">
             <RefreshCw size={18} />
             <span>
               {new Date(lastScanAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}
@@ -321,10 +506,31 @@ export function SecurityPage() {
 
       {message && <div className="insights-message"><CheckCircle2 size={15} />{message}</div>}
 
-      {trustLoading && !trustData && <div className="dash-section loading-panel">Loading trust score...</div>}
-      
-      {trustData && (
-        <section className="dash-section trust-score-section">
+      <nav className="security-section-nav" aria-label="Security Center sections">
+        <a href="#posture">Posture</a>
+        <a href="#findings">Findings</a>
+        <a href="#secrets">Secrets</a>
+        <a href="#vulnerabilities">Vulnerabilities</a>
+      </nav>
+
+      <section id="posture" className="dash-section trust-score-section">
+        <div className="security-section-head">
+          <div>
+            <div className="dash-section-title">posture</div>
+            <h2>Trust score and posture drivers</h2>
+            <p>The trust dial, history, and improvement actions are computed from the existing security score engine.</p>
+          </div>
+        </div>
+
+        {trustLoading && !trustData && <div className="loading-panel">Loading trust score...</div>}
+        {trustError && !trustData && (
+          <div className="loading-panel error">
+            <p>The trust score did not load. {trustError}</p>
+            <button type="button" className="btn" onClick={refreshTrust}>Retry</button>
+          </div>
+        )}
+
+        {trustData && (
           <div className="trust-score-grid">
             <div className="trust-score-hero-card">
               <TrustScoreDial score={trustData.score} maxScore={trustData.maxScore} />
@@ -375,8 +581,8 @@ export function SecurityPage() {
               )}
             </div>
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {(() => {
         const openFindings = findings.filter((f) => f.status === "open");
@@ -412,7 +618,6 @@ export function SecurityPage() {
                   <input
                     value={reasons[insight.id] ?? ""}
                     onChange={(event) => setReasons((current) => ({ ...current, [insight.id]: event.target.value }))}
-                    placeholder="Reason for applying or dismissing"
                     aria-label={`Reason for ${insight.title}`}
                   />
                 </div>
@@ -447,14 +652,28 @@ export function SecurityPage() {
         return (
           <>
             {openFindings.length === 0 ? (
-              <div className="dash-section">
+              <section id="findings" className="dash-section">
+                <div className="security-section-head">
+                  <div>
+                    <div className="dash-section-title">findings</div>
+                    <h2>Security findings</h2>
+                    <p>These are the current security-domain insights produced by the real detector catalog.</p>
+                  </div>
+                </div>
                 <div className="empty-state">
                   <ShieldCheck size={24} />
                   <strong>All {checksRun} security checks passed. Nothing needs your attention.</strong>
                 </div>
-              </div>
+              </section>
             ) : (
-              <section className="dash-section">
+              <section id="findings" className="dash-section">
+                <div className="security-section-head">
+                  <div>
+                    <div className="dash-section-title">findings</div>
+                    <h2>Security findings</h2>
+                    <p>These are the current security-domain insights produced by the real detector catalog.</p>
+                  </div>
+                </div>
                 <div className="insight-card-list">{openFindings.map(renderFinding)}</div>
               </section>
             )}
@@ -469,6 +688,15 @@ export function SecurityPage() {
           </>
         );
       })()}
+
+      <SecuritySecretsSection
+        data={secretsData}
+        loading={secretsLoading}
+        error={secretsError}
+        refresh={refreshSecrets}
+      />
+
+      <SecurityVulnerabilitiesSection />
     </div>
   );
 }

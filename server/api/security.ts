@@ -5,8 +5,51 @@ import { listInsights } from "../insights/store.ts";
 import { ok } from "./types.ts";
 import type { Insight } from "../insights/types.ts";
 import { computeTrustScore, persistDailyTrustSample, getTrustScoreHistory } from "../security/score.ts";
+import { listSecrets } from "../governance/secrets.ts";
 
 const SECURITY_CHECKS_COUNT = 5;
+const ROTATION_RECOMMENDED_AFTER_DAYS = 90;
+
+type SecuritySecretExposureFinding = {
+  id: string;
+  sourceKey: string;
+  title: string;
+  severity: Insight["severity"];
+  status: Insight["status"];
+  href: string;
+};
+
+type SecuritySecretLifecycleEntry = {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+  ageDays: number;
+  rotationRecommended: boolean;
+  exposureFindingCount: number;
+  exposureFindings: SecuritySecretExposureFinding[];
+};
+
+function ageDays(updatedAt: number, now: number): number {
+  return Math.max(0, Math.floor((now - updatedAt) / (24 * 60 * 60 * 1000)));
+}
+
+function exposureLink(sourceKey: string): string {
+  return `/insights?focus=${encodeURIComponent(sourceKey)}`;
+}
+
+function toExposureFinding(insight: Insight): SecuritySecretExposureFinding | null {
+  if (!insight.sourceKey) return null;
+  return {
+    id: insight.id,
+    sourceKey: insight.sourceKey,
+    title: insight.title,
+    severity: insight.severity,
+    status: insight.status,
+    href: exposureLink(insight.sourceKey),
+  };
+}
 
 export async function trustScoreHandler(req: Request): Promise<Response> {
   const roleErr = requireInsightPermission(req, "insights.view");
@@ -19,6 +62,54 @@ export async function trustScoreHandler(req: Request): Promise<Response> {
     ok({
       ...score,
       history: getTrustScoreHistory(30),
+    })
+  );
+}
+
+export async function securitySecretsHandler(req: Request): Promise<Response> {
+  const roleErr = requireInsightPermission(req, "insights.view");
+  if (roleErr) return roleErr;
+
+  runSecurityScan();
+
+  const now = Date.now();
+  const allInsights = listInsights("all");
+  const exposureInsights = allInsights
+    .filter((insight) => insight.domain === "security" && insight.status === "open")
+    .filter((insight) =>
+      insight.sourceKey?.startsWith("security:weak_secret:") ||
+      insight.sourceKey === "security:audit_secret_leak_signal"
+    );
+  const globalExposureFindings = exposureInsights
+    .filter((insight) => insight.sourceKey === "security:audit_secret_leak_signal")
+    .map(toExposureFinding)
+    .filter((finding): finding is SecuritySecretExposureFinding => Boolean(finding));
+
+  const secrets: SecuritySecretLifecycleEntry[] = listSecrets().map((secret) => {
+    const secretAgeDays = ageDays(secret.updatedAt, now);
+    const weakSecretFindings = exposureInsights
+      .filter((insight) => insight.sourceKey === `security:weak_secret:${secret.id}`)
+      .map(toExposureFinding)
+      .filter((finding): finding is SecuritySecretExposureFinding => Boolean(finding));
+    const exposureFindings = [...weakSecretFindings, ...globalExposureFindings];
+
+    return {
+      id: secret.id,
+      name: secret.name,
+      description: secret.description,
+      createdAt: secret.createdAt,
+      updatedAt: secret.updatedAt,
+      ageDays: secretAgeDays,
+      rotationRecommended: secretAgeDays >= ROTATION_RECOMMENDED_AFTER_DAYS,
+      exposureFindingCount: exposureFindings.length,
+      exposureFindings,
+    };
+  });
+
+  return Response.json(
+    ok({
+      rotationRecommendedAfterDays: ROTATION_RECOMMENDED_AFTER_DAYS,
+      secrets,
     })
   );
 }
