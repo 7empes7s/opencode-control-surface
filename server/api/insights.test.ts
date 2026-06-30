@@ -135,7 +135,7 @@ describe("build-insight playbook routing + bulk apply", () => {
     seedDiagnosis("d-match", "pass-timeout", "wf-match");
     aggregateInsights();
 
-    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-match");
+    const insight = listInsights("open").find((i) => i.id === "insight_build_d_match_run");
     expect(insight).toBeTruthy();
     expect(insight?.actionDescriptorId ?? "").toMatch(/^reasoner-remediate:pass-timeout:/);
   });
@@ -150,7 +150,7 @@ describe("build-insight playbook routing + bulk apply", () => {
        VALUES ('d-orphan', 'p', 'dead-run', 'dead-wf', 'pass-timeout', 'rc', '[]', '[]', 'high', ?, NULL)`,
     ).run(Date.now());
     aggregateInsights();
-    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-orphan");
+    const insight = listInsights("open").find((i) => i.id === "insight_build_dead_run");
     expect(insight).toBeUndefined();
   });
 
@@ -160,7 +160,7 @@ describe("build-insight playbook routing + bulk apply", () => {
     seedDiagnosis("d-nomatch", "unknown", "wf-nomatch");
     aggregateInsights();
 
-    const insight = listInsights("open").find((i) => i.id === "insight_build_diagnosis_d-nomatch");
+    const insight = listInsights("open").find((i) => i.id === "insight_build_d_nomatch_run");
     expect(insight).toBeTruthy();
     expect(insight?.actionDescriptorId).toBeNull();
   });
@@ -203,9 +203,9 @@ describe("build-insight playbook routing + bulk apply", () => {
     const reported = [...data.appliedIds, ...data.skipped.map((s) => s.id), ...data.failed.map((f) => f.id)];
     // The manual-only insight is filtered out as a non-candidate and must never
     // appear in any bucket.
-    expect(reported).not.toContain("insight_build_diagnosis_d-manual");
+    expect(reported).not.toContain("insight_build_d_manual_run");
     // The actionable insight is a candidate and must be accounted for (it
     // applies successfully via the notify-operator playbook).
-    expect(reported).toContain("insight_build_diagnosis_d-actionable");
+    expect(reported).toContain("insight_build_d_actionable_run");
   });
 });
