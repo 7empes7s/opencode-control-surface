@@ -8,7 +8,13 @@ interface AuthApiResult<T> {
   refresh: () => void;
 }
 
-export function useAuthApi<T>(path: string, intervalMs = 30_000): AuthApiResult<T> {
+function defaultPollInterval(): number {
+  if (typeof localStorage === "undefined") return 30_000;
+  const parsed = Number(localStorage.getItem("tib-default-poll-ms"));
+  return Number.isFinite(parsed) && parsed >= 5_000 ? parsed : 30_000;
+}
+
+export function useAuthApi<T>(path: string, intervalMs = defaultPollInterval()): AuthApiResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,8 +44,9 @@ export function useAuthApi<T>(path: string, intervalMs = 30_000): AuthApiResult<
           const body = await response.json().catch(() => ({}));
           throw new Error(body.error || `HTTP ${response.status}`);
         }
-        const json = await response.json() as { data: T };
-        if (!cancelled) setDataIfChanged(json.data);
+        const json = await response.json() as { data?: T };
+        const nextData = json && typeof json === "object" && "data" in json ? json.data : json;
+        if (!cancelled) setDataIfChanged(nextData as T);
       } catch (e: unknown) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e));

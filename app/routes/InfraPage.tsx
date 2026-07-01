@@ -11,13 +11,14 @@ function Pill({ children, color = "gray" }: { children: React.ReactNode; color?:
 }
 
 function PctBar({ pct, warn = 80, crit = 95 }: { pct: number; warn?: number; crit?: number }) {
-  const color = pct >= crit ? "var(--red)" : pct >= warn ? "var(--amber)" : "var(--accent)";
+  const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
+  const tone = safePct >= crit ? "crit" : safePct >= warn ? "warn" : "ok";
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ flex: 1, height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
-        <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: color, borderRadius: 2 }} />
+    <div className={`resource-meter ${tone}`} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePct)}>
+      <div className="resource-meter-track">
+        <div className="resource-meter-fill" style={{ width: `${safePct}%` }} />
       </div>
-      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color, minWidth: 32 }}>{pct}%</span>
+      <span className="resource-meter-value">{Math.round(safePct)}%</span>
     </div>
   );
 }

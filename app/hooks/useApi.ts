@@ -8,7 +8,13 @@ interface ApiResult<T> {
   refresh: () => void;
 }
 
-export function useApi<T>(path: string, intervalMs = 30_000): ApiResult<T> {
+function defaultPollInterval(): number {
+  if (typeof localStorage === "undefined") return 30_000;
+  const parsed = Number(localStorage.getItem("tib-default-poll-ms"));
+  return Number.isFinite(parsed) && parsed >= 5_000 ? parsed : 30_000;
+}
+
+export function useApi<T>(path: string, intervalMs = defaultPollInterval()): ApiResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

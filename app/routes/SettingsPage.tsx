@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { authFetch } from "../lib/authFetch";
+import { useTenantContext } from "../hooks/useTenantContext";
 
 interface AuthStatus {
   tokenSet: boolean;
@@ -7,12 +8,6 @@ interface AuthStatus {
   dashboardDbEnabled: boolean;
   cloudflareHeadersPresent: boolean;
   note: string;
-}
-
-interface WorkspaceRoot {
-  path: string;
-  risk: string;
-  liveService?: string;
 }
 
 interface LicenseStatus {
@@ -120,26 +115,30 @@ interface AccessState {
   currentRole: AccessRole;
 }
 
+interface NotificationRule {
+  id: number;
+  kind: string;
+  enabled: boolean;
+  threshold: unknown;
+  channels: unknown;
+  updatedAt: number;
+}
+
+type ThemePref = "dark" | "light";
+type VariantPref = "terminal" | "compact";
+
 function WCard({ children, className = "", style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return <div className={`w-card ${className}`} style={style}>{children}</div>;
 }
-
-const FALLBACK_WORKSPACES: WorkspaceRoot[] = [
-  { path: "/opt/newsbites", risk: "low", liveService: "newsbites.service" },
-  { path: "/opt/mimoun", risk: "medium", liveService: "openclaw_gateway" },
-  { path: "/opt/paperclip", risk: "medium", liveService: "paperclip" },
-  { path: "/opt/opencode-control-surface", risk: "low", liveService: "control-surface.service" },
-  { path: "/opt/dashboard-v2", risk: "low" },
-  { path: "/opt/ai-vault", risk: "low" },
-];
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: "green" | "red" | "amber" | "gray" | "blue" }) {
   return <span className={`pill ${color}`}>{children}</span>;
 }
 
-type TabId = "auth" | "access" | "license" | "telemetry" | "finance" | "pipeline" | "alerts" | "approval" | "history";
+type TabId = "preferences" | "auth" | "access" | "license" | "telemetry" | "finance" | "pipeline" | "alerts" | "approval" | "history";
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "preferences", label: "Preferences" },
   { id: "auth", label: "Auth & Stack" },
   { id: "access", label: "Access" },
   { id: "license", label: "License" },
@@ -151,7 +150,34 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "history", label: "Config History" },
 ];
 
+const DEFAULT_POLL_OPTIONS = [10_000, 30_000, 60_000, 120_000];
+const DEFAULT_POLL_KEY = "tib-default-poll-ms";
+
+async function readJson<T>(path: string): Promise<T> {
+  const response = await authFetch(path);
+  const json = await response.json();
+  if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
+  if (json && typeof json === "object" && "data" in json) {
+    return json.data as T;
+  }
+  return json as T;
+}
+
+function storedTheme(): ThemePref {
+  return localStorage.getItem("tib-theme") === "light" ? "light" : "dark";
+}
+
+function storedVariant(): VariantPref {
+  return localStorage.getItem("tib-variant") === "compact" ? "compact" : "terminal";
+}
+
+function storedPollInterval(): number {
+  const parsed = Number(localStorage.getItem(DEFAULT_POLL_KEY));
+  return DEFAULT_POLL_OPTIONS.includes(parsed) ? parsed : 30_000;
+}
+
 export function SettingsPage() {
+  const { tenantId, projectId, setTenantId, setProjectId } = useTenantContext();
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [telemetryPayload, setTelemetryPayload] = useState<TelemetryPayload | null>(null);
@@ -159,60 +185,67 @@ export function SettingsPage() {
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [configHistory, setConfigHistory] = useState<SystemConfigHistory[]>([]);
   const [accessState, setAccessState] = useState<AccessState | null>(null);
+  const [notificationRules, setNotificationRules] = useState<NotificationRule[]>([]);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [notificationMessage, setNotificationMessage] = useState<string | null>(null);
   const [accessMessage, setAccessMessage] = useState<string | null>(null);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [inviteForm, setInviteForm] = useState({ email: "", name: "", password: "", role: "viewer" as AccessRole });
-  const [activeTab, setActiveTab] = useState<TabId>("auth");
+  const [activeTab, setActiveTab] = useState<TabId>("preferences");
+  const [themePref, setThemePref] = useState<ThemePref>(storedTheme);
+  const [variantPref, setVariantPref] = useState<VariantPref>(storedVariant);
+  const [pollIntervalMs, setPollIntervalMs] = useState<number>(storedPollInterval);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [workspaces, setWorkspaces] = useState<WorkspaceRoot[]>(FALLBACK_WORKSPACES);
 
   useEffect(() => {
-    Promise.all([
-      authFetch("/api/settings/auth-status")
-        .then(res => res.json())
-        .then(setAuthStatus),
-      authFetch("/api/licensing/status")
-        .then(res => res.json())
-        .then(setLicenseStatus),
-      authFetch("/api/telemetry/preview")
-        .then(res => res.json())
-        .then(setTelemetryPayload),
-      authFetch("/api/telemetry/consent")
-        .then(res => res.json())
-        .then(setTelemetryConsent),
-      authFetch("/api/system-config")
-        .then(res => res.json())
-        .then(setSystemConfig),
-      authFetch("/api/system-config/history")
-        .then(res => res.json())
-        .then(data => setConfigHistory(data.history || [])),
-      authFetch("/api/settings/access")
-        .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data.users)) setAccessState(data);
-        })
-    ])
-    .then(() => setLoading(false))
-    .catch(err => {
-      setError(err.message);
+    let cancelled = false;
+
+    async function loadSettings() {
+      setLoading(true);
+      setError(null);
+      const results = await Promise.allSettled([
+        readJson<AuthStatus>("/api/settings/auth-status"),
+        readJson<LicenseStatus>("/api/licensing/status"),
+        readJson<TelemetryPayload>("/api/telemetry/preview"),
+        readJson<SystemConfig>("/api/system-config"),
+        readJson<{ history: SystemConfigHistory[] }>("/api/system-config/history"),
+        readJson<AccessState>("/api/settings/access"),
+        readJson<{ rules: NotificationRule[]; degraded?: boolean; reason?: string }>("/api/notifications/rules"),
+      ]);
+      if (cancelled) return;
+
+      const [auth, license, telemetry, config, history, access, notifications] = results;
+      if (auth.status === "fulfilled") setAuthStatus(auth.value);
+      if (license.status === "fulfilled") setLicenseStatus(license.value);
+      if (telemetry.status === "fulfilled") setTelemetryPayload(telemetry.value);
+      if (config.status === "fulfilled") setSystemConfig(config.value);
+      if (history.status === "fulfilled") setConfigHistory(history.value.history || []);
+      if (access.status === "fulfilled" && Array.isArray(access.value.users)) setAccessState(access.value);
+      if (notifications.status === "fulfilled") {
+        setNotificationRules(notifications.value.rules || []);
+        setNotificationError(notifications.value.degraded ? notifications.value.reason ?? "Notifications are degraded." : null);
+      } else {
+        setNotificationError(notifications.reason instanceof Error ? notifications.reason.message : "Notification rules could not be loaded.");
+      }
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length === results.length) {
+        setError("Settings data could not be loaded.");
+      }
+      setLoading(false);
+    }
+
+    loadSettings().catch((err: unknown) => {
+      if (cancelled) return;
+      setError(err instanceof Error ? err.message : String(err));
       setLoading(false);
     });
-
-    fetch("/var/lib/mimule/workspace-registry.json")
-      .then(res => {
-        if (res.ok) return res.json();
-        throw new Error("not found");
-      })
-      .then(data => {
-        if (Array.isArray(data)) {
-          setWorkspaces(data);
-        }
-      })
-      .catch(() => {
-        // Use fallback
-      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSaveConfig = async () => {
@@ -220,21 +253,81 @@ export function SettingsPage() {
     
     try {
       setSaving(true);
+      setSaveMessage(null);
       const response = await authFetch('/api/system-config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(systemConfig)
       });
-      
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
-        alert('Configuration saved successfully');
+        setSaveMessage(data?.data?.message ?? data?.message ?? 'Configuration saved successfully');
+        const freshHistory = await readJson<{ history: SystemConfigHistory[] }>("/api/system-config/history").catch(() => null);
+        if (freshHistory) setConfigHistory(freshHistory.history || []);
+      } else {
+        throw new Error(data?.error || `HTTP ${response.status}`);
       }
     } catch (error) {
       console.error('Error saving config:', error);
-      alert('Error saving configuration');
+      setSaveMessage(error instanceof Error ? error.message : 'Error saving configuration');
     } finally {
       setSaving(false);
     }
+  };
+
+  const applyThemePreference = (nextTheme: ThemePref) => {
+    setThemePref(nextTheme);
+    localStorage.setItem("tib-theme", nextTheme);
+    document.documentElement.setAttribute("data-theme", nextTheme);
+  };
+
+  const applyVariantPreference = (nextVariant: VariantPref) => {
+    setVariantPref(nextVariant);
+    localStorage.setItem("tib-variant", nextVariant);
+    document.documentElement.setAttribute("data-variant", nextVariant);
+  };
+
+  const applyPollInterval = (nextInterval: number) => {
+    setPollIntervalMs(nextInterval);
+    localStorage.setItem(DEFAULT_POLL_KEY, String(nextInterval));
+  };
+
+  const handleNotificationRuleToggle = async (rule: NotificationRule, enabled: boolean) => {
+    setNotificationError(null);
+    setNotificationMessage(null);
+    try {
+      const response = await authFetch(`/api/notifications/rules/${rule.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: rule.kind,
+          enabled,
+          threshold: rule.threshold,
+          channels: rule.channels,
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
+      const updated = (json?.data?.rules ?? json?.rules ?? []) as NotificationRule[];
+      setNotificationRules((current) => current.map((item) => updated.find((next) => next.id === item.id) ?? item));
+      setNotificationMessage(`${rule.kind} notifications ${enabled ? "enabled" : "disabled"}.`);
+    } catch (err) {
+      setNotificationError(err instanceof Error ? err.message : "Notification rule could not be updated.");
+    }
+  };
+
+  const handleTelemetryConsent = async (consent: boolean) => {
+    const response = await authFetch("/api/telemetry/consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ consent }),
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setError(json?.error || `Telemetry consent update failed with HTTP ${response.status}`);
+      return;
+    }
+    setTelemetryConsent({ consented: consent, updatedAt: new Date().toISOString() });
   };
 
   const handleFinanceAgentChange = (field: keyof NonNullable<SystemConfig['config']['financeAgent']>, value: any) => {
@@ -344,21 +437,107 @@ export function SettingsPage() {
 
   return (
     <div className="dash-page">
-      <div className="dash-section">
-        <div className="dash-section-title">Settings</div>
+      <div className="page-header settings-page-header">
+        <div className="page-title">
+          <h1>Settings</h1>
+        </div>
       </div>
 
-      <div className="dash-tabs" style={{ marginBottom: 16 }}>
+      <div className="dash-tabs settings-tabs" role="tablist" aria-label="Settings sections">
         {TABS.map(t => (
           <button
             key={t.id}
             className={`dash-tab ${activeTab === t.id ? "active" : ""}`}
             onClick={() => setActiveTab(t.id)}
+            role="tab"
+            aria-selected={activeTab === t.id}
           >
             {t.label}
           </button>
         ))}
       </div>
+
+      {saveMessage && <div className="settings-save-message">{saveMessage}</div>}
+
+      {activeTab === "preferences" && (
+        <div className="settings-grid">
+          <WCard>
+            <div className="settings-card-title">Appearance</div>
+            <div className="settings-control-row">
+              <div>
+                <div className="w-label">Theme</div>
+                <div className="w-caption">Persisted in localStorage as tib-theme.</div>
+              </div>
+              <div className="settings-segmented">
+                <button className={`btn btn-sm ${themePref === "dark" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyThemePreference("dark")}>Dark</button>
+                <button className={`btn btn-sm ${themePref === "light" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyThemePreference("light")}>Light</button>
+              </div>
+            </div>
+            <div className="settings-control-row">
+              <div>
+                <div className="w-label">Variant</div>
+                <div className="w-caption">Matches the compact/terminal switch in the top navigation.</div>
+              </div>
+              <div className="settings-segmented">
+                <button className={`btn btn-sm ${variantPref === "terminal" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyVariantPreference("terminal")}>Terminal</button>
+                <button className={`btn btn-sm ${variantPref === "compact" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyVariantPreference("compact")}>Compact</button>
+              </div>
+            </div>
+          </WCard>
+
+          <WCard>
+            <div className="settings-card-title">Context</div>
+            <label className="settings-field">
+              <span>Default tenant</span>
+              <input value={tenantId} onChange={(event) => setTenantId(event.target.value || "mimule")} />
+            </label>
+            <label className="settings-field">
+              <span>Default project</span>
+              <input value={projectId} onChange={(event) => setProjectId(event.target.value || "opencode-control-surface")} />
+            </label>
+            <div className="w-caption">These values are sent as x-tenant-id and x-project-id by authFetch.</div>
+          </WCard>
+
+          <WCard>
+            <div className="settings-card-title">Refresh</div>
+            <div className="settings-control-row">
+              <div>
+                <div className="w-label">Default polling interval</div>
+                <div className="w-caption">Used by shared API hooks when a page does not set a custom interval.</div>
+              </div>
+              <select value={pollIntervalMs} onChange={(event) => applyPollInterval(Number(event.target.value))}>
+                {DEFAULT_POLL_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{option / 1000}s</option>
+                ))}
+              </select>
+            </div>
+          </WCard>
+
+          <WCard>
+            <div className="settings-card-title">Notifications</div>
+            {notificationMessage && <div className="w-caption settings-success">{notificationMessage}</div>}
+            {notificationError && <div className="w-caption settings-error">{notificationError}</div>}
+            {notificationRules.length > 0 ? (
+              <div className="settings-rule-list">
+                {notificationRules.map((rule) => (
+                  <div className="settings-rule-row" key={rule.id}>
+                    <div>
+                      <div className="w-label">{rule.kind}</div>
+                      <div className="w-caption">Channels: {formatUnknownList(rule.channels)} · updated {new Date(rule.updatedAt).toLocaleString()}</div>
+                    </div>
+                    <label className="settings-switch">
+                      <input type="checkbox" checked={rule.enabled} onChange={(event) => handleNotificationRuleToggle(rule, event.target.checked)} />
+                      <span>{rule.enabled ? "Enabled" : "Disabled"}</span>
+                    </label>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="w-caption">No notification rules are configured in the dashboard database.</div>
+            )}
+          </WCard>
+        </div>
+      )}
 
       {activeTab === "auth" && (
         <>
@@ -388,39 +567,6 @@ export function SettingsPage() {
             <div className="w-caption" style={{ marginTop: 8 }}>{authStatus.note}</div>
           )}
         </WCard>
-      </div>
-
-      {/* Widget Preferences */}
-      <div className="dash-section">
-        <div className="dash-section-title">widget preferences</div>
-        <WCard>
-          <div className="w-caption">
-            Widget preference storage coming in V4.1 — preferences will persist server-side via operator_state.
-          </div>
-        </WCard>
-      </div>
-
-      {/* Workspace Roots */}
-      <div className="dash-section">
-        <div className="dash-section-title">workspace roots</div>
-        <div className="w-caption" style={{ marginBottom: 8 }}>
-          Current workspaces in the MIMULE stack
-        </div>
-        {workspaces.map((ws, i) => (
-          <WCard key={i} style={{ marginBottom: 8, padding: "8px 12px" }}>
-            <div className="w-row">
-              <span className="w-label" style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 11 }}>
-                {ws.path}
-              </span>
-              <Pill color={ws.risk === "low" ? "green" : ws.risk === "medium" ? "amber" : "red"}>
-                {ws.risk}
-              </Pill>
-            </div>
-            {ws.liveService && (
-              <div className="w-caption">Service: {ws.liveService}</div>
-            )}
-          </WCard>
-        ))}
       </div>
 
       {/* Action Allowlist Status */}
@@ -492,7 +638,7 @@ export function SettingsPage() {
                 </select>
               </div>
               <div className="flex justify-end mt-4">
-                <button className="btn-primary" type="submit">Invite user</button>
+                <button className="btn btn-primary" type="submit">Invite user</button>
               </div>
             </form>
           </WCard>
@@ -586,7 +732,7 @@ export function SettingsPage() {
             <div className="w-row">
               <span className="w-label">Opt-in status</span>
               <Pill color={telemetryConsent?.consented ? "green" : "gray"}>
-                {telemetryConsent?.consented ? "opted in" : "not opted in"}
+                {telemetryConsent ? (telemetryConsent.consented ? "opted in" : "not opted in") : "not readable"}
               </Pill>
             </div>
             {telemetryConsent?.updatedAt && (
@@ -595,6 +741,10 @@ export function SettingsPage() {
                 <span className="w-caption">{new Date(telemetryConsent.updatedAt).toLocaleString()}</span>
               </div>
             )}
+            <div className="settings-action-row">
+              <button className="btn btn-primary btn-sm" onClick={() => handleTelemetryConsent(true)}>Opt in</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => handleTelemetryConsent(false)}>Opt out</button>
+            </div>
           </WCard>
 
           <div className="dash-section-title" style={{ marginTop: 24 }}>preview payload</div>
@@ -641,7 +791,7 @@ export function SettingsPage() {
           </WCard>
           <div className="flex justify-end mt-4">
             <button 
-              className="btn-primary" 
+              className="btn btn-primary" 
               onClick={handleSaveConfig}
               disabled={saving}
             >
@@ -692,7 +842,7 @@ export function SettingsPage() {
           
           <div className="flex justify-end mt-4">
             <button 
-              className="btn-primary" 
+              className="btn btn-primary" 
               onClick={handleSaveConfig}
               disabled={saving}
             >
@@ -742,7 +892,7 @@ export function SettingsPage() {
           </WCard>
           <div className="flex justify-end mt-4">
             <button 
-              className="btn-primary" 
+              className="btn btn-primary" 
               onClick={handleSaveConfig}
               disabled={saving}
             >
@@ -844,7 +994,7 @@ export function SettingsPage() {
           </WCard>
           <div className="flex justify-end mt-4">
             <button 
-              className="btn-primary" 
+              className="btn btn-primary" 
               onClick={handleSaveConfig}
               disabled={saving}
             >
@@ -876,4 +1026,11 @@ export function SettingsPage() {
       )}
     </div>
   );
+}
+
+function formatUnknownList(value: unknown): string {
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ") || "none";
+  if (value == null) return "none";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
 }

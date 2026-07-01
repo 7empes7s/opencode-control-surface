@@ -133,15 +133,16 @@ export function LiteLLMPage() {
         />
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>LiteLLM</h1>
-        <span style={{ color: "var(--text-dim)", fontSize: 12, fontFamily: "var(--mono)", minWidth: 0, overflowWrap: "anywhere" }}>
+      <div className="litellm-header">
+        <h1>LiteLLM</h1>
+        <span className="litellm-proxy-url">
           {status?.proxy.url ?? "loading..."}
         </span>
+        <div className="litellm-header-actions">
         <button
           type="button"
           onClick={() => setRestartOpen(true)}
-          style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "6px 10px", borderRadius: 6, border: "1px solid color-mix(in oklch, var(--red) 45%, var(--border))", background: "transparent", color: "var(--red)", cursor: "pointer" }}
+          className="btn btn-danger btn-sm"
         >
           <Power size={13} />
           Restart
@@ -149,84 +150,85 @@ export function LiteLLMPage() {
         <button
           type="button"
           onClick={refresh}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-dim)", cursor: "pointer" }}
+          className="btn btn-ghost btn-sm"
         >
           <RefreshCw size={13} />
           Refresh
         </button>
+        </div>
       </div>
 
       {restartAction.success && (
-        <div style={{ border: "1px solid var(--green)", color: "var(--green)", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 12 }}>
+        <div className="litellm-alert ok">
           {restartAction.success}
         </div>
       )}
 
       {errors.length > 0 && (
-        <div style={{ border: "1px solid var(--red)", color: "var(--red)", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 12 }}>
+        <div className="litellm-alert error">
           {errors.join(" | ")}
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
+      <div className="litellm-summary-grid">
         {[
           { label: "Service", value: status?.service.activeState ?? (statusLoading ? "loading" : "unknown"), ok: status?.service.activeState === "active" },
           { label: "Proxy", value: status?.proxy.reachable ? "reachable" : "unreachable", ok: Boolean(status?.proxy.reachable) },
           { label: "Models", value: String(status?.proxy.modelCount ?? status?.config.modelCount ?? "-"), ok: Boolean((status?.proxy.modelCount ?? status?.config.modelCount ?? 0) > 0) },
           { label: "Fallback Chains", value: String(status?.config.fallbackChainCount ?? routing?.fallbacks.length ?? "-"), ok: Boolean((status?.config.fallbackChainCount ?? routing?.fallbacks.length ?? 0) > 0) },
         ].map((item) => (
-          <div key={item.label} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px", background: "var(--bg-card-start)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{item.label}</span>
+          <div key={item.label} className="litellm-summary-card">
+            <div className="litellm-summary-label">
+              <span>{item.label}</span>
               {item.ok ? <CheckCircle2 size={14} style={{ color: "var(--green)" }} /> : <AlertCircle size={14} style={{ color: "var(--amber-warn)" }} />}
             </div>
-            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6, fontFamily: "var(--mono)" }}>{item.value}</div>
+            <div className="litellm-summary-value">{item.value}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 0.9fr) minmax(0, 1.1fr)", gap: 20, marginBottom: 20 }}>
+      <div className="litellm-main-grid">
         <SectionCard title="Status">
-          <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>Unit</span>
+          <div className="litellm-kv-list">
+            <div className="litellm-kv-row">
+              <span>Unit</span>
               <span className={pillClass(status?.service.activeState === "active")}>{status?.service.activeState ?? "unknown"}</span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>PID</span>
-              <span style={{ fontFamily: "var(--mono)" }}>{status?.service.mainPid ?? "-"}</span>
+            <div className="litellm-kv-row">
+              <span>PID</span>
+              <code>{status?.service.mainPid ?? "-"}</code>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>Memory</span>
-              <span style={{ fontFamily: "var(--mono)" }}>{bytes(status?.service.memoryBytes ?? null)}</span>
+            <div className="litellm-kv-row">
+              <span>Memory</span>
+              <code>{bytes(status?.service.memoryBytes ?? null)}</code>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>Health HTTP</span>
-              <span style={{ fontFamily: "var(--mono)" }}>{status?.proxy.healthStatus ?? "-"}</span>
+            <div className="litellm-kv-row">
+              <span>Health HTTP</span>
+              <code>{status?.proxy.healthStatus ?? "-"}</code>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>Latency</span>
-              <span style={{ fontFamily: "var(--mono)" }}>{latency(status?.proxy.latencyMs ?? null)}</span>
+            <div className="litellm-kv-row">
+              <span>Latency</span>
+              <code>{latency(status?.proxy.latencyMs ?? null)}</code>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-              <span style={{ color: "var(--text-dim)" }}>Master Key</span>
+            <div className="litellm-kv-row">
+              <span>Master Key</span>
               <span className={pillClass(Boolean(status?.proxy.authConfigured))}>{status?.proxy.authConfigured ? "configured" : "missing"}</span>
             </div>
             {status?.proxy.error && (
-              <div style={{ color: "var(--red)", fontSize: 11 }}>{status.proxy.error}</div>
+              <div className="litellm-inline-error">{status.proxy.error}</div>
             )}
           </div>
         </SectionCard>
 
         <SectionCard title="Fallback Chains">
           {(routing?.fallbacks.length ?? 0) === 0 ? (
-            <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 12 }}>No fallback chains found in the LiteLLM config.</p>
+            <p className="litellm-empty-copy">No fallback chains found in the LiteLLM config.</p>
           ) : (
-            <div style={{ display: "grid", gap: 10 }}>
+            <div className="litellm-chain-list">
               {routing?.fallbacks.slice(0, 8).map((chain) => (
-                <div key={chain.model} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, marginBottom: 4 }}>{chain.model}</div>
-                  <div style={{ color: "var(--text-dim)", fontSize: 11, lineHeight: 1.5 }}>{chain.fallbacks.join(" -> ")}</div>
+                <div key={chain.model} className="litellm-chain-row">
+                  <code>{chain.model}</code>
+                  <span>{chain.fallbacks.join(" -> ")}</span>
                 </div>
               ))}
             </div>
@@ -267,11 +269,11 @@ export function LiteLLMPage() {
       </SectionCard>
 
       <SectionCard title="Redacted Config">
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 8, fontSize: 11, color: "var(--text-dim)" }}>
-          <span style={{ fontFamily: "var(--mono)" }}>{config?.path ?? status?.config.path ?? "-"}</span>
+        <div className="litellm-config-meta">
+          <code>{config?.path ?? status?.config.path ?? "-"}</code>
           <span>{config?.lineCount ?? "-"} lines</span>
         </div>
-        <pre style={{ maxHeight: 360, overflow: "auto", margin: 0, padding: 12, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
+        <pre className="litellm-config-block">
           {config?.redactedYaml || "No config loaded."}
         </pre>
       </SectionCard>

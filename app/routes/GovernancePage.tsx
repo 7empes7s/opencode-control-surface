@@ -82,6 +82,7 @@ interface TenantInfo {
 }
 
 type Tab = "users" | "policies" | "secrets" | "approvals" | "budgets";
+type ApprovalRow = ApprovalInfo & { status: "pending" | "completed" };
 
 const ROLE_OPTIONS: RbacRole[] = ["viewer", "auditor", "operator", "owner"];
 
@@ -149,6 +150,25 @@ export function GovernancePage() {
       }
     },
     defaultSort: { key: "scope", dir: "asc" },
+  });
+
+  const approvalRows: ApprovalRow[] = [
+    ...(approvalsData?.pending ?? []).map((row) => ({ ...row, status: "pending" as const })),
+    ...(approvalsData?.completed ?? []).map((row) => ({ ...row, status: "completed" as const })),
+  ];
+  const approvalsCtrl = useTableControls<ApprovalRow, "workflowId" | "status" | "requestedAt" | "decidedAt">({
+    rows: approvalRows,
+    pageSize: 25,
+    filterText: (row) => [row.workflowId, row.runId, row.requestedBy ?? "", row.decidedBy ?? "", row.reason ?? "", row.status].join(" "),
+    sortValue: (row, key) => {
+      switch (key) {
+        case "status": return row.status;
+        case "requestedAt": return row.requestedAt;
+        case "decidedAt": return row.decidedAt ?? 0;
+        default: return row.workflowId;
+      }
+    },
+    defaultSort: { key: "requestedAt", dir: "desc" },
   });
 
   const usersCtrl = useTableControls<GovernanceUser, "displayName" | "role" | "tenantId">({
@@ -240,6 +260,8 @@ export function GovernancePage() {
     { id: "approvals", label: "Approvals" },
     { id: "budgets", label: "Budgets" },
   ];
+  const latestBudgetChange = Math.max(0, ...(budgetsData?.budgets ?? []).map((budget) => budget.updated_at));
+  const latestSecretChange = Math.max(0, ...(secretsData?.secrets ?? []).map((secret) => secret.updated_at));
 
   return (
     <div className="dash-page">
@@ -258,12 +280,40 @@ export function GovernancePage() {
         ))}
       </div>
 
+      <div className="governance-summary-grid">
+        <div className="governance-summary-card">
+          <span>Users</span>
+          <strong>{usersData?.users.length ?? "—"}</strong>
+          <small>{usersData ? `current role ${usersData.currentRole}` : "loading access"}</small>
+        </div>
+        <div className="governance-summary-card">
+          <span>Policies</span>
+          <strong>{policiesData?.policies.length ?? "—"}</strong>
+          <small>{policiesData ? `${policiesData.decisionCount} stored decisions` : "loading policy state"}</small>
+        </div>
+        <div className="governance-summary-card">
+          <span>Approvals</span>
+          <strong>{approvalsData?.pending.length ?? "—"}</strong>
+          <small>{approvalsData ? `${approvalsData.completed.length} completed` : "loading approvals"}</small>
+        </div>
+        <div className="governance-summary-card">
+          <span>Secrets</span>
+          <strong>{secretsData?.secrets.length ?? "—"}</strong>
+          <small>{latestSecretChange > 0 ? `changed ${fmtAge(latestSecretChange)}` : "no changes recorded"}</small>
+        </div>
+        <div className="governance-summary-card">
+          <span>Budgets</span>
+          <strong>{budgetsData?.budgets.length ?? "—"}</strong>
+          <small>{latestBudgetChange > 0 ? `changed ${fmtAge(latestBudgetChange)}` : "no cap configured"}</small>
+        </div>
+      </div>
+
       {tab === "users" ? (
         <div className="governance-access-grid">
           <section className="section-card governance-access-main">
             <div className="section-card-header">
               <h2>User Directory</h2>
-              <button className="btn-ghost" onClick={() => { reloadUsers(); reloadMatrix(); reloadTenants(); }}>
+              <button className="btn btn-ghost" onClick={() => { reloadUsers(); reloadMatrix(); reloadTenants(); }}>
                 <RefreshCw size={14} /> Refresh
               </button>
             </div>
@@ -276,7 +326,7 @@ export function GovernancePage() {
               </div>
             ) : null}
             {usersError && !usersData ? (
-              <div className="loading-dim error">Users did not load: {usersError} <button className="btn-ghost btn-sm" onClick={reloadUsers}>Retry</button></div>
+              <div className="loading-dim error">Users did not load: {usersError} <button className="btn btn-ghost btn-sm" onClick={reloadUsers}>Retry</button></div>
             ) : usersLoading && !usersData ? (
               <div className="loading-dim">loading...</div>
             ) : !usersData || usersData.users.length === 0 ? (
@@ -328,7 +378,7 @@ export function GovernancePage() {
                 <h2><KeyRound size={15} /> Permission Matrix</h2>
               </div>
               {matrixError && !matrixData ? (
-                <div className="loading-dim error">Matrix did not load: {matrixError} <button className="btn-ghost btn-sm" onClick={reloadMatrix}>Retry</button></div>
+                <div className="loading-dim error">Matrix did not load: {matrixError} <button className="btn btn-ghost btn-sm" onClick={reloadMatrix}>Retry</button></div>
               ) : matrixLoading && !matrixData ? (
                 <div className="loading-dim">loading...</div>
               ) : !matrixData ? (
@@ -350,7 +400,7 @@ export function GovernancePage() {
                 <h2><Building2 size={15} /> Tenants</h2>
               </div>
               {tenantsError && !tenantsData ? (
-                <div className="loading-dim error">Tenants did not load: {tenantsError} <button className="btn-ghost btn-sm" onClick={reloadTenants}>Retry</button></div>
+                <div className="loading-dim error">Tenants did not load: {tenantsError} <button className="btn btn-ghost btn-sm" onClick={reloadTenants}>Retry</button></div>
               ) : tenantsLoading && !tenantsData ? (
                 <div className="loading-dim">loading...</div>
               ) : !tenantsData || tenantsData.tenants.length === 0 ? (
@@ -396,12 +446,12 @@ export function GovernancePage() {
         <div className="section-card">
           <div className="section-card-header">
             <h2>Policy Documents</h2>
-            <button className="btn-ghost" onClick={handleReloadPolicies}>
+            <button className="btn btn-ghost" onClick={handleReloadPolicies}>
               <RefreshCw size={14} /> Reload
             </button>
           </div>
           {policiesError && !policiesData ? (
-            <div className="loading-dim error">Policies did not load: {policiesError} <button className="btn-ghost btn-sm" onClick={reloadPolicies}>Retry</button></div>
+            <div className="loading-dim error">Policies did not load: {policiesError} <button className="btn btn-ghost btn-sm" onClick={reloadPolicies}>Retry</button></div>
           ) : policiesLoading && !policiesData ? (
             <div className="loading-dim">loading…</div>
           ) : !policiesData || policiesData.policies.length === 0 ? (
@@ -445,7 +495,7 @@ export function GovernancePage() {
         <div className="section-card">
           <div className="section-card-header">
             <h2>Secrets Vault</h2>
-            <button className="btn-ghost" onClick={() => setShowAddSecret(true)}>
+            <button className="btn btn-ghost" onClick={() => setShowAddSecret(true)}>
               <Plus size={14} /> Add Secret
             </button>
           </div>
@@ -459,8 +509,8 @@ export function GovernancePage() {
                   <label className="modal-input-label">Value<input className="modal-input" type="password" value={newSecretValue} onChange={(e) => setNewSecretValue(e.target.value)} placeholder="secret value (masked)" /></label>
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
-                  <button className="btn-ghost" onClick={() => setShowAddSecret(false)}>Cancel</button>
-                  <button className="btn-primary" onClick={handleAddSecret}>Save</button>
+                  <button className="btn btn-ghost" onClick={() => setShowAddSecret(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={handleAddSecret}>Save</button>
                 </div>
               </div>
             </div>
@@ -473,14 +523,14 @@ export function GovernancePage() {
                   <label className="modal-input-label">Reason (optional)<input className="modal-input" value={approvalReason} onChange={(e) => setApprovalReason(e.target.value)} placeholder={`Reason for ${pendingApprovalDecision ?? "decision"}`} /></label>
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
-                  <button className="btn-ghost" onClick={() => setShowApprovalModal(false)}>Cancel</button>
-                  <button className="btn-primary" onClick={handleApprovalSubmit}>Submit Decision</button>
+                  <button className="btn btn-ghost" onClick={() => setShowApprovalModal(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={handleApprovalSubmit}>Submit Decision</button>
                 </div>
               </div>
             </div>
           ) : null}
           {secretsError && !secretsData ? (
-            <div className="loading-dim error">Secrets did not load: {secretsError} <button className="btn-ghost btn-sm" onClick={reloadSecrets}>Retry</button></div>
+            <div className="loading-dim error">Secrets did not load: {secretsError} <button className="btn btn-ghost btn-sm" onClick={reloadSecrets}>Retry</button></div>
           ) : secretsLoading && !secretsData ? (
             <div className="loading-dim">loading…</div>
           ) : !secretsData || secretsData.secrets.length === 0 ? (
@@ -510,11 +560,11 @@ export function GovernancePage() {
                         {deleteConfirmId === s.name ? (
                           <span>
                             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Delete?</span>
-                            <button className="btn-ghost btn-sm" style={{ color: "var(--red)", marginLeft: 4 }} onClick={() => { setDeleteConfirmId(null); handleDeleteSecret(s.name); }}>Yes</button>
-                            <button className="btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
+                            <button className="btn btn-ghost btn-sm" style={{ color: "var(--red)", marginLeft: 4 }} onClick={() => { setDeleteConfirmId(null); handleDeleteSecret(s.name); }}>Yes</button>
+                            <button className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => setDeleteConfirmId(null)}>Cancel</button>
                           </span>
                         ) : (
-                          <button className="btn-ghost btn-danger" onClick={() => handleDeleteSecret(s.name)}>
+                          <button className="btn btn-ghost btn-danger" onClick={() => handleDeleteSecret(s.name)}>
                             <Trash2 size={14} />
                           </button>
                         )}
@@ -540,44 +590,59 @@ export function GovernancePage() {
             <h2>Approval Gates</h2>
           </div>
           {approvalsError && !approvalsData ? (
-            <div className="loading-dim error">Approvals did not load: {approvalsError} <button className="btn-ghost btn-sm" onClick={reloadApprovals}>Retry</button></div>
+            <div className="loading-dim error">Approvals did not load: {approvalsError} <button className="btn btn-ghost btn-sm" onClick={reloadApprovals}>Retry</button></div>
           ) : approvalsLoading && !approvalsData ? (
             <div className="loading-dim">loading…</div>
           ) : !approvalsData ? (
             <p className="text-muted">No approval data returned yet. Pending approval gates appear here when a workflow or high-risk action needs review.</p>
           ) : (
-            <>
-              {approvalsData.pending.length === 0 ? <p className="text-muted">No pending approvals.</p> : null}
-              {approvalsData.pending.map((a) => (
-                <div key={a.id} className="approval-item">
-                  <div className="approval-info">
-                    <div className="font-medium">Workflow: {a.workflowId}</div>
-                    <div className="text-muted text-sm">Run: {a.runId}</div>
-                    <div className="text-muted text-xs">Requested {fmtAge(a.requestedAt)} by {a.requestedBy ?? "unknown"}</div>
-                  </div>
-                  <div className="approval-actions">
-                    <button className="btn-primary btn-sm" onClick={() => handleApprovalDecide(a.runId, "approve")}>Approve</button>
-                    <button className="btn-ghost btn-sm" onClick={() => handleApprovalDecide(a.runId, "reject")}>Reject</button>
-                  </div>
+            approvalRows.length === 0 ? (
+              <p className="text-muted">No approval data returned yet. Pending approval gates appear here when a workflow or high-risk action needs review.</p>
+            ) : (
+              <>
+                <TableControls {...approvalsCtrl.controlsProps} searchPlaceholder="Filter approvals..." />
+                <div className="table-container">
+                  <table className="data-table governance-table governance-approvals-table">
+                    <thead>
+                      <tr>
+                        <th {...approvalsCtrl.sortHeaderProps("workflowId")}>Workflow <span className="sortable-th-arrow">{approvalsCtrl.sort.key === "workflowId" ? (approvalsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th>Run</th>
+                        <th {...approvalsCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{approvalsCtrl.sort.key === "status" ? (approvalsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...approvalsCtrl.sortHeaderProps("requestedAt")}>Requested <span className="sortable-th-arrow">{approvalsCtrl.sort.key === "requestedAt" ? (approvalsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...approvalsCtrl.sortHeaderProps("decidedAt")}>Decision <span className="sortable-th-arrow">{approvalsCtrl.sort.key === "decidedAt" ? (approvalsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {approvalsCtrl.rows.map((a) => (
+                        <tr key={a.id}>
+                          <td className="font-medium">{a.workflowId}</td>
+                          <td className="font-mono text-xs">{a.runId}</td>
+                          <td><span className={`pill ${a.status === "pending" ? "amber" : a.decision === "approve" ? "green" : "gray"}`}>{a.status === "pending" ? "pending" : a.decision ?? "completed"}</span></td>
+                          <td className="text-muted text-xs">{fmtAge(a.requestedAt)} by {a.requestedBy ?? "unknown"}</td>
+                          <td className="text-muted text-xs">{a.decidedAt ? `${a.decision?.toUpperCase() ?? "DECIDED"} by ${a.decidedBy ?? "unknown"} ${fmtAge(a.decidedAt)}` : "—"}{a.reason ? ` · ${a.reason}` : ""}</td>
+                          <td>
+                            {a.status === "pending" ? (
+                              <div className="approval-actions">
+                                <button className="btn btn-primary btn-sm" onClick={() => handleApprovalDecide(a.runId, "approve")}>Approve</button>
+                                <button className="btn btn-ghost btn-sm" onClick={() => handleApprovalDecide(a.runId, "reject")}>Reject</button>
+                              </div>
+                            ) : (
+                              <span className="text-muted text-xs">closed</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {approvalsCtrl.filteredCount === 0 && (
+                        <tr>
+                          <td colSpan={6} className="loading-dim">No approvals match the current filter.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-              {approvalsData.completed.length > 0 ? (
-                <>
-                  <h3 className="text-muted mt-6 mb-2">Completed</h3>
-                  {approvalsData.completed.map((a) => (
-                    <div key={a.id} className="approval-item completed">
-                      <div className="approval-info">
-                        <div className="font-medium">Workflow: {a.workflowId}</div>
-                        <div className="text-muted text-xs">
-                          {a.decision?.toUpperCase()} by {a.decidedBy} {a.decidedAt ? fmtAge(a.decidedAt) : ""}
-                          {a.reason ? ` — ${a.reason}` : ""}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </>
-              ) : null}
-            </>
+              </>
+            )
           )}
         </div>
       ) : null}
@@ -586,7 +651,7 @@ export function GovernancePage() {
         <div className="section-card">
           <div className="section-card-header">
             <h2>Budget Caps</h2>
-            <button className="btn-ghost" onClick={() => setShowSetBudget(true)}>
+            <button className="btn btn-ghost" onClick={() => setShowSetBudget(true)}>
               <Plus size={14} /> Set Budget
             </button>
           </div>
@@ -599,14 +664,14 @@ export function GovernancePage() {
                   <label className="modal-input-label">Monthly Cap (USD)<input className="modal-input" type="number" value={newMonthlyCap} onChange={(e) => setNewMonthlyCap(e.target.value)} placeholder="e.g. 500.00" /></label>
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
-                  <button className="btn-ghost" onClick={() => setShowSetBudget(false)}>Cancel</button>
-                  <button className="btn-primary" onClick={handleSetBudget}>Save</button>
+                  <button className="btn btn-ghost" onClick={() => setShowSetBudget(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={handleSetBudget}>Save</button>
                 </div>
               </div>
             </div>
           ) : null}
           {budgetsError && !budgetsData ? (
-            <div className="loading-dim error">Budgets did not load: {budgetsError} <button className="btn-ghost btn-sm" onClick={reloadBudgets}>Retry</button></div>
+            <div className="loading-dim error">Budgets did not load: {budgetsError} <button className="btn btn-ghost btn-sm" onClick={reloadBudgets}>Retry</button></div>
           ) : budgetsLoading && !budgetsData ? (
             <div className="loading-dim">loading…</div>
           ) : !budgetsData ? (
