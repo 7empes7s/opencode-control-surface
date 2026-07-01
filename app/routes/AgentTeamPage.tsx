@@ -1,4 +1,21 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
+import {
+  Activity,
+  Bot,
+  Boxes,
+  CheckCircle2,
+  Clock,
+  Cpu,
+  GitBranch,
+  History,
+  Play,
+  Radar,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  XCircle,
+} from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { SectionCard } from "../components/SectionCard";
 import { authFetch } from "../lib/authFetch";
@@ -28,6 +45,183 @@ function HealthTile({ label, value, color }: { label: string; value: string; col
 }
 
 type OpenJob = { id: string; type: string; goal: string; dir: string; created: number; state: string };
+type AgentStatus = "active" | "idle" | "cooldown" | "failing";
+
+function statusClass(status: AgentStatus) {
+  if (status === "active") return "green";
+  if (status === "cooldown") return "amber";
+  if (status === "failing") return "red";
+  return "gray";
+}
+
+function normalizeProvider(chainEntry: string) {
+  const raw = chainEntry.endsWith(":") ? chainEntry.slice(0, -1) : chainEntry.split(":")[0];
+  return raw.toLowerCase();
+}
+
+function statusFromRole(
+  role: string,
+  chain: string[],
+  jobs: AgentTeamDetail["jobs"],
+  cooldowns: AgentTeamDetail["cooldowns"],
+): AgentStatus {
+  const providerSet = new Set(chain.map(normalizeProvider).filter(Boolean));
+  const hasCooldown = cooldowns.some((cooldown) => providerSet.has(cooldown.provider.toLowerCase()));
+  if (hasCooldown) return "cooldown";
+
+  const roleNeedle = role.toLowerCase();
+  const failed = jobs
+    .filter((lane) => lane.state === "failed" || lane.state === "rejected")
+    .some((lane) => lane.items.some((item) => `${item.type} ${item.goal} ${item.dir}`.toLowerCase().includes(roleNeedle)));
+  if (failed) return "failing";
+
+  const active = jobs
+    .filter((lane) => lane.state === "running" || lane.state === "queue")
+    .some((lane) => lane.items.some((item) => `${item.type} ${item.goal} ${item.dir}`.toLowerCase().includes(roleNeedle)));
+  return active ? "active" : "idle";
+}
+
+function jobStatePill(state: string) {
+  if (state === "done") return "green";
+  if (state === "running" || state === "queue") return "amber";
+  if (state === "failed" || state === "rejected") return "red";
+  return "gray";
+}
+
+function pct(part: number, total: number) {
+  return total > 0 ? Math.max(3, Math.round((part / total) * 100)) : 0;
+}
+
+function MiniMetric({ icon, label, value, tone = "gray" }: { icon: ReactNode; label: string; value: string; tone?: string }) {
+  return (
+    <div className={`agent-metric-card ${tone}`}>
+      <div className="agent-metric-icon">{icon}</div>
+      <span className="agent-metric-label">{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function JobDistribution({ jobs }: { jobs: AgentTeamDetail["jobs"] }) {
+  const total = jobs.reduce((sum, lane) => sum + lane.count, 0);
+  return (
+    <div className="agent-chart-panel">
+      <div className="agent-panel-title"><Boxes size={15} /> Job status distribution</div>
+      {total === 0 ? (
+        <div className="loading-dim">No job files found in the team queues.</div>
+      ) : (
+        <div className="agent-bars">
+          {jobs.map((lane) => (
+            <div className="agent-bar-row" key={lane.state}>
+              <span className={`pill ${jobStatePill(lane.state)}`}>{lane.state}</span>
+              <div className="agent-bar-track" aria-label={`${lane.state}: ${lane.count}`}>
+                <div className={`agent-bar-fill ${jobStatePill(lane.state)}`} style={{ width: `${pct(lane.count, total)}%` }} />
+              </div>
+              <strong className="mono">{lane.count}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModelUsageBreakdown({ roles }: { roles: AgentTeamDetail["roles"] }) {
+  const providers = roles.reduce<Record<string, number>>((acc, role) => {
+    for (const entry of role.chain) {
+      const provider = normalizeProvider(entry) || "unknown";
+      acc[provider] = (acc[provider] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
+  const rows = Object.entries(providers).sort((a, b) => b[1] - a[1]);
+  const total = rows.reduce((sum, [, count]) => sum + count, 0);
+
+  return (
+    <div className="agent-chart-panel">
+      <div className="agent-panel-title"><Cpu size={15} /> Model usage by roster chain</div>
+      {rows.length === 0 ? (
+        <div className="loading-dim">No role chains configured.</div>
+      ) : (
+        <div className="agent-model-bars">
+          {rows.map(([provider, count]) => (
+            <div className="agent-model-bar" key={provider}>
+              <div>
+                <span className="mono">{provider}</span>
+                <strong>{count}</strong>
+              </div>
+              <div className="agent-bar-track">
+                <div className="agent-bar-fill blue" style={{ width: `${pct(count, total)}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityTimeline({ activity }: { activity: string[] }) {
+  const points = activity.slice(-12);
+  return (
+    <div className="agent-chart-panel agent-activity-panel">
+      <div className="agent-panel-title"><History size={15} /> Recent activity timeline</div>
+      {points.length === 0 ? (
+        <div className="loading-dim">No activity log found.</div>
+      ) : (
+        <div className="agent-timeline">
+          {points.map((line, index) => (
+            <div className="agent-timeline-item" key={`${index}-${line}`}>
+              <span className="agent-timeline-dot" />
+              <span className="mono">{String(index + 1).padStart(2, "0")}</span>
+              <p>{line}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SelfCorrectionRing({ selfCorrection }: { selfCorrection: AgentTeamDetail["selfCorrection"] }) {
+  const summary = selfCorrection?.summary;
+  const audited = summary?.audited ?? 0;
+  const shipped = summary?.shipped ?? 0;
+  const rolledBack = summary?.rolledBack ?? 0;
+  const shippedPct = audited > 0 ? shipped / audited : 0;
+  const radius = 38;
+  const circumference = 2 * Math.PI * radius;
+  const shippedOffset = circumference - shippedPct * circumference;
+  return (
+    <div className="agent-chart-panel agent-self-panel">
+      <div className="agent-panel-title"><ShieldCheck size={15} /> Self-correction summary</div>
+      {audited === 0 ? (
+        <div className="loading-dim">No audited team changes recorded.</div>
+      ) : (
+        <div className="agent-ring-row">
+          <svg className="agent-ring" viewBox="0 0 96 96" role="img" aria-label={`${shipped} shipped, ${rolledBack} rolled back`}>
+            <circle className="agent-ring-track" cx="48" cy="48" r={radius} />
+            <circle
+              className="agent-ring-fill"
+              cx="48"
+              cy="48"
+              r={radius}
+              strokeDasharray={circumference}
+              strokeDashoffset={shippedOffset}
+            />
+            <text x="48" y="45" textAnchor="middle">{Math.round(shippedPct * 100)}%</text>
+            <text x="48" y="60" textAnchor="middle">ship</text>
+          </svg>
+          <div className="agent-ring-copy">
+            <span><CheckCircle2 size={14} /> {shipped} shipped</span>
+            <span><RotateCcw size={14} /> {rolledBack} rolled back</span>
+            <span><Radar size={14} /> {audited} audited</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function AgentTeamPage() {
   const { data, loading, error, refresh } = useApi<AgentTeamDetail>("/api/agent-team", 30_000);
@@ -96,34 +290,89 @@ export function AgentTeamPage() {
   const stateCount = (s: string) => d.jobs.find((j) => j.state === s)?.count ?? 0;
   const inFlight = stateCount("running") + stateCount("queue");
   const lastPass = reportTime(d.latestReport?.file);
+  const generatedMs = new Date(d.generatedAt).getTime();
+  const updatedAgo = Number.isNaN(generatedMs) ? "unknown" : fmtAge(Math.floor((Date.now() - generatedMs) / 1000));
+  const latestActivity = d.recentActivity[d.recentActivity.length - 1] ?? "";
+  const roster = d.roles.map((role) => {
+    const status = statusFromRole(role.role, role.chain, d.jobs, d.cooldowns);
+    const activityLine = d.recentActivity.slice().reverse().find((line) => line.toLowerCase().includes(role.role.toLowerCase())) ?? latestActivity;
+    return {
+      ...role,
+      status,
+      currentModel: role.chain[0] ? chainLabel(role.chain[0]) : "not configured",
+      lastActivity: activityLine || "No activity recorded",
+    };
+  });
+  const attentionCount = stateCount("failed") + stateCount("rejected") + d.cooldowns.length;
 
   return (
-    <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Agent Team</div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-          Updated {fmtAge(Date.now() - new Date(d.generatedAt).getTime())}
+    <div className="dash-page agent-team-page">
+      <div className="page-header agent-team-header">
+        <div>
+          <div className="page-title">Agent Team</div>
+          <p className="agent-team-subtitle">
+            Live roster, queue pressure, cooldowns, model chains, activity, and self-correction evidence from the improvement team.
+          </p>
+          <div className="agent-header-meta">
+            <span className="mono"><Clock size={13} /> Updated {updatedAgo}</span>
+            <span className={`pill ${attentionCount > 0 ? "amber" : "green"}`}>{attentionCount} need attention</span>
+          </div>
         </div>
-        <div style={{ marginTop: 8 }}>
+        <div className="agent-header-actions">
           <button
-            className="pill"
+            className="pill agent-action-pill"
             disabled={actionBusy}
             onClick={() => doAction("run-orchestrator", undefined, "Run an orchestrator pass now? It will analyze the stack and may enqueue safe improvement jobs.")}
-            style={{ cursor: "pointer" }}
           >
-            ▶ Run orchestrator pass
+            <Play size={14} />
+            Run orchestrator pass
           </button>
         </div>
       </div>
 
-      {/* Health summary */}
-      <div className="tib-chip-grid" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <HealthTile label="In flight" value={String(inFlight)} color={inFlight > 0 ? "var(--amber)" : undefined} />
-        <HealthTile label="Done" value={String(stateCount("done"))} color="var(--green)" />
-        <HealthTile label="Rejected" value={String(stateCount("rejected"))} color={stateCount("rejected") > 0 ? "var(--amber)" : undefined} />
-        <HealthTile label="Providers" value={d.cooldowns.length === 0 ? "all available" : String(d.cooldowns.length)} color={d.cooldowns.length === 0 ? "var(--green)" : "var(--amber)"} />
-        <HealthTile label="Last pass" value={lastPass ? fmtAge(Math.floor((Date.now() - lastPass) / 1000)) : "—"} />
-      </div>
+      <section className="agent-metrics-grid" aria-label="Agent team summary">
+        <MiniMetric icon={<Activity size={17} />} label="in flight" value={String(inFlight)} tone={inFlight > 0 ? "amber" : "gray"} />
+        <MiniMetric icon={<CheckCircle2 size={17} />} label="done" value={String(stateCount("done"))} tone="green" />
+        <MiniMetric icon={<XCircle size={17} />} label="failed / rejected" value={String(stateCount("failed") + stateCount("rejected"))} tone={stateCount("failed") + stateCount("rejected") > 0 ? "red" : "gray"} />
+        <MiniMetric icon={<Cpu size={17} />} label="models" value={`${d.models.usableFree}/${d.models.count} free`} tone="blue" />
+        <MiniMetric icon={<GitBranch size={17} />} label="projects" value={String(d.projects.length)} tone="gray" />
+        <MiniMetric icon={<Radar size={17} />} label="last pass" value={lastPass ? fmtAge(Math.floor((Date.now() - lastPass) / 1000)) : "-"} tone="gray" />
+      </section>
+
+      <SectionCard title={<><Bot size={16} /> Agent roster</>} defaultOpen={true}>
+        <div className="section-card-body">
+          {roster.length === 0 ? (
+            <div className="loading-dim">No agent roles configured yet.</div>
+          ) : (
+            <div className="agent-roster-grid">
+              {roster.map((agent) => (
+                <article className={`agent-roster-card ${agent.status}`} key={agent.role}>
+                  <div className="agent-roster-head">
+                    <span className={`agent-status-dot ${agent.status}`} aria-hidden="true" />
+                    <div>
+                      <h3>{agent.role}</h3>
+                      <span className={`pill ${statusClass(agent.status)}`}>{agent.status}</span>
+                    </div>
+                  </div>
+                  <dl className="agent-roster-facts">
+                    <div><dt>mode</dt><dd>{agent.mode}</dd></div>
+                    <div><dt>model</dt><dd className="mono">{agent.currentModel}</dd></div>
+                    <div><dt>chain</dt><dd>{agent.chain.length ? agent.chain.map(chainLabel).join(" -> ") : "none"}</dd></div>
+                  </dl>
+                  <p className="agent-last-activity">{agent.lastActivity}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      <section className="agent-infographic-grid" aria-label="Agent team infographics">
+        <JobDistribution jobs={d.jobs} />
+        <ModelUsageBreakdown roles={d.roles} />
+        <SelfCorrectionRing selfCorrection={d.selfCorrection} />
+        <ActivityTimeline activity={d.recentActivity} />
+      </section>
 
       {/* Self-correction — the trust centerpiece: build → audit → rollback */}
       {d.selfCorrection && d.selfCorrection.summary.audited > 0 && (
@@ -131,7 +380,7 @@ export function AgentTeamPage() {
           <div className="section-card-body tib-chip-grid" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
             <HealthTile label="Builds audited" value={String(d.selfCorrection.summary.audited)} />
             <HealthTile label="Shipped" value={String(d.selfCorrection.summary.shipped)} color="var(--green)" />
-            <HealthTile label="Rolled back" value={String(d.selfCorrection.summary.rolledBack)} color="var(--amber)" />
+            <HealthTile label="Rolled back" value={String(d.selfCorrection.summary.rolledBack)} color="var(--amber-warn)" />
           </div>
           <div className="dim section-card-body" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.55 }}>
             The team reviews its own work. Every build is audited by an independent agent, and when the auditor
@@ -140,7 +389,7 @@ export function AgentTeamPage() {
           </div>
           <div className="section-card-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {d.selfCorrection.events.map((e) => (
-              <div key={e.jobId} style={{ borderLeft: `3px solid ${e.outcome === "shipped" ? "var(--green)" : "var(--amber)"}`, padding: "7px 10px", background: "var(--bg-panel)", borderRadius: 4 }}>
+              <div key={e.jobId} className={`agent-self-event ${e.outcome === "shipped" ? "shipped" : "rolled-back"}`}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <span className={`pill ${e.outcome === "shipped" ? "green" : "amber"}`}>{e.outcome === "shipped" ? "shipped ✓" : "rolled back ↩"}</span>
                   <span style={{ fontSize: 12 }}>{e.goal || e.jobId}</span>
@@ -292,7 +541,7 @@ export function AgentTeamPage() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {js.items.map((item) => {
                     const c = js.state === "done" ? "var(--green)"
-                      : js.state === "running" ? "var(--amber)"
+                      : js.state === "running" ? "var(--amber-warn)"
                       : (js.state === "rejected" || js.state === "failed") ? "var(--red, #e5534b)"
                       : "var(--border)";
                     return (
@@ -300,10 +549,10 @@ export function AgentTeamPage() {
                         key={item.id}
                         onClick={() => viewJob({ ...item, state: js.state })}
                         title="click to view transcript"
-                        className="at-job-item"
+                        className={`at-job-item agent-job-state-${js.state}`}
                         style={{
                           cursor: "pointer", background: "var(--bg-base)", border: "1px solid var(--border)",
-                          borderLeft: `3px solid ${c}`, borderRadius: 6, padding: "10px 14px",
+                          borderColor: c, borderRadius: 6, padding: "10px 14px",
                           display: "flex", flexDirection: "column", gap: 5,
                         }}
                       >
