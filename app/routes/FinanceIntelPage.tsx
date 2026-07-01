@@ -389,7 +389,7 @@ export function FinanceIntelPage() {
 
   if (loading) {
     return (
-      <div className="page finance-intel-page">
+      <div className="dash-page page finance-intel-page">
         <div className="page-header">
           <div className="page-title">Finance Intel</div>
         </div>
@@ -400,7 +400,7 @@ export function FinanceIntelPage() {
 
   if (error) {
     return (
-      <div className="page finance-intel-page">
+      <div className="dash-page page finance-intel-page">
         <div className="page-header">
           <div className="page-title">Finance Intel</div>
         </div>
@@ -415,7 +415,7 @@ export function FinanceIntelPage() {
   const avgDuration = stats?.avgDurationMs || computedAvgDuration;
 
   return (
-    <div className="page finance-intel-page">
+    <div className="dash-page page finance-intel-page">
       <div className="page-header finance-page-header">
         <div>
           <div className="page-title">Finance Intel</div>

@@ -85,7 +85,7 @@ export function DataExplorerPage() {
         </button>
       </div>
 
-      <section className="dash-section" style={{ display: "grid", gridTemplateColumns: "minmax(220px, 280px) minmax(0, 1fr)", gap: 16 }}>
+      <section className="dash-section data-explorer-grid">
         <aside style={{ display: "grid", gap: 8, alignContent: "start" }}>
           <div className="dash-section-title">datasets</div>
           {tables.loading && !tables.data ? (

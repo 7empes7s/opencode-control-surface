@@ -1871,6 +1871,29 @@ body {
   }
 }
 
+/* Narrow phones: stat strip goes single-column so the value never has to
+   wrap mid-word and the label never feels squeezed (e.g. "129/140 free"). */
+@media (max-width: 480px) {
+  .finance-stats-grid,
+  .agent-metrics-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .finance-stat-card,
+  .agent-metric-card {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .finance-stat-icon,
+  .agent-metric-icon {
+    width: 28px;
+    height: 28px;
+  }
+  .finance-stat-card strong,
+  .agent-metric-card strong {
+    font-size: 17px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .finance-stat-card,
   .agent-metric-card,
@@ -2553,10 +2576,18 @@ body {
   .security-not-configured-grid { grid-template-columns: 1fr; }
 }
 
+/* ── Data Explorer: datasets sidebar + rows panel ─────────────────────── */
+.data-explorer-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px;
+}
+
 @media (max-width: 700px) {
   .insights-hero { flex-direction: column; align-items: stretch; }
   .insights-hero-actions { justify-content: flex-start; }
   .insights-count { flex: 1 1 calc(50% - 6px); min-width: 0; }
+  .data-explorer-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ── Brainstorm page layout ────────────────────────────────────────────── */
@@ -7084,6 +7115,13 @@ body {
     min-height: 44px;
     display: inline-flex;
     align-items: center;
+  }
+
+  /* Sortable table headers: the whole <th> is the click target (see
+     useTableControls' sortHeaderProps), not just the small arrow glyph. */
+  .data-table th.sortable-th {
+    padding-top: 16px;
+    padding-bottom: 16px;
   }
 }
 

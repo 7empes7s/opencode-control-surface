@@ -96,8 +96,10 @@ function MiniMetric({ icon, label, value, tone = "gray" }: { icon: ReactNode; la
   return (
     <div className={`agent-metric-card ${tone}`}>
       <div className="agent-metric-icon">{icon}</div>
-      <span className="agent-metric-label">{label}</span>
-      <strong>{value}</strong>
+      <div>
+        <span className="agent-metric-label">{label}</span>
+        <strong>{value}</strong>
+      </div>
     </div>
   );
 }
