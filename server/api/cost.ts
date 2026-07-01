@@ -718,13 +718,15 @@ export async function getCostSummary(_req: Request): Promise<Response> {
 
   if (!isDashboardDbEnabled()) {
     return Response.json({
-      budgets: [],
-      spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-      runway,
-      fallbacks: [],
-      anomalies: [],
-      discoveryHistory: [],
-      note: "DASHBOARD_DB disabled",
+      data: {
+        budgets: [],
+        spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+        runway,
+        fallbacks: [],
+        anomalies: [],
+        discoveryHistory: [],
+        note: "DASHBOARD_DB disabled",
+      },
     });
   }
 
@@ -732,13 +734,15 @@ export async function getCostSummary(_req: Request): Promise<Response> {
     const db = getDashboardDb();
     if (!db) {
       return Response.json({
-        budgets: [],
-        spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-        runway,
-        fallbacks: [],
-        anomalies: [],
-        discoveryHistory: [],
-        note: "database unavailable",
+        data: {
+          budgets: [],
+          spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+          runway,
+          fallbacks: [],
+          anomalies: [],
+          discoveryHistory: [],
+          note: "database unavailable",
+        },
       });
     }
 
@@ -795,26 +799,30 @@ export async function getCostSummary(_req: Request): Promise<Response> {
     const anomalies = readRecentCostAnomalies(thirtyDaysAgo);
 
     return Response.json({
-      budgets: budgetsWithSpend,
-      spend: {
-        totals: [{ total_cents: totalCents, event_count: eventCount }],
-        groups: spendGroups,
+      data: {
+        budgets: budgetsWithSpend,
+        spend: {
+          totals: [{ total_cents: totalCents, event_count: eventCount }],
+          groups: spendGroups,
+        },
+        runway,
+        fallbacks,
+        anomalies,
+        discoveryHistory: readModelDiscoveryHistory(),
       },
-      runway,
-      fallbacks,
-      anomalies,
-      discoveryHistory: readModelDiscoveryHistory(),
     });
   } catch (error) {
     console.error("getCostSummary failed:", error);
     return Response.json({
-      budgets: [],
-      spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
-      runway,
-      fallbacks: [],
-      anomalies: [],
-      discoveryHistory: [],
-      error: "Failed to fetch cost summary",
+      data: {
+        budgets: [],
+        spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
+        runway,
+        fallbacks: [],
+        anomalies: [],
+        discoveryHistory: [],
+        error: "Failed to fetch cost summary",
+      },
     });
   }
 }

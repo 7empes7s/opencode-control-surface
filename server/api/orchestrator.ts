@@ -104,7 +104,7 @@ export async function orchestratorSignalEmitHandler(req: Request): Promise<Respo
 export async function orchestratorInstancesListHandler(url: URL): Promise<Response> {
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
   const instances = listOrchestratorInstances(limit);
-  return Response.json({ instances });
+  return Response.json({ data: { instances } });
 }
 
 export async function orchestratorInstanceDetailHandler(instanceId: string): Promise<Response> {

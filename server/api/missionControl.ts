@@ -362,5 +362,5 @@ export async function missionControlHandler(): Promise<Response> {
   }
 
   const result: MissionControlData = { nowCard, decisionQueue, changeSinceLastVisit, nextBestActions, riskStrip };
-  return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify({ data: result }), { headers: { "Content-Type": "application/json" } });
 }

@@ -11,7 +11,7 @@ describe("missionControlHandler", () => {
     const response = await missionControlHandler();
     expect(response.status).toBe(200);
 
-    const data = await response.json();
+    const { data } = await response.json();
     expect(data).toHaveProperty("nowCard");
     expect(data).toHaveProperty("decisionQueue");
     expect(data).toHaveProperty("nextBestActions");
@@ -20,7 +20,7 @@ describe("missionControlHandler", () => {
 
   test("nowCard has expected shape", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     expect(data.nowCard).toHaveProperty("posture");
     expect(["ok", "warn", "critical"]).toContain(data.nowCard.posture);
@@ -31,7 +31,7 @@ describe("missionControlHandler", () => {
 
   test("riskStrip always contains runway entry", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     const runwayEntry = data.riskStrip.find((r: { kind: string }) => r.kind === "runway");
     expect(runwayEntry).toBeDefined();
@@ -41,28 +41,28 @@ describe("missionControlHandler", () => {
 
   test("nextBestActions is an array", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     expect(Array.isArray(data.nextBestActions)).toBe(true);
   });
 
   test("decisionQueue is an array", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     expect(Array.isArray(data.decisionQueue)).toBe(true);
   });
 
   test("changeSinceLastVisit is null when DASHBOARD_DB is disabled", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     expect(data.changeSinceLastVisit).toBeNull();
   });
 
   test("riskStrip contains all required kinds", async () => {
     const response = await missionControlHandler();
-    const data = await response.json();
+    const { data } = await response.json();
 
     const requiredKinds = ["runway", "stale_telemetry", "failed_check", "incident", "queue"];
     const kinds = data.riskStrip.map((r: { kind: string }) => r.kind);

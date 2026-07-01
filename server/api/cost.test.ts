@@ -65,15 +65,15 @@ describe("getCostSummary", () => {
 
     const response = await getCostSummary(new Request("http://127.0.0.1/api/cost/summary"));
     const json = await response.json() as {
-      anomalies: Array<{ kind: string; severity: string; entityId: string; payload: { multiplier?: number } }>;
+      data: { anomalies: Array<{ kind: string; severity: string; entityId: string; payload: { multiplier?: number } }> };
     };
 
     expect(response.status).toBe(200);
-    expect(json.anomalies).toHaveLength(1);
-    expect(json.anomalies[0].kind).toBe("vast.burn_spike");
-    expect(json.anomalies[0].severity).toBe("error");
-    expect(json.anomalies[0].entityId).toBe("burn_rate");
-    expect(json.anomalies[0].payload.multiplier).toBe(3);
+    expect(json.data.anomalies).toHaveLength(1);
+    expect(json.data.anomalies[0].kind).toBe("vast.burn_spike");
+    expect(json.data.anomalies[0].severity).toBe("error");
+    expect(json.data.anomalies[0].entityId).toBe("burn_rate");
+    expect(json.data.anomalies[0].payload.multiplier).toBe(3);
 
   });
 });
