@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ExternalLink, FileText, Image, Link as LinkIcon, RefreshCw, ShieldCheck } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, FileText, Image, Link as LinkIcon, RefreshCw, ShieldCheck } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { useTableControls } from "../hooks/useTableControls";
@@ -36,34 +36,26 @@ function kindIcon(kind: string) {
   return <AlertTriangle size={16} />;
 }
 
-function FindingRow({ finding }: { finding: ContentHealthFinding }) {
-  const [expanded, setExpanded] = useState(false);
+type ContentHealthSortKey = "ts" | "title" | "severity" | "kind" | "vertical";
+
+function FindingDetail({ finding }: { finding: ContentHealthFinding }) {
   const liveUrl = finding.slug ? `https://news.techinsiderbytes.com/articles/${encodeURIComponent(finding.slug)}` : null;
   return (
-    <div className="content-health-row">
-      <button type="button" className="content-health-row-main" onClick={() => setExpanded((v) => !v)}>
-        <span className="content-health-kind-icon">{kindIcon(finding.kind)}</span>
-        <span className="content-health-row-copy">
-          <strong>{finding.title || finding.slug || "Unknown article"}</strong>
-          <span>{finding.summary}</span>
-        </span>
-        <span className={`pill ${severityClass(finding.severity)}`}>{finding.severity}</span>
-        <span className="pill gray">{KIND_LABEL[finding.kind] ?? finding.kind}</span>
-        <span className="dim">{ageLabel(finding.ts)}</span>
-      </button>
-      {expanded && (
-        <div className="content-health-detail">
-          <div><strong>Slug:</strong> {finding.slug || "unknown"}</div>
-          <div><strong>Vertical:</strong> {finding.vertical || "unknown"}</div>
-          {finding.path && <div><strong>File:</strong> <code>{finding.path}</code></div>}
-          {finding.dedupeKey && <div><strong>Dedupe:</strong> <code>{finding.dedupeKey}</code></div>}
-          {liveUrl && (
-            <a className="btn secondary" href={liveUrl} target="_blank" rel="noreferrer">
-              <ExternalLink size={14} />
-              Open live article
-            </a>
-          )}
-        </div>
+    <div className="data-row-detail-inner content-health-detail-inner">
+      <div className="data-row-detail-grid">
+        <div><span>Slug</span><strong>{finding.slug || "unknown"}</strong></div>
+        <div><span>Vertical</span><strong>{finding.vertical || "unknown"}</strong></div>
+        <div><span>Kind</span><strong>{KIND_LABEL[finding.kind] ?? finding.kind}</strong></div>
+        <div><span>Detected</span><strong>{new Date(finding.ts).toLocaleString()}</strong></div>
+        {finding.path && <div><span>File</span><strong>{finding.path}</strong></div>}
+        {finding.dedupeKey && <div><span>Dedupe</span><strong>{finding.dedupeKey}</strong></div>}
+      </div>
+      <div className="content-health-detail-summary">{finding.summary}</div>
+      {liveUrl && (
+        <a className="btn secondary content-health-detail-link" href={liveUrl} target="_blank" rel="noreferrer">
+          <ExternalLink size={14} />
+          Open live article
+        </a>
       )}
     </div>
   );
@@ -96,9 +88,10 @@ export function ContentHealthPage() {
       return true;
     });
   }, [findings, kindFilter, severityFilter]);
-  const findingControls = useTableControls<ContentHealthFinding, "ts">({
+  const findingControls = useTableControls<ContentHealthFinding, ContentHealthSortKey>({
     rows: filteredFindings,
     pageSize: 20,
+    rowKey: (finding) => `${finding.id}-${finding.kind}-${finding.slug ?? ""}`,
     defaultSort: { key: "ts", dir: "desc" },
     filterText: (finding) => [
       finding.title,
@@ -109,7 +102,13 @@ export function ContentHealthPage() {
       finding.kind,
       finding.severity,
     ],
-    sortValue: (finding) => finding.ts,
+    sortValue: (finding, key) => {
+      if (key === "title") return finding.title || finding.slug || "";
+      if (key === "severity") return finding.severity;
+      if (key === "kind") return KIND_LABEL[finding.kind] ?? finding.kind;
+      if (key === "vertical") return finding.vertical ?? "";
+      return finding.ts;
+    },
   });
   const healthy = !loading && !error && findings.length === 0 && !data?.degraded;
 
@@ -202,33 +201,81 @@ export function ContentHealthPage() {
 
       {findings.length > 0 && (
         <section className="dash-section">
-          <div className="insight-group-title">
+          <div className="insight-group-title content-health-queue-title">
             <span>Quality violations</span>
             <span className="pill gray">{findingControls.filteredCount} / {findings.length}</span>
           </div>
-          <div className="content-health-filters">
+          <div className="content-health-panel table-wrap">
             <TableControls
               {...findingControls.controlsProps}
               searchPlaceholder="Search title, slug, summary, vertical..."
               className="content-health-search"
             />
-            <label>
-              Severity
-              <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
-                <option value="all">All severities</option>
-                {severityOptions.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
-              </select>
-            </label>
-            <label>
-              Finding
-              <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
-                <option value="all">All findings</option>
-                {kindOptions.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}
-              </select>
-            </label>
-          </div>
-          <div className="content-health-list">
-            {findingControls.rows.map((finding) => <FindingRow key={`${finding.id}-${finding.kind}-${finding.slug}`} finding={finding} />)}
+            <div className="content-health-filters">
+              <label>
+                Severity
+                <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
+                  <option value="all">All severities</option>
+                  {severityOptions.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
+                </select>
+              </label>
+              <label>
+                Finding
+                <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
+                  <option value="all">All findings</option>
+                  {kindOptions.map((kind) => <option key={kind} value={kind}>{KIND_LABEL[kind] ?? kind}</option>)}
+                </select>
+              </label>
+            </div>
+            <table className="data-table content-health-table">
+              <thead>
+                <tr>
+                  <th className="expander-col" aria-label="Details"></th>
+                  <th {...findingControls.sortHeaderProps("title")}>Article <span className="sortable-th-arrow">{findingControls.sort.key === "title" ? (findingControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...findingControls.sortHeaderProps("severity")}>Severity <span className="sortable-th-arrow">{findingControls.sort.key === "severity" ? (findingControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...findingControls.sortHeaderProps("kind")}>Finding <span className="sortable-th-arrow">{findingControls.sort.key === "kind" ? (findingControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...findingControls.sortHeaderProps("vertical")}>Vertical <span className="sortable-th-arrow">{findingControls.sort.key === "vertical" ? (findingControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...findingControls.sortHeaderProps("ts")}>Detected <span className="sortable-th-arrow">{findingControls.sort.key === "ts" ? (findingControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {findingControls.rows.map((finding) => {
+                  const rowKey = findingControls.getRowKey(finding);
+                  const expanded = findingControls.isExpanded(rowKey);
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr>
+                        <td className="expander-col">
+                          <button className="table-expander" type="button" onClick={() => findingControls.toggleExpanded(rowKey)} aria-expanded={expanded} aria-label={`Toggle details for ${finding.title || finding.slug || "finding"}`}>
+                            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                        </td>
+                        <td>
+                          <div className="content-health-article-cell">
+                            <span className="content-health-kind-icon">{kindIcon(finding.kind)}</span>
+                            <span className="content-health-row-copy">
+                              <strong title={finding.title || finding.slug || "Unknown article"}>{finding.title || finding.slug || "Unknown article"}</strong>
+                              <span title={finding.summary}>{finding.summary}</span>
+                            </span>
+                          </div>
+                        </td>
+                        <td><span className={`pill ${severityClass(finding.severity)}`}>{finding.severity}</span></td>
+                        <td><span className="pill gray">{KIND_LABEL[finding.kind] ?? finding.kind}</span></td>
+                        <td className="cell-ellipsis" title={finding.vertical || "unknown"}>{finding.vertical || "unknown"}</td>
+                        <td className="mono dim">{ageLabel(finding.ts)}</td>
+                      </tr>
+                      {expanded && (
+                        <tr className="data-row-detail">
+                          <td colSpan={6}>
+                            <FindingDetail finding={finding} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
           {findingControls.filteredCount === 0 && (
             <div className="empty-state content-health-filter-empty">

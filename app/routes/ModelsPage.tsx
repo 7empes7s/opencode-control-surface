@@ -423,12 +423,15 @@ export function ModelsPage() {
               <col className="fails-col" />
             </colgroup>
             <thead><tr>
-              <th>logical name</th><th>cap</th><th>quality</th><th></th>
-              <th className="price-col">pricing</th><th className="type-col">type</th><th className="cli-col">CLI</th>
+              <th {...modelsCtrl.sortHeaderProps("logicalName")} className="name-col">Logical model <span className="sortable-th-arrow">{modelsCtrl.sort.key === "logicalName" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="cap-col">Capability</th>
+              <th {...modelsCtrl.sortHeaderProps("qualityStatus")} className="quality-col">Quality <span className="sortable-th-arrow">{modelsCtrl.sort.key === "qualityStatus" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="actions-col">Actions</th>
+              <th className="price-col">Pricing</th><th className="type-col">Type</th><th className="cli-col">CLI</th>
               <th {...modelsCtrl.sortHeaderProps("provider")} className="models-col-provider provider-col">provider <span className="sortable-th-arrow">{modelsCtrl.sort.key === "provider" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th {...modelsCtrl.sortHeaderProps("contextWindow")} className="ctx-col">ctx <span className="sortable-th-arrow">{modelsCtrl.sort.key === "contextWindow" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th className="rating-col">rating</th><th {...modelsCtrl.sortHeaderProps("latency")} className="latency-col models-col-latency">latency <span className="sortable-th-arrow">{modelsCtrl.sort.key === "latency" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th className="models-col-json">json</th><th {...modelsCtrl.sortHeaderProps("recentFailures")} className="models-col-failures">fails <span className="sortable-th-arrow">{modelsCtrl.sort.key === "recentFailures" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("contextWindow")} className="ctx-col">Context <span className="sortable-th-arrow">{modelsCtrl.sort.key === "contextWindow" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="rating-col">Rating</th><th {...modelsCtrl.sortHeaderProps("latency")} className="latency-col models-col-latency">Latency <span className="sortable-th-arrow">{modelsCtrl.sort.key === "latency" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="models-col-json">JSON</th><th {...modelsCtrl.sortHeaderProps("recentFailures")} className="models-col-failures">Failures <span className="sortable-th-arrow">{modelsCtrl.sort.key === "recentFailures" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
             </tr></thead>
             <tbody>
               {modelsCtrl.rows.map((m) => (
@@ -443,7 +446,7 @@ export function ModelsPage() {
                       >
                         {expandedModel === m.logicalName ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                       </button>
-                      <span>{m.logicalName}</span>
+                      <span title={m.logicalName}>{m.logicalName}</span>
                     </td>
                     <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
                     <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
@@ -462,9 +465,11 @@ export function ModelsPage() {
                       </div>
                     </td>
                     <td className="price-col">
-                      {m.isFree && <Pill color="green">free</Pill>}
-                      {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
-                      {m.isOpenCode && <span className="text-xs" style={{ marginLeft: 4 }} title="OpenCode native">🔷</span>}
+                      <div className="model-pricing-cell">
+                        {m.isFree && <Pill color="green">free</Pill>}
+                        {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
+                        {m.isOpenCode && <Pill color="blue">OpenCode</Pill>}
+                      </div>
                     </td>
                     <td className="type-col"><Pill>{m.providerType}</Pill></td>
                     <td className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>

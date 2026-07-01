@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { SectionCard } from "../components/SectionCard";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 
 interface CostData {
@@ -72,6 +75,48 @@ interface CostData {
     total_model_count: number | null;
     source: string;
   }>;
+}
+
+type BudgetRow = CostData["budgets"][number];
+type AnomalyRow = CostData["anomalies"][number];
+type DiscoveryRow = CostData["discoveryHistory"][number];
+type SpendRow = CostData["spend"]["groups"][number];
+type FallbackRow = CostData["fallbacks"][number];
+
+type BudgetSortKey = "scope" | "period" | "budget" | "used" | "status" | "updated";
+type AnomalySortKey = "ts" | "severity" | "kind" | "target";
+type DiscoverySortKey = "ts" | "newModels" | "total" | "source";
+type SpendSortKey = "group" | "spend" | "events";
+type FallbackSortKey = "ts" | "logical" | "resolved" | "backend" | "cost" | "error";
+
+function budgetPeriod(budget: BudgetRow): string {
+  if (budget.daily_cap_usd && budget.monthly_cap_usd) return "Daily / Monthly";
+  if (budget.daily_cap_usd) return "Daily";
+  return "Monthly";
+}
+
+function budgetCapCents(budget: BudgetRow): number {
+  return budget.cap_cents ?? Math.round((budget.daily_cap_usd ?? budget.monthly_cap_usd ?? 0) * 100);
+}
+
+function budgetUsedCents(budget: BudgetRow): number {
+  return budget.used_cents ?? 0;
+}
+
+function budgetUsagePct(budget: BudgetRow): number {
+  const capCents = budgetCapCents(budget);
+  return budget.usage_pct ?? (capCents > 0 ? budgetUsedCents(budget) / capCents : 0);
+}
+
+function budgetStatus(budget: BudgetRow): { color: string; label: string; rank: number } {
+  const usagePct = budgetUsagePct(budget);
+  if (usagePct >= 1.0) return { color: "critical", label: "Over budget", rank: 2 };
+  if (usagePct >= budget.warn_pct) return { color: "warning", label: "Warning", rank: 1 };
+  return { color: "normal", label: "Normal", rank: 0 };
+}
+
+function SortArrow({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
+  return <span className="sortable-th-arrow">{active ? (dir === "asc" ? "▲" : "▼") : "⇅"}</span>;
 }
 
 function GlobalCapEditor({
@@ -201,6 +246,74 @@ export function CostPage() {
   const [capError, setCapError] = useState<string | null>(null);
   const [capSuccess, setCapSuccess] = useState<string | null>(null);
 
+  const anomalyControls = useTableControls<AnomalyRow, AnomalySortKey>({
+    rows: data?.anomalies ?? [],
+    pageSize: 10,
+    rowKey: (row) => row.id,
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [row.summary, row.kind, row.severity, row.entityType, row.entityId],
+    sortValue: (row, key) => {
+      if (key === "ts") return row.ts;
+      if (key === "target") return row.entityId || row.entityType || "cost";
+      return row[key];
+    },
+  });
+  const budgetControls = useTableControls<BudgetRow, BudgetSortKey>({
+    rows: data?.budgets ?? [],
+    pageSize: 10,
+    rowKey: (row) => row.id,
+    defaultSort: { key: "scope", dir: "asc" },
+    filterText: (row) => [row.scope, row.project_id, budgetPeriod(row), budgetStatus(row).label],
+    sortValue: (row, key) => {
+      if (key === "period") return budgetPeriod(row);
+      if (key === "budget") return budgetCapCents(row);
+      if (key === "used") return budgetUsedCents(row);
+      if (key === "status") return budgetStatus(row).rank;
+      if (key === "updated") return row.updated_at;
+      return row.scope;
+    },
+  });
+  const discoveryControls = useTableControls<DiscoveryRow, DiscoverySortKey>({
+    rows: data?.discoveryHistory ?? [],
+    pageSize: 10,
+    rowKey: (row) => `${row.event_ts}-${row.source}`,
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [row.source, row.event_ts, row.new_models_added.join(" "), row.total_model_count],
+    sortValue: (row, key) => {
+      if (key === "newModels") return row.new_models_added.length;
+      if (key === "total") return row.total_model_count ?? 0;
+      if (key === "source") return row.source;
+      return row.ts;
+    },
+  });
+  const spendControls = useTableControls<SpendRow, SpendSortKey>({
+    rows: data?.spend.groups ?? [],
+    pageSize: 10,
+    rowKey: (row) => row.group_value || "uncategorized",
+    defaultSort: { key: "spend", dir: "desc" },
+    filterText: (row) => [row.group_value || "Uncategorized", row.total_cents, row.event_count],
+    sortValue: (row, key) => {
+      if (key === "group") return row.group_value || "Uncategorized";
+      if (key === "events") return row.event_count;
+      return row.total_cents;
+    },
+  });
+  const fallbackControls = useTableControls<FallbackRow, FallbackSortKey>({
+    rows: data?.fallbacks ?? [],
+    pageSize: 10,
+    rowKey: (row) => String(row.id),
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [row.logical_model, row.resolved_model, row.backend, row.tier, row.error_class, row.trace_id, row.caller],
+    sortValue: (row, key) => {
+      if (key === "logical") return row.logical_model;
+      if (key === "resolved") return row.resolved_model;
+      if (key === "backend") return row.backend;
+      if (key === "cost") return row.cost_estimate_usd ?? 0;
+      if (key === "error") return row.error_class ?? "";
+      return row.ts;
+    },
+  });
+
   if (loading && !data) return <div className="loading-dim">loading…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
   if (!data) return null;
@@ -313,33 +426,63 @@ export function CostPage() {
             {d.anomalies.length === 0 ? (
               <div className="loading-dim">No cost anomalies detected in the last 30 days</div>
             ) : (
+              <>
+              <TableControls {...anomalyControls.controlsProps} searchPlaceholder="Search anomaly, kind, severity, or target..." />
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Severity</th>
-                    <th>Finding</th>
-                    <th>Target</th>
+                    <th className="expander-col" aria-label="Details"></th>
+                    <th {...anomalyControls.sortHeaderProps("ts")}>Time <SortArrow active={anomalyControls.sort.key === "ts"} dir={anomalyControls.sort.dir} /></th>
+                    <th {...anomalyControls.sortHeaderProps("severity")}>Severity <SortArrow active={anomalyControls.sort.key === "severity"} dir={anomalyControls.sort.dir} /></th>
+                    <th {...anomalyControls.sortHeaderProps("kind")}>Finding <SortArrow active={anomalyControls.sort.key === "kind"} dir={anomalyControls.sort.dir} /></th>
+                    <th {...anomalyControls.sortHeaderProps("target")}>Target <SortArrow active={anomalyControls.sort.key === "target"} dir={anomalyControls.sort.dir} /></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {d.anomalies.map((anomaly) => (
-                    <tr key={anomaly.id}>
-                      <td className="mono">{fmtAge(anomaly.ts)}</td>
-                      <td>
-                        <span className={`pill ${anomaly.severity === "error" ? "critical" : "warning"}`}>
-                          {anomaly.severity}
-                        </span>
-                      </td>
-                      <td>
-                        <div>{anomaly.summary}</div>
-                        <div className="w-caption mono">{anomaly.kind}</div>
-                      </td>
-                      <td>{anomaly.entityId || anomaly.entityType || "cost"}</td>
-                    </tr>
-                  ))}
+                  {anomalyControls.rows.map((anomaly) => {
+                    const rowKey = anomalyControls.getRowKey(anomaly);
+                    const expanded = anomalyControls.isExpanded(rowKey);
+                    return (
+                      <Fragment key={anomaly.id}>
+                        <tr>
+                          <td className="expander-col">
+                            <button className="table-expander" type="button" onClick={() => anomalyControls.toggleExpanded(rowKey)} aria-expanded={expanded} aria-label={`Toggle details for ${anomaly.summary}`}>
+                              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            </button>
+                          </td>
+                          <td className="mono">{fmtAge(anomaly.ts)}</td>
+                          <td>
+                            <span className={`pill ${anomaly.severity === "error" ? "critical" : "warning"}`}>
+                              {anomaly.severity}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="cell-wrap">{anomaly.summary}</div>
+                            <div className="w-caption mono">{anomaly.kind}</div>
+                          </td>
+                          <td>{anomaly.entityId || anomaly.entityType || "cost"}</td>
+                        </tr>
+                        {expanded && (
+                          <tr className="data-row-detail">
+                            <td colSpan={5}>
+                              <div className="data-row-detail-inner">
+                                <div className="data-row-detail-grid">
+                                  <div><span>Kind</span><strong>{anomaly.kind}</strong></div>
+                                  <div><span>Entity type</span><strong>{anomaly.entityType ?? "cost"}</strong></div>
+                                  <div><span>Entity ID</span><strong>{anomaly.entityId ?? "—"}</strong></div>
+                                  <div><span>Timestamp</span><strong>{new Date(anomaly.ts).toLocaleString()}</strong></div>
+                                </div>
+                                <pre className="detail-json">{JSON.stringify(anomaly.payload, null, 2)}</pre>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         </SectionCard>
@@ -357,55 +500,75 @@ export function CostPage() {
             {d.budgets.length === 0 ? (
               <div className="loading-dim">No budgets defined — use the editor below to set a global cap.</div>
             ) : (
+              <>
+              <TableControls {...budgetControls.controlsProps} searchPlaceholder="Search scope, project, period, or status..." />
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Scope</th>
-                    <th>Period</th>
-                    <th>Budget</th>
-                    <th>Used</th>
-                    <th>Status</th>
+                    <th className="expander-col" aria-label="Details"></th>
+                    <th {...budgetControls.sortHeaderProps("scope")}>Scope <SortArrow active={budgetControls.sort.key === "scope"} dir={budgetControls.sort.dir} /></th>
+                    <th {...budgetControls.sortHeaderProps("period")}>Period <SortArrow active={budgetControls.sort.key === "period"} dir={budgetControls.sort.dir} /></th>
+                    <th {...budgetControls.sortHeaderProps("budget")}>Budget <SortArrow active={budgetControls.sort.key === "budget"} dir={budgetControls.sort.dir} /></th>
+                    <th {...budgetControls.sortHeaderProps("used")}>Used <SortArrow active={budgetControls.sort.key === "used"} dir={budgetControls.sort.dir} /></th>
+                    <th {...budgetControls.sortHeaderProps("status")}>Status <SortArrow active={budgetControls.sort.key === "status"} dir={budgetControls.sort.dir} /></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {d.budgets.map((budget) => {
-                    const period = budget.daily_cap_usd && budget.monthly_cap_usd ? "Daily / Monthly" : budget.daily_cap_usd ? "Daily" : "Monthly";
-                    const capCents = budget.cap_cents ?? Math.round((budget.daily_cap_usd ?? budget.monthly_cap_usd ?? 0) * 100);
-                    const usedCents = budget.used_cents ?? 0;
-                    const usagePct = budget.usage_pct ?? (capCents > 0 ? usedCents / capCents : 0);
+                  {budgetControls.rows.map((budget) => {
+                    const period = budgetPeriod(budget);
+                    const capCents = budgetCapCents(budget);
+                    const usedCents = budgetUsedCents(budget);
+                    const usagePct = budgetUsagePct(budget);
                     const budgetText = budget.daily_cap_usd && budget.monthly_cap_usd
                       ? `${fmtCurrency(Math.round(budget.daily_cap_usd * 100))} / ${fmtCurrency(Math.round(budget.monthly_cap_usd * 100))}`
                       : fmtCurrency(capCents);
                     const usedText = budget.daily_cap_usd && budget.monthly_cap_usd
                       ? `${fmtCurrency(budget.daily_used_cents ?? 0)} / ${fmtCurrency(budget.monthly_used_cents ?? 0)}`
                       : fmtCurrency(usedCents);
-
-                    let status = "normal";
-                    let statusText = "Normal";
-                    if (usagePct >= 1.0) {
-                      status = "critical";
-                      statusText = "Over budget";
-                    } else if (usagePct >= budget.warn_pct) {
-                      status = "warning";
-                      statusText = "Warning";
-                    }
+                    const status = budgetStatus(budget);
+                    const rowKey = budgetControls.getRowKey(budget);
+                    const expanded = budgetControls.isExpanded(rowKey);
 
                     return (
-                      <tr key={budget.id}>
-                        <td>{budget.scope}{budget.project_id ? ` (${budget.project_id})` : ""}</td>
-                        <td>{period}</td>
-                        <td>{budgetText}</td>
-                        <td>{usedText} ({fmtPct(usagePct)})</td>
-                        <td>
-                          <span className={`pill ${status}`}>
-                            {statusText}
-                          </span>
-                        </td>
-                      </tr>
+                      <Fragment key={budget.id}>
+                        <tr>
+                          <td className="expander-col">
+                            <button className="table-expander" type="button" onClick={() => budgetControls.toggleExpanded(rowKey)} aria-expanded={expanded} aria-label={`Toggle details for ${budget.scope} budget`}>
+                              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            </button>
+                          </td>
+                          <td>{budget.scope}{budget.project_id ? ` (${budget.project_id})` : ""}</td>
+                          <td>{period}</td>
+                          <td>{budgetText}</td>
+                          <td>{usedText} ({fmtPct(usagePct)})</td>
+                          <td>
+                            <span className={`pill ${status.color}`}>
+                              {status.label}
+                            </span>
+                          </td>
+                        </tr>
+                        {expanded && (
+                          <tr className="data-row-detail">
+                            <td colSpan={6}>
+                              <div className="data-row-detail-inner">
+                                <div className="data-row-detail-grid">
+                                  <div><span>Daily cap</span><strong>{budget.daily_cap_usd == null ? "—" : fmtCurrency(Math.round(budget.daily_cap_usd * 100))}</strong></div>
+                                  <div><span>Monthly cap</span><strong>{budget.monthly_cap_usd == null ? "—" : fmtCurrency(Math.round(budget.monthly_cap_usd * 100))}</strong></div>
+                                  <div><span>Daily used</span><strong>{fmtCurrency(budget.daily_used_cents ?? 0)}</strong></div>
+                                  <div><span>Monthly used</span><strong>{fmtCurrency(budget.monthly_used_cents ?? 0)}</strong></div>
+                                  <div><span>Warn threshold</span><strong>{fmtPct(budget.warn_pct)}</strong></div>
+                                  <div><span>Updated</span><strong>{new Date(budget.updated_at).toLocaleString()}</strong></div>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         </SectionCard>
@@ -446,26 +609,56 @@ export function CostPage() {
             {d.discoveryHistory.length === 0 ? (
               <div className="loading-dim">No model discovery history has been recorded yet.</div>
             ) : (
+              <>
+              <TableControls {...discoveryControls.controlsProps} searchPlaceholder="Search source, timestamp, or discovered model..." />
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>New models</th>
-                    <th>Total</th>
-                    <th>Source</th>
+                    <th className="expander-col" aria-label="Details"></th>
+                    <th {...discoveryControls.sortHeaderProps("ts")}>Time <SortArrow active={discoveryControls.sort.key === "ts"} dir={discoveryControls.sort.dir} /></th>
+                    <th {...discoveryControls.sortHeaderProps("newModels")}>New models <SortArrow active={discoveryControls.sort.key === "newModels"} dir={discoveryControls.sort.dir} /></th>
+                    <th {...discoveryControls.sortHeaderProps("total")}>Total <SortArrow active={discoveryControls.sort.key === "total"} dir={discoveryControls.sort.dir} /></th>
+                    <th {...discoveryControls.sortHeaderProps("source")}>Source <SortArrow active={discoveryControls.sort.key === "source"} dir={discoveryControls.sort.dir} /></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {d.discoveryHistory.slice(0, 20).map((event) => (
-                    <tr key={`${event.event_ts}-${event.source}`}>
-                      <td className="mono">{fmtAge(event.ts)}</td>
-                      <td>{event.new_models_added.length > 0 ? event.new_models_added.join(", ") : "—"}</td>
-                      <td>{event.total_model_count ?? "—"}</td>
-                      <td className="mono">{event.source}</td>
-                    </tr>
-                  ))}
+                  {discoveryControls.rows.map((event) => {
+                    const rowKey = discoveryControls.getRowKey(event);
+                    const expanded = discoveryControls.isExpanded(rowKey);
+                    return (
+                      <Fragment key={`${event.event_ts}-${event.source}`}>
+                        <tr>
+                          <td className="expander-col">
+                            <button className="table-expander" type="button" onClick={() => discoveryControls.toggleExpanded(rowKey)} aria-expanded={expanded} aria-label={`Toggle details for discovery event ${event.event_ts}`}>
+                              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            </button>
+                          </td>
+                          <td className="mono">{fmtAge(event.ts)}</td>
+                          <td className="cell-ellipsis" title={event.new_models_added.join(", ")}>{event.new_models_added.length > 0 ? event.new_models_added.join(", ") : "—"}</td>
+                          <td>{event.total_model_count ?? "—"}</td>
+                          <td className="mono">{event.source}</td>
+                        </tr>
+                        {expanded && (
+                          <tr className="data-row-detail">
+                            <td colSpan={5}>
+                              <div className="data-row-detail-inner">
+                                <div className="data-row-detail-grid">
+                                  <div><span>Event time</span><strong>{event.event_ts}</strong></div>
+                                  <div><span>Source</span><strong>{event.source}</strong></div>
+                                  <div><span>Total model count</span><strong>{event.total_model_count ?? "—"}</strong></div>
+                                  <div><span>New model count</span><strong>{event.new_models_added.length}</strong></div>
+                                </div>
+                                <div className="cell-wrap">{event.new_models_added.length > 0 ? event.new_models_added.join(", ") : "No new models were added in this event."}</div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         </SectionCard>
@@ -495,20 +688,21 @@ export function CostPage() {
           defaultOpen={true}
         >
           <div className="section-card-body table-wrap">
+            <TableControls {...spendControls.controlsProps} searchPlaceholder="Search category..." />
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Category</th>
-                  <th>Spend</th>
-                  <th>Events</th>
+                  <th {...spendControls.sortHeaderProps("group")}>Category <SortArrow active={spendControls.sort.key === "group"} dir={spendControls.sort.dir} /></th>
+                  <th {...spendControls.sortHeaderProps("spend")} className="cell-right">Spend <SortArrow active={spendControls.sort.key === "spend"} dir={spendControls.sort.dir} /></th>
+                  <th {...spendControls.sortHeaderProps("events")} className="cell-right">Events <SortArrow active={spendControls.sort.key === "events"} dir={spendControls.sort.dir} /></th>
                 </tr>
               </thead>
               <tbody>
-                {d.spend.groups.slice(0, 10).map((group, i) => (
-                  <tr key={i}>
+                {spendControls.rows.map((group) => (
+                  <tr key={group.group_value || "uncategorized"}>
                     <td>{group.group_value || "Uncategorized"}</td>
-                    <td>{fmtCurrency(group.total_cents)}</td>
-                    <td>{group.event_count.toLocaleString()}</td>
+                    <td className="cell-right">{fmtCurrency(group.total_cents)}</td>
+                    <td className="cell-right">{group.event_count.toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -529,30 +723,61 @@ export function CostPage() {
             {d.fallbacks.length === 0 ? (
               <div className="loading-dim">No fallbacks detected</div>
             ) : (
+              <>
+              <TableControls {...fallbackControls.controlsProps} searchPlaceholder="Search logical model, fallback, backend, tier, trace, or error..." />
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Logical Model</th>
-                    <th>Fallback Model</th>
-                    <th>Backend</th>
-                    <th>Cost Estimate</th>
-                    <th>Error</th>
+                    <th className="expander-col" aria-label="Details"></th>
+                    <th {...fallbackControls.sortHeaderProps("ts")}>Time <SortArrow active={fallbackControls.sort.key === "ts"} dir={fallbackControls.sort.dir} /></th>
+                    <th {...fallbackControls.sortHeaderProps("logical")}>Logical model <SortArrow active={fallbackControls.sort.key === "logical"} dir={fallbackControls.sort.dir} /></th>
+                    <th {...fallbackControls.sortHeaderProps("resolved")}>Fallback model <SortArrow active={fallbackControls.sort.key === "resolved"} dir={fallbackControls.sort.dir} /></th>
+                    <th {...fallbackControls.sortHeaderProps("backend")}>Backend <SortArrow active={fallbackControls.sort.key === "backend"} dir={fallbackControls.sort.dir} /></th>
+                    <th {...fallbackControls.sortHeaderProps("cost")} className="cell-right">Cost estimate <SortArrow active={fallbackControls.sort.key === "cost"} dir={fallbackControls.sort.dir} /></th>
+                    <th {...fallbackControls.sortHeaderProps("error")}>Error <SortArrow active={fallbackControls.sort.key === "error"} dir={fallbackControls.sort.dir} /></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {d.fallbacks.slice(0, 10).map((fallback) => (
-                    <tr key={fallback.id}>
-                      <td className="mono">{new Date(fallback.ts).toLocaleTimeString()}</td>
-                      <td>{fallback.logical_model}</td>
-                      <td>{fallback.resolved_model}</td>
-                      <td>{fallback.backend}</td>
-                      <td>{fallback.cost_estimate_usd ? `$${fallback.cost_estimate_usd.toFixed(4)}` : "—"}</td>
-                      <td>{fallback.error_class || "—"}</td>
-                    </tr>
-                  ))}
+                  {fallbackControls.rows.map((fallback) => {
+                    const rowKey = fallbackControls.getRowKey(fallback);
+                    const expanded = fallbackControls.isExpanded(rowKey);
+                    return (
+                      <Fragment key={fallback.id}>
+                        <tr>
+                          <td className="expander-col">
+                            <button className="table-expander" type="button" onClick={() => fallbackControls.toggleExpanded(rowKey)} aria-expanded={expanded} aria-label={`Toggle details for fallback ${fallback.id}`}>
+                              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            </button>
+                          </td>
+                          <td className="mono">{new Date(fallback.ts).toLocaleTimeString()}</td>
+                          <td className="cell-ellipsis" title={fallback.logical_model}>{fallback.logical_model}</td>
+                          <td className="cell-ellipsis" title={fallback.resolved_model}>{fallback.resolved_model}</td>
+                          <td>{fallback.backend}</td>
+                          <td className="cell-right">{fallback.cost_estimate_usd ? `$${fallback.cost_estimate_usd.toFixed(4)}` : "—"}</td>
+                          <td>{fallback.error_class || "—"}</td>
+                        </tr>
+                        {expanded && (
+                          <tr className="data-row-detail">
+                            <td colSpan={7}>
+                              <div className="data-row-detail-inner">
+                                <div className="data-row-detail-grid">
+                                  <div><span>Tier</span><strong>{fallback.tier}</strong></div>
+                                  <div><span>Prompt tokens</span><strong>{fallback.prompt_tokens ?? "—"}</strong></div>
+                                  <div><span>Completion tokens</span><strong>{fallback.completion_tokens ?? "—"}</strong></div>
+                                  <div><span>Latency</span><strong>{fallback.latency_ms == null ? "—" : `${fallback.latency_ms}ms`}</strong></div>
+                                  <div><span>Trace ID</span><strong>{fallback.trace_id ?? "—"}</strong></div>
+                                  <div><span>Caller</span><strong>{fallback.caller ?? "—"}</strong></div>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         </SectionCard>

@@ -1208,7 +1208,10 @@ body {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin: 10px 0 14px;
+  margin: 0;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg-panel) 88%, transparent);
 }
 .content-health-search {
   flex: 1 1 360px;
@@ -1222,11 +1225,31 @@ body {
 .content-health-filters select {
   min-height: 36px;
   min-width: 150px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
   color: var(--text);
   padding: 0 9px;
+}
+.content-health-panel {
+  box-shadow: 0 12px 28px color-mix(in oklch, black 9%, transparent);
+}
+.content-health-queue-title {
+  margin-bottom: 10px;
+}
+.content-health-table {
+  min-width: 980px;
+}
+.content-health-table th:nth-child(2) { width: 40%; }
+.content-health-table th:nth-child(3) { width: 110px; }
+.content-health-table th:nth-child(4) { width: 170px; }
+.content-health-table th:nth-child(5) { width: 140px; }
+.content-health-table th:nth-child(6) { width: 120px; }
+.content-health-article-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .content-health-row-main {
   width: 100%;
@@ -1256,20 +1279,29 @@ body {
   gap: 3px;
   min-width: 0;
 }
+.content-health-row-copy strong,
+.content-health-row-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .content-health-row-copy span {
   color: var(--text-muted);
-  overflow-wrap: anywhere;
 }
-.content-health-detail {
-  display: grid;
-  gap: 6px;
-  padding: 0 12px 12px 50px;
+.content-health-detail-inner {
+  align-items: start;
+}
+.content-health-detail-summary {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--bg-panel) 72%, transparent);
   color: var(--text-muted);
   font-size: 13px;
+  line-height: 1.45;
 }
-.content-health-detail code {
-  white-space: normal;
-  overflow-wrap: anywhere;
+.content-health-detail-link {
+  width: fit-content;
 }
 .content-health-footer {
   display: flex;
@@ -3956,6 +3988,40 @@ body {
 .sse-dot.disconnected { background: var(--amber-warn); animation: none; opacity: 0.65; }
 
 /* ── Models lifecycle / GRC ────────────────────────────────────────────── */
+.models-table {
+  table-layout: fixed;
+  min-width: 1340px;
+}
+.models-table col.name-col { width: 300px; }
+.models-table col.cap-col { width: 98px; }
+.models-table col.quality-col { width: 112px; }
+.models-table col.actions-col { width: 132px; }
+.models-table col.price-col { width: 130px; }
+.models-table col.type-col { width: 110px; }
+.models-table col.cli-col { width: 70px; }
+.models-table col.provider-col { width: 130px; }
+.models-table col.ctx-col { width: 92px; }
+.models-table col.rating-col { width: 76px; }
+.models-table col.latency-col { width: 98px; }
+.models-table col.json-col { width: 72px; }
+.models-table col.fails-col { width: 90px; }
+.models-table th {
+  overflow: visible;
+  text-overflow: clip;
+}
+.models-table th,
+.models-table td {
+  max-width: none;
+}
+.models-table td.actions-col > div {
+  flex-wrap: wrap;
+}
+.model-pricing-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
 .model-row.expanded { background: var(--bg-hover); }
 .model-name-cell {
   display: flex;
@@ -3964,8 +4030,10 @@ body {
   min-width: 0;
 }
 .model-name-cell > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .model-expand-btn {
   width: 30px;
@@ -6103,6 +6171,35 @@ body {
 }
 .admin-gauge-btn { cursor: pointer; }
 .admin-gauge-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.admin-trend-wrap {
+  position: relative;
+  width: 140px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.admin-trend-marker {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--bg);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--bg) 75%, transparent);
+}
+.admin-trend-marker.deployment { background: var(--green, #22c55e); }
+.admin-trend-marker.config { background: var(--amber-warn, #f59e0b); }
+.admin-trend-marker.incident { background: var(--red, #ef4444); }
+.admin-trend-marker.info { background: var(--accent); }
+.admin-trend-marker:hover { transform: translate(-50%, -50%) scale(1.12); }
 
 .admin-briefing {
   background: color-mix(in oklch, var(--accent) 8%, var(--bg-sub));
