@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, Download, FileText, Play, RefreshCw, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Download, FileDown, FileText, Play, RefreshCw, Upload } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi } from "../hooks/useApi";
 import { useAuthStatus } from "../hooks/useAuthStatus";
@@ -21,6 +21,13 @@ type ReportsArchiveResponse = {
 };
 
 type RangePreset = "24h" | "7d" | "30d";
+type ExportFormat = "pdf" | "pptx" | "docx";
+
+const EXPORT_LABELS: Record<ExportFormat, string> = {
+  pdf: "PDF",
+  pptx: "PowerPoint",
+  docx: "Word",
+};
 
 const RANGE_MS: Record<RangePreset, number> = {
   "24h": 24 * 60 * 60 * 1000,
@@ -31,6 +38,12 @@ const RANGE_MS: Record<RangePreset, number> = {
 function formatDate(ts: number | null | undefined): string {
   if (!ts) return "pending";
   return new Date(ts).toLocaleString();
+}
+
+function formatPeriod(run: ReportRun): string | null {
+  const params = run.params as { fromTs?: number; toTs?: number } | undefined;
+  if (!params || typeof params.fromTs !== "number" || typeof params.toTs !== "number") return null;
+  return `${new Date(params.fromTs).toLocaleDateString()} → ${new Date(params.toTs).toLocaleDateString()}`;
 }
 
 function statusClass(status: string): string {
@@ -103,6 +116,8 @@ export function ReportsPage() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [exportingDoc, setExportingDoc] = useState<{ id: string; format: ExportFormat } | null>(null);
+  const [exportDocError, setExportDocError] = useState<{ id: string; message: string } | null>(null);
 
   const templates = data?.templates ?? [];
   const runs = data?.runs ?? [];
@@ -180,6 +195,29 @@ export function ReportsPage() {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
       setDownloadingId(null);
+    }
+  };
+
+  const downloadDocExport = async (run: ReportRun, format: ExportFormat) => {
+    setExportingDoc({ id: run.id, format });
+    setExportDocError(null);
+    try {
+      const response = await authFetch(`/api/reports/${run.id}/export?format=${format}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `report-${run.templateId}-${run.id}.${format}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportDocError({ id: run.id, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExportingDoc((current) => (current?.id === run.id && current.format === format ? null : current));
     }
   };
 
@@ -315,8 +353,10 @@ export function ReportsPage() {
           {visibleRuns.rows.map((run) => {
             const templateName = templateNames.get(run.templateId) ?? run.templateId;
             const canExport = run.status === "success";
+            const period = formatPeriod(run);
+            const exportingThis = exportingDoc?.id === run.id;
             return (
-              <article className="reports-run-card" key={run.id}>
+              <article className={`reports-run-card reports-run-card-${run.status}`} key={run.id}>
                 <div className="reports-run-main">
                   <div className="reports-run-icon"><FileText size={16} /></div>
                   <div className="reports-run-copy">
@@ -325,7 +365,11 @@ export function ReportsPage() {
                       <span className={`pill ${statusClass(run.status)}`}>{run.status}</span>
                     </div>
                     <span className="dim">{formatDate(run.startedAt)} · {run.rowCount} rows · <code>{run.id}</code></span>
+                    {period && <span className="reports-run-period">Period: {period}</span>}
                     <ReportPreview run={run} />
+                    {exportDocError?.id === run.id && (
+                      <div className="reports-run-error"><AlertTriangle size={14} />{exportDocError.message}</div>
+                    )}
                   </div>
                 </div>
                 <div className="reports-run-actions">
@@ -341,6 +385,26 @@ export function ReportsPage() {
                     <Upload size={14} />
                     {exportingId === run.id ? "Exporting" : "Vault"}
                   </button>
+                  <label className="reports-export-control" title="Export a rich, natural-language document">
+                    <FileDown size={14} />
+                    <select
+                      aria-label="Export report as document"
+                      value=""
+                      disabled={!canExport || !isAuthenticated || exportingThis}
+                      onChange={(event) => {
+                        const format = event.target.value as ExportFormat | "";
+                        event.target.value = "";
+                        if (format) downloadDocExport(run, format);
+                      }}
+                    >
+                      <option value="" disabled>
+                        {exportingThis ? `Exporting ${EXPORT_LABELS[exportingDoc!.format]}…` : "Export as…"}
+                      </option>
+                      <option value="pdf">PDF</option>
+                      <option value="pptx">PowerPoint</option>
+                      <option value="docx">Word</option>
+                    </select>
+                  </label>
                 </div>
               </article>
             );

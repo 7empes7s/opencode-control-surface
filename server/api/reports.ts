@@ -6,7 +6,7 @@ import type { ReportOutput } from "../reporting/types.ts";
 import { ok, type ApiEnvelope } from "./types.ts";
 import { getTenantContext } from "../tenancy/context.ts";
 
-type ReportRunRow = {
+export type ReportRunRow = {
   id: string;
   tenant_id: string;
   template_id: string;
@@ -40,14 +40,14 @@ function parseLimit(raw: string | null, fallback = 50): number {
   return Math.max(1, Math.min(200, Math.trunc(parsed)));
 }
 
-function errorResponse(message: string, status: number): Response {
+export function errorResponse(message: string, status: number): Response {
   return new Response(JSON.stringify({ error: message }), {
     status,
     headers: { "Content-Type": "application/json" },
   });
 }
 
-function requireReportsDb(): ReturnType<typeof getDashboardDb> | Response {
+export function requireReportsDb(): ReturnType<typeof getDashboardDb> | Response {
   const db = getDashboardDb();
   if (!db) {
     return errorResponse("DASHBOARD_DB disabled", 503);
@@ -55,12 +55,12 @@ function requireReportsDb(): ReturnType<typeof getDashboardDb> | Response {
   return db;
 }
 
-function formatDate(ts: number | null | undefined): string {
+export function formatDate(ts: number | null | undefined): string {
   if (!ts) return "pending";
   return new Date(ts).toISOString();
 }
 
-function rowsFromOutput(outputJson: string): Record<string, unknown>[] {
+export function rowsFromOutput(outputJson: string): Record<string, unknown>[] {
   if (!outputJson) return [];
   const output = JSON.parse(outputJson) as { rows?: unknown };
   if (!Array.isArray(output.rows)) return [];

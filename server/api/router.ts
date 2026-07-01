@@ -274,6 +274,7 @@ import {
   reportsDownloadCsvHandler,
   reportsExportVaultHandler,
 } from "./reports.ts";
+import { reportsExportHandler } from "./reports-export.ts";
 import { generateOperatorDigest } from "../reporting/digest.ts";
 import { tenantSettingsGetHandler, tenantSettingsPutHandler } from "./tenant-settings.ts";
 import { complianceDpaHandler,
@@ -1480,6 +1481,11 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   const reportCsvMatch = pathname.match(/^\/api\/reports\/([^/]+)\/csv$/);
   if (method === "GET" && reportCsvMatch) {
     return reportsDownloadCsvHandler(req, reportCsvMatch[1]);
+  }
+  const reportExportMatch = pathname.match(/^\/api\/reports\/([^/]+)\/export$/);
+  if (method === "GET" && reportExportMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return reportsExportHandler(req, reportExportMatch[1], url.searchParams.get("format"));
   }
   if (method === "POST" && pathname === "/api/reports/digest") {
     const denied = requireMutation(req);

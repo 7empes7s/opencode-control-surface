@@ -1183,7 +1183,7 @@ body {
 }
 .content-health-kind-card,
 .content-health-row {
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   background: var(--bg-card);
   border-radius: 8px;
 }
@@ -1353,7 +1353,7 @@ body {
 .finance-stat-card,
 .agent-metric-card {
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-card);
   padding: 13px 14px;
@@ -1558,7 +1558,7 @@ body {
 }
 .agent-roster-card {
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-card);
   padding: 13px;
@@ -1649,7 +1649,7 @@ body {
 }
 .agent-chart-panel {
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-card);
   padding: 13px;
@@ -1917,7 +1917,7 @@ body {
   grid-template-columns: minmax(260px, 1fr) minmax(190px, 240px) minmax(150px, 180px) auto;
   align-items: end;
   gap: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   background: var(--bg-card);
   border-radius: 8px;
   padding: 14px;
@@ -1951,7 +1951,7 @@ body {
 }
 .reports-generate-panel select {
   min-height: 36px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg);
   color: var(--text);
@@ -1974,11 +1974,20 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-bright);
   background: var(--bg-card);
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px 16px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+.reports-run-card:hover {
+  border-color: var(--border-bright);
+  box-shadow: 0 2px 10px color-mix(in oklch, var(--bg-base) 60%, transparent);
+}
+.reports-run-card-success { border-left-color: var(--green); }
+.reports-run-card-failed { border-left-color: var(--red); }
+.reports-run-card-running { border-left-color: var(--amber-warn); }
 .reports-run-main {
   display: flex;
   gap: 10px;
@@ -2030,12 +2039,39 @@ body {
   gap: 6px;
   color: var(--red);
 }
+.reports-run-period {
+  color: var(--text-dim);
+  font-size: 12px;
+}
 .reports-run-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
+.reports-export-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 8px 0 10px;
+  min-height: 32px;
+  color: var(--text-muted);
+  background: var(--bg);
+}
+.reports-export-control svg { flex-shrink: 0; }
+.reports-export-control select {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  min-height: 32px;
+  max-width: 132px;
+}
+.reports-export-control select:disabled { color: var(--text-dim); }
 
 @media (max-width: 900px) {
   .reports-generate-panel {
