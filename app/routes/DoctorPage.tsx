@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useApi } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import type { DoctorDetail } from "../../server/api/types";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { useTableControls, type TableSortValue } from "../hooks/useTableControls";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -17,6 +20,100 @@ function verdictColor(action: string): string {
   if (["kill", "dead-content", "dead_content", "abandoned"].includes(action)) return "red";
   if (["cooldown", "reroute_provider", "escalate", "waiting-quota", "waiting-gpu"].includes(action)) return "amber";
   return "gray";
+}
+
+function SortArrow({ active, dir }: { active: boolean; dir?: "asc" | "desc" }) {
+  return <span className="sortable-th-arrow">{active ? (dir === "asc" ? "▲" : "▼") : "⇅"}</span>;
+}
+
+function rowSearchText(values: TableSortValue[]) {
+  return values.filter((value) => value !== null && value !== undefined).join(" ");
+}
+
+type DoctorEntry = DoctorDetail["entries"][number];
+
+function DecisionLogTable({ entries }: { entries: DoctorEntry[] }) {
+  type DecisionKey = "ts" | "slug" | "stage" | "errorType" | "failedModel" | "action" | "reason";
+  const controls = useTableControls<DoctorEntry, DecisionKey>({
+    rows: entries,
+    pageSize: 25,
+    rowKey: (entry) => `${entry.ts}:${entry.slug}:${entry.stage}:${entry.action}:${entry.errorType}`,
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (entry) => rowSearchText([
+      entry.ts,
+      entry.slug,
+      entry.stage,
+      entry.action,
+      entry.reason,
+      entry.errorType,
+      entry.failedModel,
+      entry.nextStage,
+      entry.cooldownMs,
+    ]),
+    sortValue: (entry, key) => entry[key],
+  });
+
+  return (
+    <div className="section-card-body table-wrap">
+      <TableControls {...controls.controlsProps} searchPlaceholder="Search decision log..." />
+      <table className="data-table">
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...controls.sortHeaderProps("ts")}>time <SortArrow active={controls.sort.key === "ts"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("slug")}>slug <SortArrow active={controls.sort.key === "slug"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("stage")}>stage <SortArrow active={controls.sort.key === "stage"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("errorType")}>error <SortArrow active={controls.sort.key === "errorType"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("failedModel")}>model <SortArrow active={controls.sort.key === "failedModel"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("action")}>verdict <SortArrow active={controls.sort.key === "action"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("reason")}>reason <SortArrow active={controls.sort.key === "reason"} dir={controls.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {controls.rows.map((entry, index) => {
+            const key = controls.getRowKey(entry, index);
+            const expanded = controls.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} doctor decision detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td className="mono dim" style={{ whiteSpace: "nowrap" }}>{entry.ts.slice(0, 19).replace("T", " ")}</td>
+                  <td className="mono trunc" style={{ maxWidth: 160 }} title={entry.slug}>{entry.slug}</td>
+                  <td className="mono">{entry.stage}</td>
+                  <td className="mono dim" style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={entry.errorType}>{entry.errorType}</td>
+                  <td className="mono dim trunc" style={{ maxWidth: 140 }} title={entry.failedModel}>{entry.failedModel}</td>
+                  <td><Pill color={verdictColor(entry.action)}>{entry.action}</Pill></td>
+                  <td className="dim" style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} title={entry.reason}>{entry.reason}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={8}>
+                      <div className="data-row-detail-inner">
+                        <div className="data-row-detail-grid">
+                          <div><span>time</span><strong className="mono">{entry.ts}</strong></div>
+                          <div><span>slug</span><strong className="mono">{entry.slug || "—"}</strong></div>
+                          <div><span>stage</span><strong>{entry.stage || "—"}</strong></div>
+                          <div><span>verdict</span><strong><Pill color={verdictColor(entry.action)}>{entry.action}</Pill></strong></div>
+                          <div><span>error type</span><strong>{entry.errorType || "—"}</strong></div>
+                          <div><span>failed model</span><strong className="mono">{entry.failedModel || "—"}</strong></div>
+                          <div><span>next stage</span><strong>{entry.nextStage || "—"}</strong></div>
+                          <div><span>cooldown</span><strong>{entry.cooldownMs ? `${Math.round(entry.cooldownMs / 1000)}s` : "—"}</strong></div>
+                        </div>
+                        {entry.reason && <pre className="audit-pre">{entry.reason}</pre>}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {controls.filteredCount === 0 && <div className="loading-dim">no matching doctor decisions</div>}
+    </div>
+  );
 }
 
 function DoctorLoadingState({ error }: { error?: string | null }) {
@@ -222,29 +319,7 @@ export function DoctorPage() {
             </button>
           )}
         </div>
-        <div className="section-card-body table-wrap">
-          <table className="data-table">
-            <thead><tr>
-              <th>time</th><th>slug</th><th>stage</th><th>error</th><th>model</th><th>verdict</th><th>reason</th>
-            </tr></thead>
-            <tbody>
-              {filtered.slice(0, 200).map((e, i) => (
-                <tr key={i}>
-                  <td className="mono dim" style={{ whiteSpace: "nowrap" }}>{e.ts.slice(0, 19).replace("T", " ")}</td>
-                  <td className="mono trunc" style={{ maxWidth: 160 }}>{e.slug}</td>
-                  <td className="mono">{e.stage}</td>
-                  <td className="mono dim" style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.errorType}</td>
-                  <td className="mono dim trunc" style={{ maxWidth: 140 }}>{e.failedModel}</td>
-                  <td><Pill color={verdictColor(e.action)}>{e.action}</Pill></td>
-                  <td className="dim" style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{e.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filtered.length > 200 && (
-            <div className="loading-dim">showing 200 of {filtered.length} entries</div>
-          )}
-        </div>
+        <DecisionLogTable entries={filtered} />
       </SectionCard>
     </div>
   );

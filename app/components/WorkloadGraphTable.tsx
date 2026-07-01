@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useApi } from "../hooks/useApi";
-import type { WorkloadResponse } from "../../server/api/workload";
+import type { WorkloadEntry, WorkloadResponse } from "../../server/api/workload";
+import { TableControls } from "./TableControls";
+import { useTableControls, type TableSortValue } from "../hooks/useTableControls";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 function getStatusColor(status: string) {
   switch (status) {
@@ -11,6 +14,114 @@ function getStatusColor(status: string) {
     case "pending": return "gray";
     default: return "gray";
   }
+}
+
+function SortArrow({ active, dir }: { active: boolean; dir?: "asc" | "desc" }) {
+  return <span className="sortable-th-arrow">{active ? (dir === "asc" ? "▲" : "▼") : "⇅"}</span>;
+}
+
+function rowSearchText(values: TableSortValue[]) {
+  return values.filter((value) => value !== null && value !== undefined).join(" ");
+}
+
+function WorkloadEntriesTable({ entries }: { entries: WorkloadEntry[] }) {
+  type WorkloadKey = "name" | "type" | "status" | "modelUsed" | "durationMs" | "score" | "startTime";
+  const controls = useTableControls<WorkloadEntry, WorkloadKey>({
+    rows: entries,
+    pageSize: 10,
+    rowKey: (entry) => entry.id,
+    defaultSort: { key: "startTime", dir: "desc" },
+    filterText: (entry) => rowSearchText([
+      entry.name,
+      entry.type,
+      entry.status,
+      entry.modelUsed,
+      entry.score,
+      entry.id,
+    ]),
+    sortValue: (entry, key) => entry[key],
+  });
+
+  return (
+    <div className="w-card" style={{ padding: 0 }}>
+      <div className="table-wrap">
+        <TableControls {...controls.controlsProps} searchPlaceholder="Search workloads..." />
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th className="expander-col" aria-label="detail" />
+              <th {...controls.sortHeaderProps("name")}>workload <SortArrow active={controls.sort.key === "name"} dir={controls.sort.dir} /></th>
+              <th {...controls.sortHeaderProps("type")}>type <SortArrow active={controls.sort.key === "type"} dir={controls.sort.dir} /></th>
+              <th {...controls.sortHeaderProps("status")}>status <SortArrow active={controls.sort.key === "status"} dir={controls.sort.dir} /></th>
+              <th {...controls.sortHeaderProps("modelUsed")}>model <SortArrow active={controls.sort.key === "modelUsed"} dir={controls.sort.dir} /></th>
+              <th {...controls.sortHeaderProps("durationMs")}>duration <SortArrow active={controls.sort.key === "durationMs"} dir={controls.sort.dir} /></th>
+              <th {...controls.sortHeaderProps("score")}>score <SortArrow active={controls.sort.key === "score"} dir={controls.sort.dir} /></th>
+            </tr>
+          </thead>
+          <tbody>
+            {controls.rows.map((entry, index) => {
+              const key = controls.getRowKey(entry, index);
+              const expanded = controls.isExpanded(key);
+              return (
+                <Fragment key={key}>
+                  <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                    <td className="expander-col">
+                      <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} workload detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      </button>
+                    </td>
+                    <td className="mono trunc" style={{ maxWidth: 150 }} title={entry.name}>{entry.name}</td>
+                    <td>
+                      <span className="pill gray" style={{ fontSize: 9 }}>
+                        {entry.type}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`pill ${getStatusColor(entry.status)}`} style={{ fontSize: 9 }}>
+                        {entry.status}
+                      </span>
+                    </td>
+                    <td className="mono" style={{ fontSize: 10 }}>{entry.modelUsed || "—"}</td>
+                    <td className="mono" style={{ fontSize: 10 }}>
+                      {entry.durationMs ? `${Math.round(entry.durationMs / 1000)}s` : "—"}
+                    </td>
+                    <td style={{ fontSize: 10 }}>
+                      {entry.score ? `${entry.score}/100` : "—"}
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr className="data-row-detail">
+                      <td colSpan={7}>
+                        <div className="data-row-detail-inner">
+                          <div className="data-row-detail-grid">
+                            <div><span>id</span><strong className="mono">{entry.id}</strong></div>
+                            <div><span>name</span><strong>{entry.name}</strong></div>
+                            <div><span>type</span><strong>{entry.type}</strong></div>
+                            <div><span>status</span><strong><span className={`pill ${getStatusColor(entry.status)}`}>{entry.status}</span></strong></div>
+                            <div><span>started</span><strong className="mono">{new Date(entry.startTime).toISOString().slice(0, 19).replace("T", " ")}</strong></div>
+                            <div><span>ended</span><strong className="mono">{entry.endTime ? new Date(entry.endTime).toISOString().slice(0, 19).replace("T", " ") : "—"}</strong></div>
+                            <div><span>duration</span><strong>{entry.durationMs ? `${Math.round(entry.durationMs / 1000)}s` : "—"}</strong></div>
+                            <div><span>model</span><strong className="mono">{entry.modelUsed || "—"}</strong></div>
+                            <div><span>score</span><strong>{entry.score ? `${entry.score}/100` : "—"}</strong></div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {controls.filteredCount === 0 && (
+          <div className="loading-dim" style={{ padding: 20, textAlign: "center" }}>
+            no workload data in selected time range
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function WorkloadGraphTable() {
@@ -89,50 +200,7 @@ export function WorkloadGraphTable() {
       </div>
       
       {/* Detailed table */}
-      <div className="w-card" style={{ padding: 0 }}>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>workload</th>
-              <th>type</th>
-              <th>status</th>
-              <th>model</th>
-              <th>duration</th>
-              <th>score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredData.map(entry => (
-              <tr key={entry.id}>
-                <td className="mono trunc" style={{ maxWidth: 150 }}>{entry.name}</td>
-                <td>
-                  <span className="pill gray" style={{ fontSize: 9 }}>
-                    {entry.type}
-                  </span>
-                </td>
-                <td>
-                  <span className={`pill ${getStatusColor(entry.status)}`} style={{ fontSize: 9 }}>
-                    {entry.status}
-                  </span>
-                </td>
-                <td className="mono" style={{ fontSize: 10 }}>{entry.modelUsed || "—"}</td>
-                <td className="mono" style={{ fontSize: 10 }}>
-                  {entry.durationMs ? `${Math.round(entry.durationMs / 1000)}s` : "—"}
-                </td>
-                <td style={{ fontSize: 10 }}>
-                  {entry.score ? `${entry.score}/100` : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        
-        {filteredData.length === 0 && (
-          <div className="loading-dim" style={{ padding: 20, textAlign: "center" }}>
-            no workload data in selected time range
-          </div>
-        )}
-      </div>
+      <WorkloadEntriesTable entries={filteredData} />
     </div>
   );
 }

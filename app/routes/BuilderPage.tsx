@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { ArrowDown, ArrowUp, CheckCircle2, ChevronDown, ChevronRight, Eye, GripVertical, MessageSquarePlus, Pause, Pencil, Play, Plus, RefreshCw, Save, Square, Trash2, XCircle } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
@@ -7,6 +7,8 @@ import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { SectionCard } from "../components/SectionCard";
 import { FileBrowser } from "../components/FileBrowser";
+import { TableControls } from "../components/TableControls";
+import { useTableControls, type TableSortValue } from "../hooks/useTableControls";
 import type {
   BuilderDiscovery,
   BuilderModelsInventory,
@@ -36,6 +38,27 @@ import type {
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
+}
+
+function SortArrow({ active, dir }: { active: boolean; dir?: "asc" | "desc" }) {
+  return <span className="sortable-th-arrow">{active ? (dir === "asc" ? "▲" : "▼") : "⇅"}</span>;
+}
+
+function DetailGrid({ rows }: { rows: Array<{ label: string; value: React.ReactNode }> }) {
+  return (
+    <div className="data-row-detail-grid">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <span>{row.label}</span>
+          <strong>{row.value ?? "—"}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function asSearchText(values: TableSortValue[]) {
+  return values.filter((value) => value !== null && value !== undefined).join(" ");
 }
 
 function ModeBadge({ mode }: { mode: string }) {
@@ -1114,6 +1137,263 @@ function ValidationRow({ validation }: { validation: BuilderValidation }) {
   );
 }
 
+function RunPassesTable({ passes }: { passes: BuilderPass[] }) {
+  type PassKey = "sequence" | "phase" | "agent" | "model" | "status" | "startedAt" | "finishedAt";
+  const table = useTableControls<BuilderPass, PassKey>({
+    rows: passes,
+    pageSize: 10,
+    rowKey: (pass) => pass.id,
+    defaultSort: { key: "sequence", dir: "asc" },
+    filterText: (pass) => asSearchText([
+      pass.sequence,
+      pass.phase,
+      pass.agent,
+      pass.model,
+      pass.status,
+      pass.summary,
+      pass.error,
+      pass.failureClass,
+    ]),
+    sortValue: (pass, key) => pass[key],
+  });
+
+  return (
+    <div className="table-wrap">
+      <TableControls {...table.controlsProps} searchPlaceholder="Search passes..." />
+      <table className="data-table run-passes-table">
+        <colgroup>
+          <col className="expander-col" />
+          <col className="seq-col" />
+          <col className="phase-col" />
+          <col className="agent-col" />
+          <col className="model-col" />
+          <col className="status-col" />
+          <col className="started-col" />
+          <col className="finished-col" />
+        </colgroup>
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...table.sortHeaderProps("sequence")}>seq <SortArrow active={table.sort.key === "sequence"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("phase")}>phase <SortArrow active={table.sort.key === "phase"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("agent")}>agent <SortArrow active={table.sort.key === "agent"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("model")}>model <SortArrow active={table.sort.key === "model"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("status")}>status <SortArrow active={table.sort.key === "status"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("startedAt")}>started <SortArrow active={table.sort.key === "startedAt"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("finishedAt")}>finished <SortArrow active={table.sort.key === "finishedAt"} dir={table.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {table.rows.map((pass, index) => {
+            const key = table.getRowKey(pass, index);
+            const expanded = table.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => table.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} pass detail`} onClick={(event) => { event.stopPropagation(); table.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td className="seq-col">{pass.sequence}</td>
+                  <td><Pill>{pass.phase}</Pill></td>
+                  <td><Pill>{pass.agent ?? "-"}</Pill></td>
+                  <td className="mono dim model-col">{pass.model ?? "-"}</td>
+                  <td><Pill color={statusColor(pass.status)}>{pass.status}</Pill></td>
+                  <td className="mono dim started-col">{fmtTs(pass.startedAt)}</td>
+                  <td className="mono dim finished-col">{fmtTs(pass.finishedAt)}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={8}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "pass id", value: <span className="mono">{pass.id}</span> },
+                          { label: "provider", value: pass.provider ?? "—" },
+                          { label: "model reason", value: pass.modelReason ?? "—" },
+                          { label: "jobs", value: pass.jobIds.length },
+                          { label: "validations", value: pass.validationIds.length },
+                          { label: "artifacts", value: pass.artifactIds.length },
+                          { label: "plan done", value: pass.planItemsDone ?? "not recorded" },
+                          { label: "remaining", value: pass.planItemsRemaining ?? "not recorded" },
+                          { label: "completion", value: pass.completionPercent == null ? "not recorded" : `${pass.completionPercent}%` },
+                          { label: "failure class", value: pass.failureClass ?? "—" },
+                          { label: "trace", value: pass.traceId ? <span className="mono">{pass.traceId}</span> : "—" },
+                        ]} />
+                        {(pass.summary || pass.error || pass.nextInstruction) && (
+                          <pre className="audit-pre builder-status-pre">{[
+                            pass.summary ? `summary:\n${pass.summary}` : "",
+                            pass.error ? `error:\n${pass.error}` : "",
+                            pass.nextInstruction ? `next instruction:\n${pass.nextInstruction}` : "",
+                          ].filter(Boolean).join("\n\n")}</pre>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ArtifactsTable({ artifacts }: { artifacts: BuilderArtifact[] }) {
+  type ArtifactKey = "kind" | "path" | "createdAt";
+  const table = useTableControls<BuilderArtifact, ArtifactKey>({
+    rows: artifacts,
+    pageSize: 10,
+    rowKey: (artifact) => artifact.id,
+    defaultSort: { key: "createdAt", dir: "desc" },
+    filterText: (artifact) => asSearchText([artifact.kind, artifact.path, artifact.sha256, artifact.passId]),
+    sortValue: (artifact, key) => artifact[key],
+  });
+
+  return (
+    <div className="table-wrap">
+      <TableControls {...table.controlsProps} searchPlaceholder="Search artifacts..." />
+      <table className="data-table">
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...table.sortHeaderProps("kind")}>kind <SortArrow active={table.sort.key === "kind"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("path")}>path <SortArrow active={table.sort.key === "path"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("createdAt")}>created <SortArrow active={table.sort.key === "createdAt"} dir={table.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {table.rows.map((artifact, index) => {
+            const key = table.getRowKey(artifact, index);
+            const expanded = table.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => table.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} artifact detail`} onClick={(event) => { event.stopPropagation(); table.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td><Pill>{artifact.kind}</Pill></td>
+                  <td className="mono trunc" title={artifact.path}>{artifact.path}</td>
+                  <td className="mono dim">{artifact.createdAt ? fmtTs(artifact.createdAt) : "-"}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={4}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "artifact id", value: <span className="mono">{artifact.id}</span> },
+                          { label: "run", value: <span className="mono">{artifact.runId}</span> },
+                          { label: "pass", value: artifact.passId ? <span className="mono">{artifact.passId}</span> : "—" },
+                          { label: "sha256", value: artifact.sha256 ? <span className="mono">{artifact.sha256}</span> : "—" },
+                          { label: "path", value: <span className="mono">{artifact.path}</span> },
+                        ]} />
+                        {artifact.metadata !== null && artifact.metadata !== undefined && (
+                          <pre className="audit-pre builder-status-pre">{JSON.stringify(artifact.metadata, null, 2)}</pre>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ValidationsTable({ validations }: { validations: BuilderValidation[] }) {
+  type ValidationKey = "status" | "kind" | "command" | "startedAt" | "finishedAt" | "durationMs";
+  const validationDuration = (validation: BuilderValidation) =>
+    validation.startedAt && validation.finishedAt ? validation.finishedAt - validation.startedAt : null;
+  const table = useTableControls<BuilderValidation, ValidationKey>({
+    rows: validations,
+    pageSize: 10,
+    rowKey: (validation) => validation.id,
+    defaultSort: { key: "startedAt", dir: "desc" },
+    filterText: (validation) => asSearchText([
+      validation.status,
+      validation.kind,
+      validation.command,
+      validation.url,
+      validation.error,
+      validation.outputTail,
+    ]),
+    sortValue: (validation, key) => key === "durationMs" ? validationDuration(validation) : validation[key],
+  });
+
+  return (
+    <div className="table-wrap">
+      <TableControls {...table.controlsProps} searchPlaceholder="Search validations..." />
+      <table className="data-table run-validations-table">
+        <colgroup>
+          <col className="expander-col" />
+          <col className="status-col" />
+          <col className="kind-col" />
+          <col className="command-col" />
+          <col className="started-col" />
+          <col className="finished-col" />
+          <col className="error-col" />
+        </colgroup>
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...table.sortHeaderProps("status")}>status <SortArrow active={table.sort.key === "status"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("kind")}>kind <SortArrow active={table.sort.key === "kind"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("command")}>command/url <SortArrow active={table.sort.key === "command"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("startedAt")}>started <SortArrow active={table.sort.key === "startedAt"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("finishedAt")}>finished <SortArrow active={table.sort.key === "finishedAt"} dir={table.sort.dir} /></th>
+          <th {...table.sortHeaderProps("durationMs")}>duration <SortArrow active={table.sort.key === "durationMs"} dir={table.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {table.rows.map((validation, index) => {
+            const key = table.getRowKey(validation, index);
+            const expanded = table.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => table.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} validation detail`} onClick={(event) => { event.stopPropagation(); table.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td className="val-status-col"><Pill color={statusColor(validation.status)}>{validation.status}</Pill></td>
+                  <td className="val-kind-col"><Pill>{validation.kind}</Pill></td>
+                  <td className="mono trunc val-cmd-col" title={validation.command ?? validation.url ?? ""}>{validation.command ?? (validation.url ?? "-")}</td>
+                  <td className="mono dim val-started-col">{validation.startedAt ? fmtTs(validation.startedAt) : "-"}</td>
+                  <td className="mono dim val-finished-col">{validation.finishedAt ? fmtTs(validation.finishedAt) : "-"}</td>
+                  <td className="mono dim val-error-col">{fmtDuration(validationDuration(validation))}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={7}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "validation id", value: <span className="mono">{validation.id}</span> },
+                          { label: "run", value: <span className="mono">{validation.runId}</span> },
+                          { label: "pass", value: validation.passId ? <span className="mono">{validation.passId}</span> : "—" },
+                          { label: "command", value: validation.command ? <span className="mono">{validation.command}</span> : "—" },
+                          { label: "url", value: validation.url ? <span className="mono">{validation.url}</span> : "—" },
+                          { label: "duration", value: fmtDuration(validationDuration(validation)) },
+                        ]} />
+                        {(validation.error || validation.outputTail) && (
+                          <pre className="audit-pre builder-status-pre">{[
+                            validation.error ? `error:\n${validation.error}` : "",
+                            validation.outputTail ? `output tail:\n${validation.outputTail}` : "",
+                          ].filter(Boolean).join("\n\n")}</pre>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 type BuilderSourceSession = NonNullable<BuilderWorkflow["config"]["sourceSession"]>;
 
 function SourceSessionMini({ source }: { source?: BuilderSourceSession }) {
@@ -1274,16 +1554,44 @@ function RunAnalyticsCard({ summary }: { summary: BuilderRunSummaryResponse | nu
 
 function ModelQualityTelemetryTable({ summary }: { summary: BuilderRunSummaryResponse | null | undefined }) {
   const rows = summary?.modelQuality ?? [];
+  type ModelQualityKey = "model" | "successPasses" | "passCount" | "timeoutRate" | "validationPassRate" | "fileWriteProbe" | "averageUsefulStdoutIntervalMs" | "lastStatus";
+  const table = useTableControls<(typeof rows)[number], ModelQualityKey>({
+    rows,
+    pageSize: 10,
+    rowKey: (row) => row.model,
+    defaultSort: { key: "lastStatus", dir: "asc" },
+    filterText: (row) => asSearchText([row.model, row.fileWriteProbe, row.lastStatus, row.passCount]),
+    sortValue: (row, key) => row[key],
+  });
   if (rows.length === 0) return null;
   return (
     <div className="builder-detail-section">
       <div className="builder-detail-section-title">model quality telemetry</div>
       <div className="table-wrap">
+        <TableControls {...table.controlsProps} searchPlaceholder="Search model telemetry..." />
         <table className="data-table">
-          <thead><tr><th>model</th><th>passes</th><th>timeout rate</th><th>validation pass</th><th>file write</th><th>stdout interval</th><th>last</th></tr></thead>
+          <thead><tr>
+            <th className="expander-col" aria-label="detail" />
+            <th {...table.sortHeaderProps("model")}>model <SortArrow active={table.sort.key === "model"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("successPasses")}>passes <SortArrow active={table.sort.key === "successPasses"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("timeoutRate")}>timeout rate <SortArrow active={table.sort.key === "timeoutRate"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("validationPassRate")}>validation pass <SortArrow active={table.sort.key === "validationPassRate"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("fileWriteProbe")}>file write <SortArrow active={table.sort.key === "fileWriteProbe"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("averageUsefulStdoutIntervalMs")}>stdout interval <SortArrow active={table.sort.key === "averageUsefulStdoutIntervalMs"} dir={table.sort.dir} /></th>
+            <th {...table.sortHeaderProps("lastStatus")}>last <SortArrow active={table.sort.key === "lastStatus"} dir={table.sort.dir} /></th>
+          </tr></thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={row.model}>
+            {table.rows.map((row, index) => {
+              const key = table.getRowKey(row, index);
+              const expanded = table.isExpanded(key);
+              return (
+              <Fragment key={key}>
+              <tr className="data-row-clickable" onClick={() => table.toggleExpanded(key)}>
+                <td className="expander-col">
+                  <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} model telemetry detail`} onClick={(event) => { event.stopPropagation(); table.toggleExpanded(key); }}>
+                    {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  </button>
+                </td>
                 <td className="mono trunc" title={row.model}>{row.model}</td>
                 <td>{row.successPasses}/{row.passCount}</td>
                 <td>{Math.round(row.timeoutRate * 100)}%</td>
@@ -1292,7 +1600,25 @@ function ModelQualityTelemetryTable({ summary }: { summary: BuilderRunSummaryRes
                 <td>{row.averageUsefulStdoutIntervalMs == null ? "—" : `${Math.round(row.averageUsefulStdoutIntervalMs / 1000)}s`}</td>
                 <td><Pill color={statusColor(row.lastStatus)}>{row.lastStatus}</Pill></td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="data-row-detail">
+                  <td colSpan={8}>
+                    <div className="data-row-detail-inner">
+                      <DetailGrid rows={[
+                        { label: "model", value: <span className="mono">{row.model}</span> },
+                        { label: "successful passes", value: `${row.successPasses} of ${row.passCount}` },
+                        { label: "timeout rate", value: `${Math.round(row.timeoutRate * 100)}%` },
+                        { label: "validation pass rate", value: row.validationPassRate == null ? "not recorded" : `${Math.round(row.validationPassRate * 100)}%` },
+                        { label: "file write probe", value: <Pill color={row.fileWriteProbe === "passed" ? "green" : row.fileWriteProbe === "missing" ? "amber" : "gray"}>{row.fileWriteProbe}</Pill> },
+                        { label: "average stdout interval", value: row.averageUsefulStdoutIntervalMs == null ? "not recorded" : fmtDuration(row.averageUsefulStdoutIntervalMs) },
+                        { label: "last status", value: <Pill color={statusColor(row.lastStatus)}>{row.lastStatus}</Pill> },
+                      ]} />
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+            );})}
           </tbody>
         </table>
       </div>
@@ -1970,33 +2296,7 @@ function RunDetailPanel({
                     })}
                   </div>
                 )}
-                <div className="table-wrap">
-                <table className="data-table run-passes-table">
-                  <colgroup>
-                    <col className="seq-col" />
-                    <col className="phase-col" />
-                    <col className="agent-col" />
-                    <col className="model-col" />
-                    <col className="status-col" />
-                    <col className="started-col" />
-                    <col className="finished-col" />
-                  </colgroup>
-                  <thead><tr><th className="seq-col">seq</th><th>phase</th><th>agent</th><th className="model-col">model</th><th>status</th><th className="started-col">started</th><th className="finished-col">finished</th></tr></thead>
-                  <tbody>
-                    {passes.map((pass: BuilderPass) => (
-                      <tr key={pass.id}>
-                        <td className="seq-col">{pass.sequence}</td>
-                        <td><Pill>{pass.phase}</Pill></td>
-                        <td><Pill>{pass.agent ?? "-"}</Pill></td>
-                        <td className="mono dim model-col">{pass.model ?? "-"}</td>
-                        <td><Pill color={statusColor(pass.status)}>{pass.status}</Pill></td>
-                        <td className="mono dim started-col">{fmtTs(pass.startedAt)}</td>
-                        <td className="mono dim finished-col">{fmtTs(pass.finishedAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
+                <RunPassesTable passes={passes} />
               </div>
             )}
 
@@ -2109,40 +2409,14 @@ function RunDetailPanel({
             {artifacts.length > 0 && (
               <div className="builder-detail-section">
                 <div className="builder-detail-section-title">artifacts</div>
-                <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>kind</th><th>path</th><th>created</th></tr></thead>
-                  <tbody>
-                    {artifacts.map((artifact: BuilderArtifact) => (
-                      <ArtifactRow key={artifact.id} artifact={artifact} />
-                    ))}
-                  </tbody>
-                </table>
-                </div>
+                <ArtifactsTable artifacts={artifacts} />
               </div>
             )}
 
             {validations.length > 0 && (
               <div className="builder-detail-section">
                 <div className="builder-detail-section-title">validation results</div>
-                <div className="table-wrap">
-                <table className="data-table run-validations-table">
-                  <colgroup>
-                    <col className="status-col" />
-                    <col className="kind-col" />
-                    <col className="command-col" />
-                    <col className="started-col" />
-                    <col className="finished-col" />
-                    <col className="error-col" />
-                  </colgroup>
-                  <thead><tr><th className="val-status-col">status</th><th className="val-kind-col">kind</th><th className="val-cmd-col">command/url</th><th className="val-started-col">started</th><th className="val-finished-col">finished</th><th className="val-error-col">error</th></tr></thead>
-                  <tbody>
-                    {validations.map((validation: BuilderValidation) => (
-                      <ValidationRow key={validation.id} validation={validation} />
-                    ))}
-                  </tbody>
-                </table>
-                </div>
+                <ValidationsTable validations={validations} />
               </div>
             )}
 
@@ -2949,6 +3223,409 @@ function ProjectPicker({ projects, selectedRoot, onSelect }: { projects: Builder
   );
 }
 
+function BuilderWorkflowsTable({
+  workflows,
+  projects,
+  doctorReports,
+  onMutated,
+  onEdit,
+  onDoctorReview,
+  onPreview,
+  onIterate,
+  onViewDoctorReport,
+}: {
+  workflows: BuilderWorkflow[];
+  projects: BuilderProject[];
+  doctorReports: BuilderDoctorReport[];
+  onMutated: () => void;
+  onEdit: (workflow: BuilderWorkflow) => void;
+  onDoctorReview: (workflowId: string) => void;
+  onPreview: (workflow: BuilderWorkflow) => void;
+  onIterate: (workflow: BuilderWorkflow) => void;
+  onViewDoctorReport: (report: BuilderDoctorReport) => void;
+}) {
+  type WorkflowKey = "status" | "lifecycle" | "mode" | "name" | "source" | "project" | "plan" | "agents" | "validation" | "doctor" | "updatedAt";
+  const latestReportByWorkflow = useMemo(() => {
+    const map = new Map<string, BuilderDoctorReport>();
+    for (const report of doctorReports) {
+      if (!map.has(report.workflowId)) map.set(report.workflowId, report);
+    }
+    return map;
+  }, [doctorReports]);
+  const projectLabel = (workflow: BuilderWorkflow) =>
+    projects.find((project) => project.root === workflow.projectRoot)?.label ?? baseName(workflow.projectRoot);
+  const controls = useTableControls<BuilderWorkflow, WorkflowKey>({
+    rows: workflows,
+    pageSize: 10,
+    rowKey: (workflow) => workflow.id,
+    defaultSort: { key: "updatedAt", dir: "desc" },
+    filterText: (workflow) => asSearchText([
+      workflow.status,
+      workflow.lifecycle,
+      workflow.mode,
+      workflow.name,
+      workflow.projectRoot,
+      workflow.planFile,
+      workflow.config.sourceSession?.agent,
+      workflow.config.sourceSession?.title,
+      workflow.config.agentOrder?.join(" "),
+      latestReportByWorkflow.get(workflow.id)?.verdict,
+    ]),
+    sortValue: (workflow, key) => {
+      if (key === "source") return workflow.config.sourceSession?.title ?? workflow.config.sourceSession?.agent;
+      if (key === "project") return projectLabel(workflow);
+      if (key === "plan") return baseName(workflow.planFile);
+      if (key === "agents") return workflow.config.agentOrder?.join(" -> ") ?? "";
+      if (key === "validation") return workflow.config.validationProfile?.commands?.length ?? 0;
+      if (key === "doctor") return latestReportByWorkflow.get(workflow.id)?.overallScore ?? null;
+      return workflow[key];
+    },
+  });
+
+  return (
+    <div className="section-card-body table-wrap">
+      <TableControls {...controls.controlsProps} searchPlaceholder="Search workflows..." />
+      <table className="data-table workflows-table">
+        <thead>
+          <tr>
+            <th className="expander-col" aria-label="detail" />
+            <th {...controls.sortHeaderProps("status")}>status <SortArrow active={controls.sort.key === "status"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("lifecycle")}>lifecycle <SortArrow active={controls.sort.key === "lifecycle"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("mode")}>mode <SortArrow active={controls.sort.key === "mode"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("name")}>name <SortArrow active={controls.sort.key === "name"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("source")}>source <SortArrow active={controls.sort.key === "source"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("project")}>project <SortArrow active={controls.sort.key === "project"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("plan")}>plan <SortArrow active={controls.sort.key === "plan"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("agents")}>agents <SortArrow active={controls.sort.key === "agents"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("validation")}>validation <SortArrow active={controls.sort.key === "validation"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("doctor")}>doctor <SortArrow active={controls.sort.key === "doctor"} dir={controls.sort.dir} /></th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {controls.rows.map((workflow, index) => {
+            const key = controls.getRowKey(workflow, index);
+            const expanded = controls.isExpanded(key);
+            const latestReport = latestReportByWorkflow.get(workflow.id);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} workflow detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
+                  <td onClick={(event) => event.stopPropagation()}><LifecycleControl workflow={workflow} onChanged={onMutated} /></td>
+                  <td>
+                    <ModeBadge mode={workflow.mode} />
+                    {workflow.mode === "scheduled" && workflow.nextRunAt && (
+                      <div className="text-xs text-dim">next: <Countdown target={workflow.nextRunAt} /></div>
+                    )}
+                  </td>
+                  <td>{workflow.name}</td>
+                  <td><SourceSessionMini source={workflow.config.sourceSession} /></td>
+                  <td className="trunc" title={workflow.projectRoot}>{projectLabel(workflow)}</td>
+                  <td className="mono trunc" title={workflow.planFile}>{baseName(workflow.planFile) || <span className="dim">—</span>}</td>
+                  <td>{(workflow.config.agentOrder ?? []).join(" -> ")}</td>
+                  <td>{workflow.config.validationProfile?.commands?.length ?? 0} checks</td>
+                  <td>
+                    {latestReport ? (
+                      <button
+                        className="btn btn-xs btn-ghost"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onViewDoctorReport(latestReport);
+                        }}
+                        title="view doctor report"
+                      >
+                        <Pill color={latestReport.verdict === "ready" ? "green" : latestReport.verdict === "needs-work" ? "amber" : "red"}>
+                          {latestReport.overallScore}
+                        </Pill>
+                      </button>
+                    ) : (
+                      <span className="mono dim">-</span>
+                    )}
+                  </td>
+                  <td onClick={(event) => event.stopPropagation()}>
+                    <WorkflowActions
+                      workflow={workflow}
+                      onMutated={onMutated}
+                      onEdit={() => onEdit(workflow)}
+                      onDoctorReview={() => onDoctorReview(workflow.id)}
+                      onPreview={() => onPreview(workflow)}
+                      onIterate={() => onIterate(workflow)}
+                    />
+                  </td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={12}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "workflow id", value: <span className="mono">{workflow.id}</span> },
+                          { label: "created", value: fmtTs(workflow.createdAt) },
+                          { label: "updated", value: fmtTs(workflow.updatedAt) },
+                          { label: "last run", value: workflow.lastRunId ? <span className="mono">{workflow.lastRunId}</span> : "—" },
+                          { label: "project root", value: <span className="mono">{workflow.projectRoot}</span> },
+                          { label: "plan file", value: <span className="mono">{workflow.planFile}</span> },
+                          { label: "max passes", value: workflow.config.riskPolicy.maxPasses },
+                          { label: "live deploys", value: workflow.config.riskPolicy.liveDeploys },
+                          { label: "paused reason", value: workflow.pausedReason ?? "—" },
+                          { label: "doctor verdict", value: latestReport ? `${latestReport.verdict} (${latestReport.overallScore})` : "not run" },
+                        ]} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {controls.filteredCount === 0 && <div className="loading-dim">no matching workflows</div>}
+    </div>
+  );
+}
+
+function BuilderRunsTable({
+  runs,
+  onSelectRun,
+  onRetryRun,
+}: {
+  runs: BuilderRun[];
+  onSelectRun: (runId: string) => void;
+  onRetryRun: (runId: string) => void;
+}) {
+  type RunKey = "status" | "trigger" | "startedAt" | "finishedAt" | "currentPassId" | "error";
+  const controls = useTableControls<BuilderRun, RunKey>({
+    rows: runs,
+    pageSize: 10,
+    rowKey: (run) => run.id,
+    defaultSort: { key: "startedAt", dir: "desc" },
+    filterText: (run) => asSearchText([
+      run.id,
+      run.status,
+      run.trigger,
+      run.currentPassId,
+      run.error,
+      run.traceId,
+      run.githubBranchName,
+      run.githubPullRequestUrl,
+    ]),
+    sortValue: (run, key) => run[key],
+  });
+
+  return (
+    <div className="section-card-body table-wrap">
+      <TableControls {...controls.controlsProps} searchPlaceholder="Search runs..." />
+      <table className="data-table runs-table">
+        <thead>
+          <tr>
+            <th className="expander-col" aria-label="detail" />
+            <th {...controls.sortHeaderProps("status")}>status <SortArrow active={controls.sort.key === "status"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("trigger")}>trigger <SortArrow active={controls.sort.key === "trigger"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("startedAt")}>started <SortArrow active={controls.sort.key === "startedAt"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("finishedAt")}>finished <SortArrow active={controls.sort.key === "finishedAt"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("currentPassId")}>pass <SortArrow active={controls.sort.key === "currentPassId"} dir={controls.sort.dir} /></th>
+            <th {...controls.sortHeaderProps("error")}>error <SortArrow active={controls.sort.key === "error"} dir={controls.sort.dir} /></th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {controls.rows.map((run, index) => {
+            const key = controls.getRowKey(run, index);
+            const expanded = controls.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => onSelectRun(run.id)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} run detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td><Pill color={statusColor(run.status)}>{run.status}</Pill></td>
+                  <td><Pill>{run.trigger}</Pill></td>
+                  <td className="mono dim">{fmtTs(run.startedAt)}</td>
+                  <td className="mono dim finished-col">{fmtTs(run.finishedAt)}</td>
+                  <td className="mono trunc pass-col">{run.currentPassId ?? "-"}</td>
+                  <td className="mono trunc">{run.error ? run.error.slice(0, 60) : "-"}</td>
+                  <td onClick={(event) => event.stopPropagation()}>
+                    {(run.status === "failed" || run.status === "success" || run.status === "canceled") && (
+                      <button
+                        className="btn btn-xs btn-ghost"
+                        onClick={() => onRetryRun(run.id)}
+                        title="retry run"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    )}
+                    <button className="btn btn-xs btn-ghost" type="button" onClick={() => onSelectRun(run.id)} title="open run detail">
+                      <Eye size={12} />
+                    </button>
+                  </td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={8}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "run id", value: <span className="mono">{run.id}</span> },
+                          { label: "workflow", value: <span className="mono">{run.workflowId}</span> },
+                          { label: "tenant", value: <span className="mono">{run.tenantId}</span> },
+                          { label: "duration", value: run.startedAt && run.finishedAt ? fmtDuration(run.finishedAt - run.startedAt) : "—" },
+                          { label: "stop requested", value: run.stopRequestedAt ? `${fmtTs(run.stopRequestedAt)} by ${run.stopRequestedBy ?? "unknown"}` : "—" },
+                          { label: "trace", value: run.traceId ? <span className="mono">{run.traceId}</span> : "—" },
+                          { label: "branch", value: run.githubBranchName ?? "—" },
+                          { label: "commit", value: run.githubCommitHash ? <span className="mono">{run.githubCommitHash}</span> : "—" },
+                          { label: "pull request", value: run.githubPullRequestUrl ?? "—" },
+                        ]} />
+                        {run.error && <pre className="audit-pre builder-status-pre">{run.error}</pre>}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {controls.filteredCount === 0 && <div className="loading-dim">no matching runs</div>}
+    </div>
+  );
+}
+
+function PlanCandidatesTable({ plans }: { plans: BuilderPlanCandidate[] }) {
+  type PlanKey = "exists" | "kind" | "title" | "path" | "modifiedAt" | "relevance";
+  const controls = useTableControls<BuilderPlanCandidate, PlanKey>({
+    rows: plans,
+    pageSize: 10,
+    rowKey: (plan) => plan.path,
+    defaultSort: { key: "modifiedAt", dir: "desc" },
+    filterText: (plan) => asSearchText([plan.title, plan.path, plan.kind, plan.relevance, plan.exists ? "found" : "missing"]),
+    sortValue: (plan, key) => plan[key],
+  });
+
+  return (
+    <div className="section-card-body table-wrap">
+      <TableControls {...controls.controlsProps} searchPlaceholder="Search plan candidates..." />
+      <table className="data-table">
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...controls.sortHeaderProps("exists")}>status <SortArrow active={controls.sort.key === "exists"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("kind")}>kind <SortArrow active={controls.sort.key === "kind"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("title")}>title <SortArrow active={controls.sort.key === "title"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("path")}>path <SortArrow active={controls.sort.key === "path"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("modifiedAt")}>modified <SortArrow active={controls.sort.key === "modifiedAt"} dir={controls.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {controls.rows.map((plan, index) => {
+            const key = controls.getRowKey(plan, index);
+            const expanded = controls.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} plan detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td><Pill color={statusColor(plan.exists)}>{plan.exists ? "found" : "missing"}</Pill></td>
+                  <td><Pill>{plan.kind}</Pill></td>
+                  <td>{plan.title}</td>
+                  <td className="mono trunc" title={plan.path}>{plan.path}</td>
+                  <td className="mono dim">{fmtTs(plan.modifiedAt)}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={6}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "title", value: plan.title },
+                          { label: "path", value: <span className="mono">{plan.path}</span> },
+                          { label: "kind", value: <Pill>{plan.kind}</Pill> },
+                          { label: "status", value: <Pill color={statusColor(plan.exists)}>{plan.exists ? "found" : "missing"}</Pill> },
+                          { label: "modified", value: fmtTs(plan.modifiedAt) },
+                          { label: "relevance", value: plan.relevance || "—" },
+                        ]} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {controls.filteredCount === 0 && <div className="loading-dim">no matching plan candidates</div>}
+    </div>
+  );
+}
+
+function SkillsTable({ skills }: { skills: BuilderSkillStatus[] }) {
+  type SkillKey = "status" | "name" | "path" | "description" | "modifiedAt";
+  const controls = useTableControls<BuilderSkillStatus, SkillKey>({
+    rows: skills,
+    pageSize: 10,
+    rowKey: (skill) => skill.path,
+    defaultSort: { key: "status", dir: "asc" },
+    filterText: (skill) => asSearchText([skill.status, skill.name, skill.path, skill.description]),
+    sortValue: (skill, key) => skill[key],
+  });
+
+  return (
+    <div className="section-card-body table-wrap">
+      <TableControls {...controls.controlsProps} searchPlaceholder="Search skills..." />
+      <table className="data-table">
+        <thead><tr>
+          <th className="expander-col" aria-label="detail" />
+          <th {...controls.sortHeaderProps("status")}>status <SortArrow active={controls.sort.key === "status"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("name")}>name <SortArrow active={controls.sort.key === "name"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("path")}>path <SortArrow active={controls.sort.key === "path"} dir={controls.sort.dir} /></th>
+          <th {...controls.sortHeaderProps("description")}>description <SortArrow active={controls.sort.key === "description"} dir={controls.sort.dir} /></th>
+        </tr></thead>
+        <tbody>
+          {controls.rows.map((skill, index) => {
+            const key = controls.getRowKey(skill, index);
+            const expanded = controls.isExpanded(key);
+            return (
+              <Fragment key={key}>
+                <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                  <td className="expander-col">
+                    <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} skill detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
+                      {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </button>
+                  </td>
+                  <td><Pill color={statusColor(skill.status)}>{skill.status}</Pill></td>
+                  <td className="mono">{skill.name}</td>
+                  <td className="mono trunc" title={skill.path}>{skill.path}</td>
+                  <td>{skill.description || "-"}</td>
+                </tr>
+                {expanded && (
+                  <tr className="data-row-detail">
+                    <td colSpan={5}>
+                      <div className="data-row-detail-inner">
+                        <DetailGrid rows={[
+                          { label: "name", value: skill.name },
+                          { label: "status", value: <Pill color={statusColor(skill.status)}>{skill.status}</Pill> },
+                          { label: "path", value: <span className="mono">{skill.path}</span> },
+                          { label: "modified", value: fmtTs(skill.modifiedAt) },
+                          { label: "description", value: skill.description || "—" },
+                        ]} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+      {controls.filteredCount === 0 && <div className="loading-dim">no matching skills</div>}
+    </div>
+  );
+}
+
 function PlanPicker({ plans, value, onChange, rootPath }: { plans: BuilderPlanCandidate[]; value: string; onChange: (path: string) => void; rootPath: string }) {
   const [query, setQuery] = useState("");
   const [browse, setBrowse] = useState(false);
@@ -3048,15 +3725,6 @@ export function BuilderPage() {
     ? workflows
     : workflows.filter((w) => w.lifecycle === lifecycleFilter);
   const runs = runsApi.data?.runs ?? [];
-  // Global table rule: show at most 10 rows, most-recent first (full set still reachable
-  // via the lifecycle filter / detail views).
-  const TABLE_LIMIT = 10;
-  const visibleWorkflows = [...filteredWorkflows]
-    .sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
-    .slice(0, TABLE_LIMIT);
-  const visibleRuns = [...runs]
-    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-    .slice(0, TABLE_LIMIT);
   const doctorReports = doctorReportsApi.data?.reports ?? [];
 
   async function triggerDoctorReview(workflowId: string) {
@@ -3075,14 +3743,6 @@ export function BuilderPage() {
     } catch (err) {
       console.error("trigger doctor review error", err);
     }
-  }
-
-  function hasDoctorReportsForWorkflow(workflowId: string): boolean {
-    return doctorReports.some((r) => r.workflowId === workflowId);
-  }
-
-  function getLatestDoctorReport(workflowId: string): BuilderDoctorReport | undefined {
-    return doctorReports.find((r) => r.workflowId === workflowId);
   }
 
   useEffect(() => {
@@ -3265,128 +3925,53 @@ export function BuilderPage() {
                     </button>
                   ))}
                 </div>
-                <span className="mono dim">{visibleWorkflows.length} of {filteredWorkflows.length}{filteredWorkflows.length !== workflows.length ? ` (${workflows.length} total)` : ""}</span>
+                <span className="mono dim">{filteredWorkflows.length}{filteredWorkflows.length !== workflows.length ? ` of ${workflows.length}` : ""} workflows</span>
               </div>
             }
           >
-            <div className="section-card-body table-wrap">
-              {workflowsApi.data?.degraded ? (
-                <div className="loading-dim">degraded: {workflowsApi.data.reason}</div>
-              ) : workflows.length === 0 ? (
-                <div className="loading-dim">no workflows</div>
-              ) : (
-                <table className="data-table workflows-table">
-                  <thead>
-                    <tr>
-                      <th>status</th><th>lifecycle</th><th>mode</th><th>name</th><th>source</th><th>project</th><th>plan</th><th>agents</th><th>validation</th><th>doctor</th><th>actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleWorkflows.map((workflow) => {
-                      const hasDoctor = hasDoctorReportsForWorkflow(workflow.id);
-                      const latestReport = getLatestDoctorReport(workflow.id);
-                      return (
-                        <tr key={workflow.id}>
-                          <td><Pill color={statusColor(workflow.status)}>{workflow.status}</Pill></td>
-                          <td><LifecycleControl workflow={workflow} onChanged={() => workflowsApi.refresh()} /></td>
-                          <td>
-                            <ModeBadge mode={workflow.mode} />
-                            {workflow.mode === "scheduled" && workflow.nextRunAt && (
-                              <div className="text-xs text-dim">next: <Countdown target={workflow.nextRunAt} /></div>
-                            )}
-                          </td>
-                          <td>{workflow.name}</td>
-                          <td><SourceSessionMini source={workflow.config.sourceSession} /></td>
-                          <td className="trunc" title={workflow.projectRoot}>{projects.find((p) => p.root === workflow.projectRoot)?.label ?? baseName(workflow.projectRoot)}</td>
-                          <td className="mono trunc" title={workflow.planFile}>{baseName(workflow.planFile) || <span className="dim">—</span>}</td>
-                          <td>{(workflow.config.agentOrder ?? []).join(" -> ")}</td>
-                          <td>{workflow.config.validationProfile?.commands?.length ?? 0} checks</td>
-                          <td>
-                            {hasDoctor && latestReport ? (
-                              <button
-                                className="btn btn-xs btn-ghost"
-                                onClick={() => setSelectedDoctorReport(latestReport)}
-                                title="view doctor report"
-                              >
-                                <Pill color={latestReport.verdict === "ready" ? "green" : latestReport.verdict === "needs-work" ? "amber" : "red"}>
-                                  {latestReport.overallScore}
-                                </Pill>
-                              </button>
-                            ) : (
-                              <span className="mono dim">-</span>
-                            )}
-                          </td>
-                          <td>
-                            <WorkflowActions
-                              workflow={workflow}
-                              onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
-                              onEdit={() => setEditingWorkflow(workflow)}
-                              onDoctorReview={() => triggerDoctorReview(workflow.id)}
-                              onPreview={() => setPreviewWorkflow(workflow)}
-                              onIterate={() => setIteratingWorkflow(workflow)}
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            {workflowsApi.data?.degraded ? (
+              <div className="section-card-body"><div className="loading-dim">degraded: {workflowsApi.data.reason}</div></div>
+            ) : workflows.length === 0 ? (
+              <div className="section-card-body"><div className="loading-dim">no workflows</div></div>
+            ) : (
+              <BuilderWorkflowsTable
+                workflows={filteredWorkflows}
+                projects={projects}
+                doctorReports={doctorReports}
+                onMutated={() => { workflowsApi.refresh(); runsApi.refresh(); }}
+                onEdit={setEditingWorkflow}
+                onDoctorReview={triggerDoctorReview}
+                onPreview={setPreviewWorkflow}
+                onIterate={setIteratingWorkflow}
+                onViewDoctorReport={setSelectedDoctorReport}
+              />
+            )}
           </SectionCard>
 
           <SectionCard
             title="runs"
             defaultOpen={true}
-            right={<span className="mono dim">{visibleRuns.length === runs.length ? `${runs.length} total` : `showing ${visibleRuns.length} of ${runs.length}`}</span>}
+            right={<span className="mono dim">{runs.length} total</span>}
           >
-            <div className="section-card-body table-wrap">
-              {runsApi.data?.degraded ? (
-                <div className="loading-dim">degraded: {runsApi.data.reason}</div>
-              ) : runs.length === 0 ? (
-                <div className="loading-dim">no runs yet</div>
-              ) : (
-                <table className="data-table runs-table">
-                  <thead>
-                    <tr>
-                      <th>status</th><th>trigger</th><th>started</th><th className="finished-col">finished</th><th className="pass-col">pass</th><th>error</th><th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRuns.map((run: BuilderRun) => (
-                      <tr key={run.id} className="clickable-row" onClick={() => setSelectedRunId(run.id)}>
-                        <td><Pill color={statusColor(run.status)}>{run.status}</Pill></td>
-                        <td><Pill>{run.trigger}</Pill></td>
-                        <td className="mono dim">{fmtTs(run.startedAt)}</td>
-                        <td className="mono dim finished-col">{fmtTs(run.finishedAt)}</td>
-                        <td className="mono trunc pass-col">{run.currentPassId ?? "-"}</td>
-                        <td className="mono trunc">{run.error ? run.error.slice(0, 60) : "-"}</td>
-                        <td onClick={(e) => e.stopPropagation()}>
-                          {(run.status === "failed" || run.status === "success" || run.status === "canceled") && (
-                            <button
-                              className="btn btn-xs btn-ghost"
-                              onClick={async () => {
-                                try {
-                                  await authFetch(`/api/builder/runs/${run.id}/retry`, { method: "POST" });
-                                  runsApi.refresh();
-                                  workflowsApi.refresh();
-                                } catch (err) {
-                                  console.error("retry failed", err);
-                                }
-                              }}
-                              title="retry run"
-                            >
-                              <RefreshCw size={12} />
-                            </button>
-                          )}
-                          <ChevronRight size={14} className="row-chevron" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            {runsApi.data?.degraded ? (
+              <div className="section-card-body"><div className="loading-dim">degraded: {runsApi.data.reason}</div></div>
+            ) : runs.length === 0 ? (
+              <div className="section-card-body"><div className="loading-dim">no runs yet</div></div>
+            ) : (
+              <BuilderRunsTable
+                runs={runs}
+                onSelectRun={setSelectedRunId}
+                onRetryRun={async (runId) => {
+                  try {
+                    await authFetch(`/api/builder/runs/${runId}/retry`, { method: "POST" });
+                    runsApi.refresh();
+                    workflowsApi.refresh();
+                  } catch (err) {
+                    console.error("retry failed", err);
+                  }
+                }}
+              />
+            )}
           </SectionCard>
 
           <div className="widget-grid wide">
@@ -3427,22 +4012,7 @@ export function BuilderPage() {
             defaultOpen={true}
             right={<span className="mono dim">{data.planCandidates.length} files</span>}
           >
-            <div className="section-card-body table-wrap">
-              <table className="data-table">
-                <thead><tr><th>status</th><th>kind</th><th>title</th><th>path</th><th>modified</th></tr></thead>
-                <tbody>
-                  {data.planCandidates.map((plan) => (
-                    <tr key={plan.path}>
-                      <td><Pill color={statusColor(plan.exists)}>{plan.exists ? "found" : "missing"}</Pill></td>
-                      <td><Pill>{plan.kind}</Pill></td>
-                      <td>{plan.title}</td>
-                      <td className="mono trunc">{plan.path}</td>
-                      <td className="mono dim">{fmtTs(plan.modifiedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <PlanCandidatesTable plans={data.planCandidates} />
           </SectionCard>
 
           <div className="widget-grid wide">
@@ -3484,14 +4054,7 @@ export function BuilderPage() {
             defaultOpen={true}
             right={<span className="mono dim">{data.skills.length} checked</span>}
           >
-            <div className="section-card-body table-wrap">
-              <table className="data-table">
-                <thead><tr><th>status</th><th>name</th><th>path</th><th>description</th></tr></thead>
-                <tbody>
-                  {data.skills.map((skill) => <SkillRow key={skill.path} skill={skill} />)}
-                </tbody>
-              </table>
-            </div>
+            <SkillsTable skills={data.skills} />
           </SectionCard>
         </>
       )}
