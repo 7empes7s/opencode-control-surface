@@ -210,6 +210,7 @@ import { securityPostureHandler, securitySecretsHandler, trustScoreHandler } fro
 import {
   adminHealthHandler,
   adminBriefingHandler,
+  adminEventsHandler,
   adminSearchHandler,
   adminAutoFixFeedHandler,
 } from "./admin.ts";
@@ -627,6 +628,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/admin/briefing") {
     if (!checkToken(req)) return unauthorized();
     return adminBriefingHandler();
+  }
+  if (method === "GET" && pathname === "/api/admin/events") {
+    if (!checkToken(req)) return unauthorized();
+    return adminEventsHandler(url);
   }
   if (method === "GET" && pathname === "/api/admin/search") {
     if (!checkToken(req)) return unauthorized();

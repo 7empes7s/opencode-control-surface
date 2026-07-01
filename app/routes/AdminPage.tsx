@@ -11,6 +11,14 @@ import { authFetch } from "../lib/authFetch";
 
 type HealthDriver = { label: string; impact: number; link: string; filterKey?: string };
 type TrendPoint = { ts: number; score: number };
+type AdminEventMarker = {
+  id: string;
+  ts: number;
+  type: "deployment" | "config" | "incident";
+  label: string;
+  href: string;
+  severity: "info" | "success" | "warning" | "critical";
+};
 
 type AdminHealth = {
   score: number;
@@ -34,6 +42,11 @@ type AutoFixRow = {
   rollbackHint: string | null;
   risk: string | null;
   request: unknown;
+};
+
+type AdminEventsResponse = {
+  events: AdminEventMarker[];
+  degraded: boolean;
 };
 
 // ── Gauge ──────────────────────────────────────────────────────────────────
@@ -76,21 +89,50 @@ function ScoreGauge({ score, onClick }: { score: number; onClick?: () => void })
 
 // ── Trend sparkline ─────────────────────────────────────────────────────────
 
-function TrendSparkline({ points }: { points: TrendPoint[] }) {
+function eventMarkerGlyph(type: AdminEventMarker["type"]): string {
+  if (type === "deployment") return "D";
+  if (type === "config") return "C";
+  return "I";
+}
+
+function TrendSparkline({ points, markers = [] }: { points: TrendPoint[]; markers?: AdminEventMarker[] }) {
   if (points.length < 2) return <span className="dim" style={{ fontSize: 11 }}>Not enough data for trend</span>;
   const w = 120, h = 30;
   const scores = points.map((p) => p.score);
   const minS = Math.min(...scores), maxS = Math.max(...scores);
   const range = maxS - minS || 1;
+  const minTs = Math.min(...points.map((p) => p.ts));
+  const maxTs = Math.max(...points.map((p) => p.ts));
+  const tsRange = maxTs - minTs || 1;
+  const visibleMarkers = markers
+    .filter((marker) => marker.ts >= minTs && marker.ts <= maxTs)
+    .slice(0, 12);
   const pts = points.map((p, i) => {
     const x = (i / (points.length - 1)) * w;
     const y = h - ((p.score - minS) / range) * h;
     return `${x},${y}`;
   });
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} style={{ overflow: "visible" }}>
-      <polyline points={pts.join(" ")} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeLinejoin="round" />
-    </svg>
+    <div className="admin-trend-wrap">
+      <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} style={{ overflow: "visible" }} aria-label="Admin health trend">
+        <polyline points={pts.join(" ")} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeLinejoin="round" />
+      </svg>
+      {visibleMarkers.map((marker, index) => {
+        const left = Math.max(4, Math.min(96, ((marker.ts - minTs) / tsRange) * 100));
+        const top = 5 + (index % 3) * 9;
+        return (
+          <Link
+            key={marker.id}
+            href={marker.href}
+            className={`admin-trend-marker ${marker.type} ${marker.severity}`}
+            style={{ left: `${left}%`, top }}
+            title={`${marker.type}: ${marker.label} - ${new Date(marker.ts).toLocaleString()}`}
+          >
+            {eventMarkerGlyph(marker.type)}
+          </Link>
+        );
+      })}
+    </div>
   );
 }
 
@@ -200,6 +242,7 @@ function AutoFixFeed() {
 export function AdminPage() {
   const [, navigate] = useLocation();
   const { data, loading, error, refresh } = useApi<AdminHealth>("/api/admin/health", 60_000);
+  const eventsApi = useApi<AdminEventsResponse>("/api/admin/events?days=7", 60_000);
   const [briefing, setBriefing] = useState<{ text: string; model: string } | null>(null);
   const briefingFetched = useRef(false);
 
@@ -244,7 +287,7 @@ export function AdminPage() {
                   <RefreshCw size={13} />
                 </button>
               </div>
-              <TrendSparkline points={data?.trend ?? []} />
+              <TrendSparkline points={data?.trend ?? []} markers={eventsApi.data?.events ?? []} />
             </>
           ) : loading ? (
             <div className="loading-panel" style={{ minHeight: 0, padding: "8px 12px" }}>Computing score…</div>
