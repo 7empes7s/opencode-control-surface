@@ -7,6 +7,7 @@ import { writeActionAudit } from "../db/writer.ts";
 import { readFileSync } from "node:fs";
 import { matchPlaybook } from "../reasoner/playbooks.ts";
 import { runBuildScan } from "./scanners/build.ts";
+import { NEAR_ZERO_SPEND_BASELINE_CENTS, SPEND_MATERIAL_CENTS } from "./scanners/anomaly.ts";
 
 type AggregateResult = {
   createdOrUpdated: number;
@@ -89,14 +90,21 @@ function aggregateSpendAnomalies(results: Insight[]): void {
 
   for (const row of rows) {
     const scope = row.scope_id ? `${row.scope_type} ${row.scope_id}` : row.scope_type;
-    const severity = row.multiplier >= 3 ? "high" : row.multiplier >= 1.5 ? "medium" : "low";
+    const materialSpend = row.observed_cents >= SPEND_MATERIAL_CENTS;
+    const severity = materialSpend
+      ? (row.multiplier >= 3 ? "high" : row.multiplier >= 1.5 ? "medium" : "low")
+      : "low";
+    const littleOrNoBaseline = row.baseline_cents < NEAR_ZERO_SPEND_BASELINE_CENTS;
+    const plainSummary = littleOrNoBaseline
+      ? `${scope} spent ${cents(row.observed_cents)} with little or no prior baseline.`
+      : `${scope} is spending ${row.multiplier.toFixed(1)} times its usual amount. Expected ${cents(row.baseline_cents)}, observed ${cents(row.observed_cents)}.`;
     addInsight(results, {
       id: `insight_cost_anomaly_${safeId(row.id)}`,
       sourceKey: `cost:spend_anomaly:${row.id}`,
       domain: "cost",
       severity,
       title: "Spend is running above its normal range",
-      plainSummary: `${scope} is spending ${row.multiplier.toFixed(1)} times its usual amount. Expected ${cents(row.baseline_cents)}, observed ${cents(row.observed_cents)}.`,
+      plainSummary,
       confidence: Math.min(0.95, Math.max(0.55, row.multiplier / 4)),
       evidenceRefs: [
         evidence("Spend anomaly", "db", `spend_anomalies:${row.id}`),

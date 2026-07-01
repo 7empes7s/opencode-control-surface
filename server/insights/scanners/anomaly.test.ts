@@ -129,6 +129,32 @@ describe("anomaly scanner", () => {
     expect(count.n).toBe(0);
   });
 
+  test("does not insert a spend anomaly for a call-only spike with immaterial cost", () => {
+    const todayStart = startOfUtcDay(Date.now());
+
+    for (let dayOffset = 3; dayOffset >= 1; dayOffset -= 1) {
+      const dayTs = todayStart - dayOffset * ONE_DAY_MS;
+      for (let i = 0; i < 90; i += 1) {
+        seedCall(dayTs + i * 1000, "insights-ai", "editorial-heavy", 0);
+      }
+    }
+
+    const totalCostUsd = 0.00964;
+    const costPerCallUsd = totalCostUsd / 679;
+    for (let i = 0; i < 679; i += 1) {
+      seedCall(todayStart + i * 1000, "insights-ai", "editorial-heavy", costPerCallUsd);
+    }
+
+    const result = runAnomalyScan();
+    expect(result.anomalies).toBe(0);
+
+    const tenant = whereTenant();
+    const count = db().query(
+      `SELECT COUNT(*) AS n FROM spend_anomalies WHERE scope_type = 'cost:anomaly-scan' ${tenant.clause}`,
+    ).get(...tenant.params) as { n: number };
+    expect(count.n).toBe(0);
+  });
+
   test("does not insert when fewer than 3 baseline days have activity", () => {
     const todayStart = startOfUtcDay(Date.now());
 
@@ -183,5 +209,23 @@ describe("anomaly scanner", () => {
     expect(matched).toBeDefined();
     expect(matched!.domain).toBe("cost");
     expect(result.createdOrUpdated).toBeGreaterThanOrEqual(1);
+  });
+
+  test("aggregateInsights caps immaterial near-zero-baseline spend anomalies at low severity", () => {
+    const todayStart = startOfUtcDay(Date.now());
+    db().query(`
+      INSERT INTO spend_anomalies
+        (id, tenant_id, ts, scope_type, scope_id, baseline_cents, observed_cents, multiplier, status)
+      VALUES ('spend-anomaly-low-bogus', 'mimule', ?, 'cost:anomaly-scan', 'insights-ai|editorial-heavy', 0.01, 0.964, 96.4, 'open')
+    `).run(todayStart);
+
+    aggregateInsights();
+    const rows = listInsights("open");
+    const matched = rows.find((row) => row.sourceKey === "cost:spend_anomaly:spend-anomaly-low-bogus");
+    expect(matched).toBeDefined();
+    expect(matched!.severity).toBe("low");
+    expect(matched!.plainSummary).toContain("little or no prior baseline");
+    expect(matched!.plainSummary).not.toContain("96.4");
+    expect(matched!.plainSummary).not.toContain("times its usual amount");
   });
 });

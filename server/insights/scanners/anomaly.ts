@@ -7,7 +7,10 @@ const BASELINE_MIN_ACTIVE_DAYS = 3;
 const CALL_MULTIPLIER = 3;
 const CALL_FLOOR = 20;
 const COST_MULTIPLIER = 3;
-const COST_FLOOR_CENTS = 100;
+export const COST_FLOOR_CENTS = 100;
+export const SPEND_MATERIAL_CENTS = COST_FLOOR_CENTS;
+export const NEAR_ZERO_SPEND_BASELINE_CENTS = 0.5;
+const SPEND_RATIO_BASELINE_FLOOR_CENTS = SPEND_MATERIAL_CENTS / 4;
 
 type AnomalyScanResult = {
   scannedAt: number;
@@ -110,7 +113,8 @@ export function runAnomalyScan(): AnomalyScanResult {
 
     const callsAnomaly = today.calls > baselineAvgCalls * CALL_MULTIPLIER && today.calls >= CALL_FLOOR;
     const costAnomaly = today.cost_cents > baselineAvgCents * COST_MULTIPLIER && today.cost_cents >= COST_FLOOR_CENTS;
-    if (!callsAnomaly && !costAnomaly) continue;
+    const materialCallAnomaly = callsAnomaly && today.cost_cents >= SPEND_MATERIAL_CENTS;
+    if (!costAnomaly && !materialCallAnomaly) continue;
 
     const caller = today.caller ?? "(unknown)";
     const scopeId = `${today.logical_model}|${caller}`;
@@ -118,8 +122,10 @@ export function runAnomalyScan(): AnomalyScanResult {
     if (existingToday.has(dedupeKey)) continue;
 
     const observedCents = today.cost_cents;
-    const baselineCents = Math.max(baselineAvgCents, 0.01);
-    const multiplier = observedCents / baselineCents;
+    const ratioBaselineCents = baselineAvgCents >= NEAR_ZERO_SPEND_BASELINE_CENTS
+      ? baselineAvgCents
+      : SPEND_RATIO_BASELINE_FLOOR_CENTS;
+    const multiplier = observedCents >= SPEND_MATERIAL_CENTS ? observedCents / ratioBaselineCents : 1;
 
     db.query(`
       INSERT OR IGNORE INTO spend_anomalies
@@ -130,7 +136,7 @@ export function runAnomalyScan(): AnomalyScanResult {
       tenant.params[0],
       scannedAt,
       scopeId,
-      baselineCents,
+      baselineAvgCents,
       observedCents,
       multiplier,
     );
