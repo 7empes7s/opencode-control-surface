@@ -43,7 +43,7 @@ import {
 } from "lucide-react";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
-import { getRouteStatus, isExperimental, type RouteStatus } from "../lib/navRegistry";
+import { NAV_ITEMS, getRouteStatus, isExperimental, type RouteStatus } from "../lib/navRegistry";
 
 type NavItem = {
   href: string;
@@ -56,47 +56,57 @@ type NavItem = {
 type Theme = "dark" | "light";
 type Variant = "terminal" | "compact";
 
-const NAV: NavItem[] = [
-  { href: "/admin", label: "Admin Center", icon: ShieldAlert, match: (l) => l === "/admin" },
-  { href: "/", label: "Home", icon: LayoutGrid, match: (l) => l === "/" },
-  { href: "/insights", label: "Detections", icon: Inbox },
-  { href: "/security", label: "Security", icon: Shield },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/today", label: "Today", icon: CalendarDays },
-  { href: "/autopipeline", label: "Pipeline", icon: Workflow },
-  { href: "/doctor", label: "Doctor", icon: Stethoscope },
-  { href: "/models", label: "Models", icon: Cpu },
-  { href: "/cost", label: "Cost", icon: TrendingUp },
-  { href: "/newsbites", label: "NewsBites", icon: Newspaper },
-  { href: "/infra", label: "Infra", icon: Server },
-  { href: "/incidents", label: "Incidents", icon: AlertTriangle },
-  { href: "/jobs", label: "Jobs", icon: ClipboardList },
-  { href: "/agent-team", label: "Agent Team", icon: Bot },
-  { href: "/audit", label: "Audit", icon: History },
-  { href: "/builder", label: "Builder", icon: Hammer },
-  { href: "/brainstorm", label: "Brainstorm", icon: Lightbulb },
-  { href: "/workflows", label: "Workflows", icon: GitBranch },
-  { href: "/marketplace", label: "Marketplace", icon: Package },
-  { href: "/traces", label: "Traces", icon: GitBranch },
-  { href: "/gateway", label: "Gateway", icon: Route },
-  { href: "/governance", label: "Access & Policy", icon: Shield },
-  { href: "/compliance", label: "Compliance", icon: Shield },
-  { href: "/projects", label: "Projects", icon: FolderOpen },
-  { href: "/settings", label: "Settings", icon: Settings2 },
-  { href: "/about", label: "About", icon: Info },
-  { href: "/install", label: "Setup", icon: Wrench, condition: () => localStorage.getItem("tib-install-wizard-done") !== "true" },
-  { href: "/litellm", label: "LiteLLM", icon: Route },
-  { href: "/opencode", label: "OpenCode", icon: Terminal },
-  { href: "/codex", label: "Codex", icon: Code2 },
-  { href: "/claude", label: "Claude Code", icon: Sparkles },
-  { href: "/gemini", label: "Gemini", icon: Sparkles },
-  { href: "/finance-intel", label: "Finance Intel", icon: TrendingUp },
-  { href: "/scout", label: "Scout", icon: Radar },
-  { href: "/channels", label: "Channels", icon: Bell },
-  { href: "/content-health", label: "Content Health", icon: FileCheck2 },
-  { href: "/reports", label: "Reports", icon: FileText },
-  { href: "/data-explorer", label: "Data Explorer", icon: Database },
-];
+const NAV_ICONS: Record<string, typeof LayoutGrid> = {
+  "/admin": ShieldAlert,
+  "/": LayoutGrid,
+  "/insights": Inbox,
+  "/security": Shield,
+  "/agents": Bot,
+  "/today": CalendarDays,
+  "/autopipeline": Workflow,
+  "/doctor": Stethoscope,
+  "/models": Cpu,
+  "/cost": TrendingUp,
+  "/newsbites": Newspaper,
+  "/infra": Server,
+  "/incidents": AlertTriangle,
+  "/jobs": ClipboardList,
+  "/agent-team": Bot,
+  "/audit": History,
+  "/builder": Hammer,
+  "/brainstorm": Lightbulb,
+  "/workflows": GitBranch,
+  "/marketplace": Package,
+  "/traces": GitBranch,
+  "/gateway": Route,
+  "/governance": Shield,
+  "/compliance": Shield,
+  "/projects": FolderOpen,
+  "/settings": Settings2,
+  "/about": Info,
+  "/install": Wrench,
+  "/litellm": Route,
+  "/opencode": Terminal,
+  "/codex": Code2,
+  "/claude": Sparkles,
+  "/gemini": Sparkles,
+  "/finance-intel": TrendingUp,
+  "/scout": Radar,
+  "/channels": Bell,
+  "/content-health": FileCheck2,
+  "/reports": FileText,
+  "/data-explorer": Database,
+  "/feature-flags": Settings2,
+};
+
+const NAV: NavItem[] = NAV_ITEMS.map(({ href, label, status }) => ({
+  href,
+  label,
+  status,
+  icon: NAV_ICONS[href] ?? LayoutGrid,
+  match: href === "/" ? (l: string) => l === "/" : undefined,
+  condition: href === "/install" ? () => localStorage.getItem("tib-install-wizard-done") !== "true" : undefined,
+}));
 
 const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");
 const ADVANCED_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "advanced");

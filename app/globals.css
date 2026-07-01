@@ -1006,6 +1006,52 @@ body {
   height: 1px;
   background: linear-gradient(90deg, var(--border) 0%, transparent 100%);
 }
+.dash-section-title > svg,
+.dash-section-title-with-icon > svg {
+  flex-shrink: 0;
+  align-self: center;
+}
+.dash-section-title-with-icon > span {
+  display: inline-flex;
+  align-items: center;
+}
+.scout-stats-header {
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.scout-stats-header::after {
+  display: none;
+}
+.scout-stats-title {
+  display: inline-flex;
+  align-items: center;
+}
+.scout-stats-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+.scout-stats-actions svg {
+  flex-shrink: 0;
+}
+.scout-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
 
 /* ── Widget grid ───────────────────────────────────────────────────────── */
 
@@ -1938,7 +1984,25 @@ body {
 /* ── Page header (within routes) ───────────────────────────────────────── */
 
 .page-header { margin-bottom: 22px; }
-.page-title { font-size: 22px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; letter-spacing: -0.01em; }
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.page-title h1 {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+.page-title svg {
+  flex-shrink: 0;
+}
 .page-subtitle { font-family: var(--sans); font-size: 13px; color: var(--text-dim); }
 .stat-row {
   display: flex;
@@ -2280,7 +2344,21 @@ body {
   display: flex; align-items: center; justify-content: space-between;
   background: color-mix(in oklch, white 1.5%, transparent);
 }
-.section-card-header .title { color: var(--text); font-weight: 600; }
+.section-card-header .title,
+.section-card-header h2 {
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+.section-card-header .title > svg,
+.section-card-header h2 > svg {
+  flex-shrink: 0;
+}
 .section-card-body { padding: 12px 16px; }
 
 /* ── Collapsible section card ───────────────────────────────────────────── */

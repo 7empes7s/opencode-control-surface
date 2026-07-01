@@ -214,7 +214,7 @@ const ScoutPage: React.FC = () => {
   return (
     <div className="dash-page">
       <div className="dash-section">
-        <div className="dash-section-title flex items-center gap-3">
+        <div className="dash-section-title dash-section-title-with-icon">
           <Radar className="h-5 w-5 text-blue-600" />
           <span>Scout Transparency</span>
         </div>
@@ -222,22 +222,25 @@ const ScoutPage: React.FC = () => {
       </div>
 
       <div className="dash-section">
-        <div className="dash-section-title flex items-center justify-between">
-          <span>Statistics</span>
-          {lastLoadedAt && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="dash-section-title scout-stats-header">
+          <span className="scout-stats-title">Statistics</span>
+          <div className="scout-stats-actions">
+            {lastLoadedAt && (
+              <>
               <Clock className="h-3 w-3" />
               <span>Last updated: {formatRelativeTime(lastLoadedAt)}</span>
               <button
-                className="btn-ghost p-1 hover:bg-gray-100"
+                className="btn-ghost scout-refresh-button"
                 onClick={handleRefresh}
                 disabled={isLoading}
                 title="Refresh now"
+                aria-label="Refresh Scout statistics"
               >
                 <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </div>
         {loadError && (
           <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-3 mb-4">
@@ -450,7 +453,7 @@ const ScoutPage: React.FC = () => {
 
       {scoutConfig && (
         <div className="dash-section">
-          <div className="dash-section-title flex items-center gap-2">
+          <div className="dash-section-title dash-section-title-with-icon">
             <Settings className="h-4 w-4" />
             Scout Configuration
           </div>
