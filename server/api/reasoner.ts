@@ -187,7 +187,7 @@ async function generateAndStorePostMortem(incident: IncidentRow): Promise<{ post
 }
 
 export async function reasonerJobsHandler(): Promise<Response> {
-  if (!isDashboardDbEnabled()) return json([]);
+  if (!isDashboardDbEnabled()) return json({ data: [] });
   const db = getDashboardDb()!;
   const tenantId = getCurrentTenantContext().tenantId;
   const rows = db.query(`
@@ -217,11 +217,11 @@ export async function reasonerJobsHandler(): Promise<Response> {
     createdAt: r.created_at,
     finishedAt: r.finished_at ?? undefined,
   }));
-  return json(jobs);
+  return json({ data: jobs });
 }
 
 export async function reasonerDiagnosesHandler(): Promise<Response> {
-  if (!isDashboardDbEnabled()) return json([]);
+  if (!isDashboardDbEnabled()) return json({ data: [] });
   const db = getDashboardDb()!;
   const tenantId = getCurrentTenantContext().tenantId;
   const rows = db.query(`
@@ -244,19 +244,21 @@ export async function reasonerDiagnosesHandler(): Promise<Response> {
     raw_llm_response: string | null;
     diagnosed_at: number;
   }>;
-  return json(rows.map((r) => ({
-    id: r.id,
-    passId: r.pass_id,
-    runId: r.run_id,
-    workflowId: r.workflow_id,
-    failureClass: r.failure_class,
-    rootCauseHypothesis: r.root_cause,
-    evidence: JSON.parse(r.evidence_json),
-    suggestedActions: JSON.parse(r.suggested_actions_json),
-    confidence: r.confidence,
-    rawLLMResponse: r.raw_llm_response,
-    diagnosedAt: r.diagnosed_at,
-  })));
+  return json({
+    data: rows.map((r) => ({
+      id: r.id,
+      passId: r.pass_id,
+      runId: r.run_id,
+      workflowId: r.workflow_id,
+      failureClass: r.failure_class,
+      rootCauseHypothesis: r.root_cause,
+      evidence: JSON.parse(r.evidence_json),
+      suggestedActions: JSON.parse(r.suggested_actions_json),
+      confidence: r.confidence,
+      rawLLMResponse: r.raw_llm_response,
+      diagnosedAt: r.diagnosed_at,
+    })),
+  });
 }
 
 export async function reasonerDiagnosisByPassHandler(passId: string): Promise<Response> {
@@ -300,7 +302,7 @@ export async function reasonerDiagnosisByPassHandler(passId: string): Promise<Re
 }
 
 export async function reasonerIncidentsHandler(url?: URL): Promise<Response> {
-  if (!isDashboardDbEnabled()) return json([]);
+  if (!isDashboardDbEnabled()) return json({ data: [] });
   const db = getDashboardDb()!;
   const tenantId = getCurrentTenantContext().tenantId;
   const statusParam = url?.searchParams.get("status") ?? "open";
@@ -323,18 +325,20 @@ export async function reasonerIncidentsHandler(url?: URL): Promise<Response> {
     representative_diagnosis_id: string;
     status: string;
   }>;
-  return json(rows.map((r) => ({
-    id: r.id,
-    clusterKey: r.cluster_key,
-    failureClass: r.failure_class,
-    title: r.title,
-    firstSeen: r.first_seen,
-    lastSeen: r.last_seen,
-    occurrenceCount: r.occurrence_count,
-    representativePassId: r.representative_pass_id,
-    representativeDiagnosisId: r.representative_diagnosis_id,
-    status: r.status,
-  })));
+  return json({
+    data: rows.map((r) => ({
+      id: r.id,
+      clusterKey: r.cluster_key,
+      failureClass: r.failure_class,
+      title: r.title,
+      firstSeen: r.first_seen,
+      lastSeen: r.last_seen,
+      occurrenceCount: r.occurrence_count,
+      representativePassId: r.representative_pass_id,
+      representativeDiagnosisId: r.representative_diagnosis_id,
+      status: r.status,
+    })),
+  });
 }
 
 export async function reasonerIncidentByIdHandler(id: string): Promise<Response> {

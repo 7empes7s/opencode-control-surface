@@ -98,13 +98,13 @@ describe("reasoner API tenant isolation", () => {
 
     const resA = await withTenant("tenant-a", () => reasonerJobsHandler());
     expect(resA.status).toBe(200);
-    const bodyA = await resA.json() as Array<{ workflowId: string }>;
+    const { data: bodyA } = await resA.json() as { data: Array<{ workflowId: string }> };
     expect(bodyA.length).toBe(1);
     expect(bodyA[0].workflowId).toBe("wf-a");
 
     const resB = await withTenant("tenant-b", () => reasonerJobsHandler());
     expect(resB.status).toBe(200);
-    const bodyB = await resB.json() as Array<{ workflowId: string }>;
+    const { data: bodyB } = await resB.json() as { data: Array<{ workflowId: string }> };
     expect(bodyB.length).toBe(1);
     expect(bodyB[0].workflowId).toBe("wf-b");
   });
@@ -115,13 +115,13 @@ describe("reasoner API tenant isolation", () => {
 
     const resA = await withTenant("tenant-a", () => reasonerDiagnosesHandler());
     expect(resA.status).toBe(200);
-    const bodyA = await resA.json() as Array<{ workflowId: string }>;
+    const { data: bodyA } = await resA.json() as { data: Array<{ workflowId: string }> };
     expect(bodyA.length).toBe(1);
     expect(bodyA[0].workflowId).toBe("wf-a");
 
     const resB = await withTenant("tenant-b", () => reasonerDiagnosesHandler());
     expect(resB.status).toBe(200);
-    const bodyB = await resB.json() as Array<{ workflowId: string }>;
+    const { data: bodyB } = await resB.json() as { data: Array<{ workflowId: string }> };
     expect(bodyB.length).toBe(1);
     expect(bodyB[0].workflowId).toBe("wf-b");
   });
@@ -132,13 +132,13 @@ describe("reasoner API tenant isolation", () => {
 
     const resA = await withTenant("tenant-a", () => reasonerIncidentsHandler());
     expect(resA.status).toBe(200);
-    const bodyA = await resA.json() as Array<{ title: string }>;
+    const { data: bodyA } = await resA.json() as { data: Array<{ title: string }> };
     expect(bodyA.length).toBe(1);
     expect(bodyA[0].title).toBe("Incident A");
 
     const resB = await withTenant("tenant-b", () => reasonerIncidentsHandler());
     expect(resB.status).toBe(200);
-    const bodyB = await resB.json() as Array<{ title: string }>;
+    const { data: bodyB } = await resB.json() as { data: Array<{ title: string }> };
     expect(bodyB.length).toBe(1);
     expect(bodyB[0].title).toBe("Incident B");
   });
