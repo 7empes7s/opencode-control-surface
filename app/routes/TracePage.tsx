@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { DetailDrawer } from "../components/DetailDrawer";
+import { useTableControls } from "../hooks/useTableControls";
 
 type SpanKind = "run" | "pass" | "tool" | "gateway" | "validation";
 type SpanStatus = "ok" | "error" | "cancelled";
@@ -56,119 +59,66 @@ function failCount(trace: GatewayTrace): number {
   return trace.calls.filter((c) => !c.success).length;
 }
 
-function GatewayTraceRow({
-  trace,
-  expanded,
-  onToggle,
-}: {
-  trace: GatewayTrace;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const failed = failCount(trace);
-  const callCount = trace.calls.length;
-  const title = trace.traceId ?? "(untraced call)";
-  const hasFail = failed > 0;
+function traceKey(trace: GatewayTrace): string {
+  return trace.traceId ?? `untraced-${trace.started}-${trace.calls[0]?.ts ?? 0}`;
+}
+
+function GatewayTraceDetail({ trace }: { trace: GatewayTrace }) {
   return (
-    <div style={{ borderBottom: "1px solid var(--border)" }}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="gateway-traces-row"
-        aria-expanded={expanded}
-        style={{
-          width: "100%",
-          textAlign: "left",
-          background: "transparent",
-          border: "none",
-          padding: "10px 8px",
-          color: "var(--text)",
-          cursor: "pointer",
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) auto",
-          gap: "8px 12px",
-          alignItems: "start",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
-              {title}
-            </span>
-            {trace.caller && (
-              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
-                · {trace.caller}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 12, marginTop: 4, color: "var(--text)", wordBreak: "break-word" }}>
-            {uniqueModels(trace)}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-            {callCount} call{callCount === 1 ? "" : "s"} · {trace.totalTokens.toLocaleString()} tokens · {trace.totalLatencyMs}ms · {fmtStartedAgo(trace.started)}
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-          {hasFail ? (
-            <span className="pill red">{failed} failed</span>
-          ) : (
-            <span className="pill green">all ok</span>
-          )}
-        </div>
-      </button>
-      {expanded && (
-        <div style={{ padding: "0 8px 12px 8px" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--text-dim)" }}>
-                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Logical</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Resolved</th>
-                  <th style={{ textAlign: "right", padding: "4px 6px 4px 0" }}>Latency</th>
-                  <th style={{ textAlign: "right", padding: "4px 6px 4px 0" }}>Tokens</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px 4px 0" }}>Status</th>
+    <>
+      <div className="data-row-detail-grid">
+        <div><span>Trace ID</span><strong>{trace.traceId ?? "untraced call"}</strong></div>
+        <div><span>Caller</span><strong>{trace.caller ?? "unknown"}</strong></div>
+        <div><span>Started</span><strong>{new Date(trace.started).toISOString()}</strong></div>
+        <div><span>Calls</span><strong>{trace.calls.length}</strong></div>
+        <div><span>Tokens</span><strong>{trace.totalTokens.toLocaleString()}</strong></div>
+        <div><span>Total latency</span><strong>{trace.totalLatencyMs}ms</strong></div>
+      </div>
+      <div className="evidence-block">
+        <div className="evidence-block-title">LLM calls</div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Logical</th>
+                <th>Resolved</th>
+                <th className="cell-right">Latency</th>
+                <th className="cell-right">Tokens</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trace.calls.map((call, index) => (
+                <tr key={`${call.ts}-${index}`}>
+                  <td className="mono cell-ellipsis">{fmtTsShort(call.ts)}</td>
+                  <td className="mono cell-ellipsis">{call.logicalModel}</td>
+                  <td className="mono cell-ellipsis dim">{call.resolvedModel}</td>
+                  <td className="cell-right mono">{call.latencyMs === null ? "—" : `${call.latencyMs}ms`}</td>
+                  <td className="cell-right mono">{call.tokens.toLocaleString()}</td>
+                  <td>
+                    {call.success ? (
+                      <span className="pill green">ok</span>
+                    ) : (
+                      <span className="pill red">{call.errorClass ?? "failed"}</span>
+                    )}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {trace.calls.map((c, idx) => (
-                  <tr key={`${c.ts}-${idx}`} style={{ borderBottom: "1px solid color-mix(in oklch, var(--border) 60%, transparent)" }}>
-                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
-                      {fmtTsShort(c.ts)}
-                    </td>
-                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, wordBreak: "break-word" }}>
-                      {c.logicalModel}
-                    </td>
-                    <td style={{ padding: "4px 6px 4px 0", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", wordBreak: "break-word" }}>
-                      {c.resolvedModel}
-                    </td>
-                    <td style={{ padding: "4px 6px 4px 0", textAlign: "right", fontFamily: "var(--mono)", fontSize: 10 }}>
-                      {c.latencyMs === null ? "—" : `${c.latencyMs}ms`}
-                    </td>
-                    <td style={{ padding: "4px 6px 4px 0", textAlign: "right", fontFamily: "var(--mono)", fontSize: 10 }}>
-                      {c.tokens.toLocaleString()}
-                    </td>
-                    <td style={{ padding: "4px 6px 4px 0" }}>
-                      {c.success ? (
-                        <span className="pill green">ok</span>
-                      ) : (
-                        <span className="pill red">{c.errorClass ?? "failed"}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         </div>
-      )}
-    </div>
+      </div>
+      <div className="evidence-block">
+        <div className="evidence-block-title">Raw trace</div>
+        <pre className="audit-pre detail-json">{JSON.stringify(trace, null, 2)}</pre>
+      </div>
+    </>
   );
 }
 
 function GatewayTracesSection() {
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedTrace, setSelectedTrace] = useState<GatewayTrace | null>(null);
 
   const { data, loading } = useAuthenticatedApi<GatewayTracesResponse>(
     "/api/traces/gateway",
@@ -179,9 +129,57 @@ function GatewayTracesSection() {
   const degraded = data?.degraded ?? false;
   const reason = data?.reason;
   const total = data?.total ?? 0;
+  const tracesCtrl = useTableControls<GatewayTrace, "started" | "caller" | "models" | "calls" | "tokens" | "latency" | "status">({
+    rows: traces,
+    pageSize: 10,
+    pageSizeOptions: [10, 25, 50, 100],
+    rowKey: traceKey,
+    defaultSort: { key: "started", dir: "desc" },
+    filterText: (trace) => [
+      trace.traceId,
+      trace.caller,
+      uniqueModels(trace),
+      trace.calls.map((call) => call.errorClass).filter(Boolean).join(" "),
+    ],
+    sortValue: (trace, key) => {
+      switch (key) {
+        case "started": return trace.started;
+        case "caller": return trace.caller ?? "";
+        case "models": return uniqueModels(trace);
+        case "calls": return trace.calls.length;
+        case "tokens": return trace.totalTokens;
+        case "latency": return trace.totalLatencyMs;
+        case "status": return failCount(trace);
+        default: return "";
+      }
+    },
+  });
+
+  const closeTrace = () => {
+    tracesCtrl.collapseAll();
+    setSelectedTrace(null);
+  };
 
   return (
     <SectionCard title="Gateway traces">
+      <DetailDrawer
+        open={selectedTrace !== null}
+        onClose={closeTrace}
+        kicker="gateway trace"
+        title={selectedTrace?.traceId ?? "Untraced call"}
+        summary={selectedTrace && (
+          <>
+            <span className={`pill ${failCount(selectedTrace) > 0 ? "red" : "green"}`}>
+              {failCount(selectedTrace) > 0 ? `${failCount(selectedTrace)} failed` : "all ok"}
+            </span>
+            <span className="pill">{selectedTrace.calls.length} calls</span>
+            <span className="pill">{selectedTrace.totalTokens.toLocaleString()} tokens</span>
+            {selectedTrace.caller && <span className="pill">{selectedTrace.caller}</span>}
+          </>
+        )}
+      >
+        {selectedTrace && <GatewayTraceDetail trace={selectedTrace} />}
+      </DetailDrawer>
       {loading && !data && (
         <p style={{ color: "var(--text-dim)", fontSize: 12 }}>Loading…</p>
       )}
@@ -198,20 +196,60 @@ function GatewayTracesSection() {
       {!loading && !degraded && traces.length > 0 && (
         <>
           <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>
-            {total} trace group{total === 1 ? "" : "s"} · expand a row to see each LLM call
+            {total} trace group{total === 1 ? "" : "s"} · open a row for call payloads
           </div>
-          <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-            {traces.map((t) => {
-              const key = t.traceId ?? `lone-${t.started}-${t.calls[0]?.ts ?? 0}`;
-              return (
-                <GatewayTraceRow
-                  key={key}
-                  trace={t}
-                  expanded={expanded === key}
-                  onToggle={() => setExpanded((curr) => (curr === key ? null : key))}
-                />
-              );
-            })}
+          <div className="table-wrap">
+            <TableControls {...tracesCtrl.controlsProps} searchPlaceholder="Search trace ID, caller, model, or error..." />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="expander-col" aria-label="Details" />
+                  <th {...tracesCtrl.sortHeaderProps("started")}>Started <span className="sortable-th-arrow">{tracesCtrl.sort.key === "started" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("caller")}>Caller <span className="sortable-th-arrow">{tracesCtrl.sort.key === "caller" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("models")}>Models <span className="sortable-th-arrow">{tracesCtrl.sort.key === "models" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("calls")} className="cell-right">Calls <span className="sortable-th-arrow">{tracesCtrl.sort.key === "calls" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("tokens")} className="cell-right">Tokens <span className="sortable-th-arrow">{tracesCtrl.sort.key === "tokens" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("latency")} className="cell-right">Latency <span className="sortable-th-arrow">{tracesCtrl.sort.key === "latency" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...tracesCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{tracesCtrl.sort.key === "status" ? (tracesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {tracesCtrl.rows.map((trace, index) => {
+                  const key = tracesCtrl.getRowKey(trace, index);
+                  const expanded = tracesCtrl.isExpanded(key);
+                  const failed = failCount(trace);
+                  const openTrace = () => {
+                    if (!expanded) tracesCtrl.toggleExpanded(key);
+                    setSelectedTrace(trace);
+                  };
+                  return (
+                    <tr key={key} className="data-row-clickable" onClick={openTrace}>
+                      <td className="expander-col">
+                        <button
+                          type="button"
+                          className="table-expander"
+                          aria-label="Open trace detail"
+                          aria-expanded={expanded}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openTrace();
+                          }}
+                        >
+                          <ChevronRight size={15} />
+                        </button>
+                      </td>
+                      <td className="mono cell-ellipsis" title={trace.traceId ?? "untraced call"}>{fmtStartedAgo(trace.started)}</td>
+                      <td className="cell-ellipsis" title={trace.caller ?? ""}>{trace.caller ?? "—"}</td>
+                      <td className="mono cell-ellipsis cell-wide" title={uniqueModels(trace)}>{uniqueModels(trace)}</td>
+                      <td className="cell-right mono">{trace.calls.length}</td>
+                      <td className="cell-right mono">{trace.totalTokens.toLocaleString()}</td>
+                      <td className="cell-right mono">{trace.totalLatencyMs}ms</td>
+                      <td>{failed > 0 ? <span className="pill red">{failed} failed</span> : <span className="pill green">ok</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </>
       )}
@@ -252,25 +290,6 @@ function fmtTs(ms: number) {
 function durMs(span: Span): string {
   if (!span.endMs) return "…";
   return `${span.endMs - span.startMs}ms`;
-}
-
-function SpanRow({ span, onClick, selected }: { span: Span; onClick: () => void; selected: boolean }) {
-  return (
-    <tr
-      onClick={onClick}
-      style={{ cursor: "pointer", background: selected ? "color-mix(in oklch, var(--accent) 10%, transparent)" : undefined }}
-    >
-      <td style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{span.traceId.slice(0, 8)}</td>
-      <td>
-        <span style={{ background: kindColor(span.kind), color: "#fff", borderRadius: 4, padding: "1px 6px", fontSize: 10, fontWeight: 600 }}>
-          {span.kind}
-        </span>
-      </td>
-      <td>{statusPill(span.status)}</td>
-      <td style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{durMs(span)}</td>
-      <td style={{ fontSize: 10, color: "var(--text-dim)" }}>{fmtTs(span.startMs)} UTC</td>
-    </tr>
-  );
 }
 
 function SpanDetail({ span }: { span: Span }) {
@@ -319,6 +338,32 @@ export function TracePage() {
     if (filterKind && s.kind !== filterKind) return false;
     return true;
   });
+  const spansCtrl = useTableControls<Span, "trace" | "kind" | "status" | "duration" | "start">({
+    rows: spans,
+    pageSize: 25,
+    pageSizeOptions: [10, 25, 50, 100],
+    rowKey: (span) => span.spanId,
+    defaultSort: { key: "start", dir: "desc" },
+    filterText: (span) => [
+      span.traceId,
+      span.spanId,
+      span.parentSpanId,
+      span.kind,
+      span.status,
+      span.error,
+      JSON.stringify(span.attrs),
+    ],
+    sortValue: (span, key) => {
+      switch (key) {
+        case "trace": return span.traceId;
+        case "kind": return span.kind;
+        case "status": return span.status;
+        case "duration": return span.endMs ? span.endMs - span.startMs : 0;
+        case "start": return span.startMs;
+        default: return "";
+      }
+    },
+  });
 
   const grouped = spans.reduce<Record<string, Span[]>>((acc, s) => {
     (acc[s.traceId] ??= []).push(s);
@@ -327,6 +372,24 @@ export function TracePage() {
 
   return (
     <div className="dash-page">
+      <DetailDrawer
+        open={selectedSpan !== null}
+        onClose={() => {
+          spansCtrl.collapseAll();
+          setSelectedSpan(null);
+        }}
+        kicker="builder span"
+        title={selectedSpan ? `${selectedSpan.kind} · ${selectedSpan.spanId.slice(0, 16)}` : "Span detail"}
+        summary={selectedSpan && (
+          <>
+            {statusPill(selectedSpan.status)}
+            <span className="pill">{durMs(selectedSpan)}</span>
+            <span className="pill">{fmtTs(selectedSpan.startMs)} UTC</span>
+          </>
+        )}
+      >
+        {selectedSpan && <SpanDetail span={selectedSpan} />}
+      </DetailDrawer>
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Traces</h1>
 
       <div style={{ marginBottom: 16 }}>
@@ -398,34 +461,58 @@ export function TracePage() {
               )}
 
               {spans.length > 0 && (
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <div className="table-wrap">
+                  <TableControls {...spansCtrl.controlsProps} searchPlaceholder="Search trace ID, span ID, kind, status, error, or attributes..." />
+                  <table className="data-table">
                     <thead>
-                      <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--text-dim)", fontSize: 10 }}>
-                        <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Trace</th>
-                        <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Kind</th>
-                        <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Status</th>
-                        <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Duration</th>
-                        <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Start</th>
+                      <tr>
+                        <th className="expander-col" aria-label="Details" />
+                        <th {...spansCtrl.sortHeaderProps("trace")}>Trace <span className="sortable-th-arrow">{spansCtrl.sort.key === "trace" ? (spansCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...spansCtrl.sortHeaderProps("kind")}>Kind <span className="sortable-th-arrow">{spansCtrl.sort.key === "kind" ? (spansCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...spansCtrl.sortHeaderProps("status")}>Status <span className="sortable-th-arrow">{spansCtrl.sort.key === "status" ? (spansCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...spansCtrl.sortHeaderProps("duration")}>Duration <span className="sortable-th-arrow">{spansCtrl.sort.key === "duration" ? (spansCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...spansCtrl.sortHeaderProps("start")}>Start <span className="sortable-th-arrow">{spansCtrl.sort.key === "start" ? (spansCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {spans.map((s) => (
-                        <SpanRow
-                          key={s.spanId}
-                          span={s}
-                          selected={selectedSpan?.spanId === s.spanId}
-                          onClick={() => setSelectedSpan(selectedSpan?.spanId === s.spanId ? null : s)}
-                        />
-                      ))}
+                      {spansCtrl.rows.map((span, index) => {
+                        const key = spansCtrl.getRowKey(span, index);
+                        const expanded = spansCtrl.isExpanded(key);
+                        const openSpan = () => {
+                          if (!expanded) spansCtrl.toggleExpanded(key);
+                          setSelectedSpan(span);
+                        };
+                        return (
+                          <tr
+                            key={span.spanId}
+                            className="data-row-clickable"
+                            onClick={openSpan}
+                            style={{ background: selectedSpan?.spanId === span.spanId ? "color-mix(in oklch, var(--accent) 10%, transparent)" : undefined }}
+                          >
+                            <td className="expander-col">
+                              <button
+                                type="button"
+                                className="table-expander"
+                                aria-label="Open span detail"
+                                aria-expanded={expanded}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openSpan();
+                                }}
+                              >
+                                <ChevronRight size={15} />
+                              </button>
+                            </td>
+                            <td className="mono cell-ellipsis" title={span.traceId}>{span.traceId.slice(0, 8)}</td>
+                            <td><span style={{ background: kindColor(span.kind), color: "#fff", borderRadius: 4, padding: "1px 6px", fontSize: 10, fontWeight: 600 }}>{span.kind}</span></td>
+                            <td>{statusPill(span.status)}</td>
+                            <td className="mono">{durMs(span)}</td>
+                            <td className="mono cell-ellipsis">{fmtTs(span.startMs)} UTC</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
-                </div>
-              )}
-
-              {selectedSpan && (
-                <div style={{ marginTop: 16 }}>
-                  <SpanDetail span={selectedSpan} />
                 </div>
               )}
             </SectionCard>

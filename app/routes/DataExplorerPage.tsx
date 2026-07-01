@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
-import type { FormEvent } from "react";
-import { Database, RefreshCw, Search } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Database, RefreshCw } from "lucide-react";
 import { useApi } from "../hooks/useApi";
+import { TableControls } from "../components/TableControls";
+import { useTableControls } from "../hooks/useTableControls";
 import type { DataExplorerRowsPayload, DataExplorerTablesPayload } from "../../server/api/dataExplorer";
 
 function displayValue(value: unknown): string {
@@ -12,43 +13,54 @@ function displayValue(value: unknown): string {
 }
 
 function truncate(value: string): string {
-  return value.length > 240 ? `${value.slice(0, 237)}...` : value;
+  return value.length > 120 ? `${value.slice(0, 117)}...` : value;
+}
+
+function isLongColumn(name: string): boolean {
+  return /plain_summary|json|payload|request|response|result|attrs|evidence|suggested_actions|post_mortem|resolution|reason|error/i.test(name);
+}
+
+function columnClass(name: string): string {
+  if (name === "id" || name.endsWith("_id") || name.includes("trace")) return "mono cell-ellipsis";
+  if (name === "domain" || name === "title" || name.includes("model")) return "cell-ellipsis cell-wide";
+  return "cell-ellipsis";
 }
 
 export function DataExplorerPage() {
   const [selectedTable, setSelectedTable] = useState("insights");
-  const [searchDraft, setSearchDraft] = useState("");
-  const [query, setQuery] = useState("");
-  const [offset, setOffset] = useState(0);
-  const limit = 50;
+  const limit = 200;
 
   const tables = useApi<DataExplorerTablesPayload>("/api/data-explorer/tables", 30_000);
   const rowsPath = useMemo(() => {
     const params = new URLSearchParams({
       limit: String(limit),
-      offset: String(offset),
+      offset: "0",
     });
-    if (query) params.set("q", query);
     return `/api/data-explorer/table/${encodeURIComponent(selectedTable)}?${params.toString()}`;
-  }, [selectedTable, offset, query]);
+  }, [selectedTable]);
   const rows = useApi<DataExplorerRowsPayload>(rowsPath, 30_000);
 
   const tableList = tables.data?.tables ?? [];
   const selectedInfo = rows.data?.table ?? tableList.find((table) => table.name === selectedTable) ?? null;
   const columns = rows.data?.table.columns ?? selectedInfo?.columns ?? [];
   const total = rows.data?.total ?? 0;
-  const canPrev = offset > 0;
-  const canNext = offset + limit < total;
+  const visibleColumns = useMemo(() => {
+    const compact = columns.filter((column) => !isLongColumn(column.name));
+    return (compact.length > 0 ? compact : columns).slice(0, 8);
+  }, [columns]);
+  const tableRows = rows.data?.rows ?? [];
+  const rowControls = useTableControls<Record<string, unknown>, string>({
+    rows: tableRows,
+    pageSize: 25,
+    pageSizeOptions: [10, 25, 50, 100],
+    rowKey: (row) => `${selectedTable}:${displayValue(row.id) || tableRows.indexOf(row)}`,
+    filterText: (row) => columns.map((column) => displayValue(row[column.name])),
+    sortValue: (row, key) => displayValue(row[key]),
+  });
 
   function chooseTable(name: string) {
     setSelectedTable(name);
-    setOffset(0);
-  }
-
-  function applySearch(event: FormEvent) {
-    event.preventDefault();
-    setQuery(searchDraft.trim());
-    setOffset(0);
+    rowControls.collapseAll();
   }
 
   return (
@@ -103,24 +115,17 @@ export function DataExplorerPage() {
         </aside>
 
         <div style={{ minWidth: 0, display: "grid", gap: 12, alignContent: "start" }}>
-          <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
             <div>
               <div className="dash-section-title">{selectedInfo?.name ?? selectedTable}</div>
               <strong>{selectedInfo?.label ?? selectedTable}</strong>
               {selectedInfo?.description && <div className="dim" style={{ marginTop: 4 }}>{selectedInfo.description}</div>}
             </div>
-            <form onSubmit={applySearch} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <input
-                value={searchDraft}
-                onChange={(event) => setSearchDraft(event.currentTarget.value)}
-                placeholder="Search rows"
-                style={{ minHeight: 44, minWidth: 220 }}
-              />
-              <button type="submit" className="btn btn-ghost" style={{ minHeight: 44 }}>
-                <Search size={15} />
-                Search
-              </button>
-            </form>
+            {total > limit && (
+              <span className="pill amber" title="The read-only endpoint safely caps each explorer read.">
+                first {limit} of {total}
+              </span>
+            )}
           </div>
 
           {rows.loading && !rows.data ? (
@@ -131,62 +136,80 @@ export function DataExplorerPage() {
             <div className="empty-state">
               <Database size={24} />
               <strong>No rows.</strong>
-              <span>{query ? "No rows match the current search." : "This dataset has no rows yet."}</span>
+              <span>This dataset has no rows in the current read window.</span>
             </div>
           ) : (
             <div className="table-wrap">
+              <TableControls {...rowControls.controlsProps} searchPlaceholder="Search visible rows by ID, domain, model, status, summary..." />
               <table className="data-table">
                 <thead>
                   <tr>
-                    {columns.map((column) => (
-                      <th key={column.name}>
+                    <th className="expander-col" aria-label="Details" />
+                    {visibleColumns.map((column) => (
+                      <th key={column.name} {...rowControls.sortHeaderProps(column.name)}>
                         {column.name}
+                        <span className="sortable-th-arrow">
+                          {rowControls.sort.key === column.name ? (rowControls.sort.dir === "asc" ? "▲" : "▼") : "⇅"}
+                        </span>
                         {column.redacted && <span className="pill amber" style={{ marginLeft: 6 }}>redacted</span>}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {(rows.data?.rows ?? []).map((row, index) => (
-                    <tr key={`${selectedTable}:${offset + index}`}>
-                      {columns.map((column) => (
-                        <td key={column.name} className={column.name === "id" ? "mono" : undefined}>
+                  {rowControls.rows.map((row, index) => {
+                    const key = rowControls.getRowKey(row, index);
+                    const expanded = rowControls.isExpanded(key);
+                    return (
+                    <Fragment key={key}>
+                    <tr key={key} className="data-row-clickable" onClick={() => rowControls.toggleExpanded(key)}>
+                      <td className="expander-col">
+                        <button
+                          type="button"
+                          className="table-expander"
+                          aria-label={expanded ? "Collapse row detail" : "Expand row detail"}
+                          aria-expanded={expanded}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            rowControls.toggleExpanded(key);
+                          }}
+                        >
+                          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                        </button>
+                      </td>
+                      {visibleColumns.map((column) => (
+                        <td key={column.name} className={columnClass(column.name)} title={displayValue(row[column.name])}>
                           {truncate(displayValue(row[column.name]))}
                         </td>
                       ))}
                     </tr>
-                  ))}
+                    {expanded && (
+                      <tr key={`${key}:detail`} className="data-row-detail">
+                        <td colSpan={visibleColumns.length + 1}>
+                          <div className="data-row-detail-inner">
+                            <div className="data-row-detail-grid">
+                              {columns.map((column) => (
+                                <div key={column.name}>
+                                  <span>{column.name}</span>
+                                  <strong>{displayValue(row[column.name]) || "—"}</strong>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="evidence-block">
+                              <div className="evidence-block-title">Raw row</div>
+                              <pre className="audit-pre detail-json">{JSON.stringify(row, null, 2)}</pre>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
-
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <div className="mono dim">
-              {total === 0 ? "0 rows" : `${offset + 1}-${Math.min(offset + limit, total)} of ${total}`}
-              {query ? ` · q=${query}` : ""}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={!canPrev}
-                onClick={() => setOffset(Math.max(0, offset - limit))}
-                style={{ minHeight: 44 }}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={!canNext}
-                onClick={() => setOffset(offset + limit)}
-                style={{ minHeight: 44 }}
-              >
-                Next
-              </button>
-            </div>
-          </div>
         </div>
       </section>
     </div>

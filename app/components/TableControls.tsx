@@ -14,6 +14,8 @@ export function TableControls({
   page,
   pageCount,
   pageSize,
+  pageSizeOptions,
+  setPageSize,
   startRow,
   endRow,
   canPreviousPage,
@@ -47,6 +49,18 @@ export function TableControls({
             {totalRows} total
           </span>
         )}
+        <label className="table-page-size">
+          <span>Rows</span>
+          <select
+            value={pageSize}
+            onChange={(event) => setPageSize(Number(event.target.value))}
+            aria-label="Rows per page"
+          >
+            {pageSizeOptions.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="table-controls-pagination" aria-label="Table pagination">

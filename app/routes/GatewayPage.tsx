@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { Download, RefreshCw, Route, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
+import { ChevronRight, Download, RefreshCw, Route, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { TableControls } from "../components/TableControls";
+import { DetailDrawer } from "../components/DetailDrawer";
+import { useTableControls } from "../hooks/useTableControls";
 
 type CircuitState = "closed" | "open" | "half-open";
 
@@ -127,6 +130,7 @@ export function GatewayPage() {
   const [sinceHours, setSinceHours] = useState(24);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
+  const [selectedCall, setSelectedCall] = useState<LedgerRow | null>(null);
   const since = Date.now() - sinceHours * 3_600_000;
 
   const { data: statusData, loading: statusLoading, error: statusError, refresh: refreshStatus } = useApi<GatewayStatus>("/api/gateway/status", 15_000);
@@ -138,6 +142,35 @@ export function GatewayPage() {
   const status = statusData;
   const stats = statsData;
   const rows = ledgerData?.rows ?? [];
+  const callsCtrl = useTableControls<LedgerRow, "ts" | "logical_model" | "resolved_model" | "tokens" | "latency_ms" | "cost_estimate_usd" | "success" | "tier">({
+    rows,
+    pageSize: 25,
+    pageSizeOptions: [10, 25, 50, 100],
+    rowKey: (row) => String(row.id),
+    defaultSort: { key: "ts", dir: "desc" },
+    filterText: (row) => [
+      row.id,
+      row.logical_model,
+      row.resolved_model,
+      row.tier,
+      row.error_class,
+      row.trace_id,
+      row.success ? "ok success" : "error failed",
+    ],
+    sortValue: (row, key) => {
+      switch (key) {
+        case "ts": return row.ts;
+        case "logical_model": return row.logical_model;
+        case "resolved_model": return row.resolved_model;
+        case "tokens": return (row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0);
+        case "latency_ms": return row.latency_ms ?? 0;
+        case "cost_estimate_usd": return row.cost_estimate_usd ?? 0;
+        case "success": return row.success;
+        case "tier": return row.tier;
+        default: return "";
+      }
+    },
+  });
   const loading = statusLoading || statsLoading || ledgerLoading;
   const initialLoading = loading && !status && !stats && !ledgerData;
   const refreshing = loading && !initialLoading;
@@ -195,6 +228,42 @@ export function GatewayPage() {
 
   return (
     <div className="dash-page">
+      <DetailDrawer
+        open={selectedCall !== null}
+        onClose={() => {
+          callsCtrl.collapseAll();
+          setSelectedCall(null);
+        }}
+        kicker="gateway call"
+        title={selectedCall ? `${selectedCall.logical_model} · #${selectedCall.id}` : "Gateway call"}
+        summary={selectedCall && (
+          <>
+            {selectedCall.success ? <span className="pill green">ok</span> : <span className="pill red">{selectedCall.error_class ?? "error"}</span>}
+            <span className="pill">{fmtLatency(selectedCall.latency_ms)}</span>
+            <span className="pill">{fmtCost(selectedCall.cost_estimate_usd)}</span>
+            {selectedCall.trace_id && <span className="pill">{selectedCall.trace_id}</span>}
+          </>
+        )}
+      >
+        {selectedCall && (
+          <>
+            <div className="data-row-detail-grid">
+              <div><span>Time</span><strong>{fmtTs(selectedCall.ts)}</strong></div>
+              <div><span>Logical model</span><strong>{selectedCall.logical_model}</strong></div>
+              <div><span>Resolved model</span><strong>{selectedCall.resolved_model}</strong></div>
+              <div><span>Tier</span><strong>{selectedCall.tier}</strong></div>
+              <div><span>Tokens</span><strong>{selectedCall.prompt_tokens != null ? `${selectedCall.prompt_tokens}+${selectedCall.completion_tokens ?? 0}` : "—"}</strong></div>
+              <div><span>Latency</span><strong>{fmtLatency(selectedCall.latency_ms)}</strong></div>
+              <div><span>Cost</span><strong>{fmtCost(selectedCall.cost_estimate_usd)}</strong></div>
+              <div><span>Trace ID</span><strong>{selectedCall.trace_id ?? "—"}</strong></div>
+            </div>
+            <div className="evidence-block">
+              <div className="evidence-block-title">Raw call</div>
+              <pre className="audit-pre detail-json">{JSON.stringify(selectedCall, null, 2)}</pre>
+            </div>
+          </>
+        )}
+      </DetailDrawer>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Gateway</h1>
         <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
@@ -487,31 +556,54 @@ export function GatewayPage() {
           {rows.length === 0 ? (
             <p style={{ fontSize: 12, color: "var(--text-dim)", margin: 0 }}>No gateway calls recorded yet.</p>
           ) : (
-            <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+            <div className="table-wrap">
+            <TableControls {...callsCtrl.controlsProps} searchPlaceholder="Search model, tier, trace ID, status, or error..." />
+            <table className="data-table">
               <thead>
-                <tr style={{ color: "var(--text-dim)", borderBottom: "1px solid var(--border)" }}>
-                  <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Model</th>
-                  <th style={{ textAlign: "left", padding: "4px 8px 4px 0" }}>Resolved</th>
-                  <th style={{ textAlign: "right", padding: "4px 8px 4px 0" }}>Tokens</th>
-                  <th style={{ textAlign: "right", padding: "4px 8px 4px 0" }}>Latency</th>
-                  <th style={{ textAlign: "right", padding: "4px 8px 4px 0" }}>Cost</th>
-                  <th style={{ textAlign: "left", padding: "4px 0 4px 8px" }}>Status</th>
+                <tr>
+                  <th className="expander-col" aria-label="Details" />
+                  <th {...callsCtrl.sortHeaderProps("ts")}>Time <span className="sortable-th-arrow">{callsCtrl.sort.key === "ts" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("logical_model")}>Model <span className="sortable-th-arrow">{callsCtrl.sort.key === "logical_model" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("resolved_model")}>Resolved <span className="sortable-th-arrow">{callsCtrl.sort.key === "resolved_model" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("tokens")} className="cell-right">Tokens <span className="sortable-th-arrow">{callsCtrl.sort.key === "tokens" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("latency_ms")} className="cell-right">Latency <span className="sortable-th-arrow">{callsCtrl.sort.key === "latency_ms" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("cost_estimate_usd")} className="cell-right">Cost <span className="sortable-th-arrow">{callsCtrl.sort.key === "cost_estimate_usd" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  <th {...callsCtrl.sortHeaderProps("success")}>Status <span className="sortable-th-arrow">{callsCtrl.sort.key === "success" ? (callsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} style={{ borderBottom: "1px solid color-mix(in oklch, var(--border) 40%, transparent)" }}>
-                    <td style={{ color: "var(--text-dim)", padding: "3px 8px 3px 0", fontFamily: "var(--mono)" }}>{fmtTs(row.ts)}</td>
-                    <td style={{ fontFamily: "var(--mono)", padding: "3px 8px 3px 0", overflowWrap: "anywhere" }}>{row.logical_model}</td>
-                    <td style={{ fontFamily: "var(--mono)", padding: "3px 8px 3px 0", color: "var(--text-dim)", overflowWrap: "anywhere" }}>{row.resolved_model !== row.logical_model ? row.resolved_model : "—"}</td>
-                    <td style={{ textAlign: "right", padding: "3px 8px 3px 0" }}>
+                {callsCtrl.rows.map((row, index) => {
+                  const key = callsCtrl.getRowKey(row, index);
+                  const expanded = callsCtrl.isExpanded(key);
+                  const openCall = () => {
+                    if (!expanded) callsCtrl.toggleExpanded(key);
+                    setSelectedCall(row);
+                  };
+                  return (
+                  <tr key={row.id} className="data-row-clickable" onClick={openCall}>
+                    <td className="expander-col">
+                      <button
+                        type="button"
+                        className="table-expander"
+                        aria-label="Open call detail"
+                        aria-expanded={expanded}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openCall();
+                        }}
+                      >
+                        <ChevronRight size={15} />
+                      </button>
+                    </td>
+                    <td className="mono cell-ellipsis dim" title={fmtTs(row.ts)}>{fmtTs(row.ts)}</td>
+                    <td className="mono cell-ellipsis cell-wide" title={row.logical_model}>{row.logical_model}</td>
+                    <td className="mono cell-ellipsis dim" title={row.resolved_model}>{row.resolved_model !== row.logical_model ? row.resolved_model : "—"}</td>
+                    <td className="cell-right mono">
                       {row.prompt_tokens != null ? `${row.prompt_tokens}+${row.completion_tokens ?? 0}` : "—"}
                     </td>
-                    <td style={{ textAlign: "right", padding: "3px 8px 3px 0" }}>{fmtLatency(row.latency_ms)}</td>
-                    <td style={{ textAlign: "right", padding: "3px 8px 3px 0" }}>{fmtCost(row.cost_estimate_usd)}</td>
-                    <td style={{ padding: "3px 0 3px 8px" }}>
+                    <td className="cell-right mono">{fmtLatency(row.latency_ms)}</td>
+                    <td className="cell-right mono">{fmtCost(row.cost_estimate_usd)}</td>
+                    <td>
                       {row.success ? (
                         <span className="pill green">ok</span>
                       ) : (
@@ -519,7 +611,8 @@ export function GatewayPage() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             </div>

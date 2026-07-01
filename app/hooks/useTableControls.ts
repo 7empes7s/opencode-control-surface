@@ -16,6 +16,8 @@ export interface TableControlsPropsFromHook {
   page: number;
   pageCount: number;
   pageSize: number;
+  pageSizeOptions: number[];
+  setPageSize: (pageSize: number) => void;
   startRow: number;
   endRow: number;
   canPreviousPage: boolean;
@@ -28,6 +30,8 @@ export interface TableControlsPropsFromHook {
 interface UseTableControlsOptions<T, K extends string> {
   rows: T[];
   pageSize?: number;
+  pageSizeOptions?: number[];
+  rowKey?: (row: T) => string;
   defaultSort?: TableSortState<K>;
   filter?: (row: T, query: string) => boolean;
   filterText?: (row: T) => TableSortValue | TableSortValue[];
@@ -73,6 +77,8 @@ function defaultFilter<T>(row: T, query: string, filterText?: (row: T) => TableS
 export function useTableControls<T, K extends string>({
   rows,
   pageSize = 25,
+  pageSizeOptions = [10, 25, 50, 100],
+  rowKey,
   defaultSort = { key: null, dir: "asc" },
   filter,
   filterText,
@@ -81,9 +87,23 @@ export function useTableControls<T, K extends string>({
 }: UseTableControlsOptions<T, K>) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [currentPageSize, setCurrentPageSize] = useState(pageSize);
   const [sort, setSort] = useState<TableSortState<K>>(defaultSort);
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
 
   const normalizedQuery = query.trim().toLowerCase();
+  const normalizedPageSizeOptions = useMemo(() => {
+    const seen = new Set<number>();
+    const options = [...pageSizeOptions, currentPageSize]
+      .map((option) => Math.floor(Number(option)))
+      .filter((option) => Number.isFinite(option) && option > 0)
+      .filter((option) => {
+        if (seen.has(option)) return false;
+        seen.add(option);
+        return true;
+      });
+    return options.length > 0 ? options : [currentPageSize];
+  }, [currentPageSize, pageSizeOptions]);
 
   const filteredRows = useMemo(() => {
     if (!normalizedQuery) return rows;
@@ -108,16 +128,16 @@ export function useTableControls<T, K extends string>({
     });
   }, [filteredRows, sort, sortValue, tieBreak]);
 
-  const pageCount = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const pageCount = Math.max(1, Math.ceil(sortedRows.length / currentPageSize));
   const safePage = Math.min(page, pageCount);
-  const startIndex = (safePage - 1) * pageSize;
-  const paginatedRows = sortedRows.slice(startIndex, startIndex + pageSize);
+  const startIndex = (safePage - 1) * currentPageSize;
+  const paginatedRows = sortedRows.slice(startIndex, startIndex + currentPageSize);
   const startRow = sortedRows.length === 0 ? 0 : startIndex + 1;
-  const endRow = Math.min(startIndex + pageSize, sortedRows.length);
+  const endRow = Math.min(startIndex + currentPageSize, sortedRows.length);
 
   useEffect(() => {
     setPage(1);
-  }, [normalizedQuery, sort.key, sort.dir, pageSize]);
+  }, [normalizedQuery, sort.key, sort.dir, currentPageSize]);
 
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
@@ -135,6 +155,11 @@ export function useTableControls<T, K extends string>({
     setPage((current) => Math.max(current - 1, 1));
   }, []);
 
+  const setPageSize = useCallback((nextPageSize: number) => {
+    const safePageSize = Math.max(1, Math.floor(Number(nextPageSize)));
+    if (Number.isFinite(safePageSize)) setCurrentPageSize(safePageSize);
+  }, []);
+
   const onSort = useCallback((key: K) => {
     setSort((current) => {
       if (current.key !== key) return { key, dir: "asc" };
@@ -149,6 +174,27 @@ export function useTableControls<T, K extends string>({
     "aria-sort": sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
   } as const), [onSort, sort]);
 
+  const getRowKey = useCallback((row: T, index?: number) => {
+    if (rowKey) return rowKey(row);
+    const rowIndex = rows.indexOf(row);
+    return String(rowIndex >= 0 ? rowIndex : index ?? "");
+  }, [rowKey, rows]);
+
+  const isExpanded = useCallback((key: string) => expandedKeys.has(key), [expandedKeys]);
+
+  const toggleExpanded = useCallback((key: string) => {
+    setExpandedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const collapseAll = useCallback(() => {
+    setExpandedKeys(new Set());
+  }, []);
+
   const controlsProps: TableControlsPropsFromHook = {
     query,
     onQueryChange: setQuery,
@@ -156,7 +202,9 @@ export function useTableControls<T, K extends string>({
     filteredRows: filteredRows.length,
     page: safePage,
     pageCount,
-    pageSize,
+    pageSize: currentPageSize,
+    pageSizeOptions: normalizedPageSizeOptions,
+    setPageSize,
     startRow,
     endRow,
     canPreviousPage: safePage > 1,
@@ -178,7 +226,9 @@ export function useTableControls<T, K extends string>({
     sortHeaderProps,
     page: safePage,
     pageCount,
-    pageSize,
+    pageSize: currentPageSize,
+    setPageSize,
+    pageSizeOptions: normalizedPageSizeOptions,
     totalRows: rows.length,
     filteredCount: filteredRows.length,
     startRow,
@@ -188,6 +238,11 @@ export function useTableControls<T, K extends string>({
     previousPage,
     nextPage,
     goToPage,
+    getRowKey,
+    isExpanded,
+    toggleExpanded,
+    collapseAll,
+    expandedKeys,
     controlsProps,
   };
 }
