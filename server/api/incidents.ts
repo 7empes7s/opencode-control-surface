@@ -5,6 +5,7 @@ import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { executeActionHandler } from "./execute.ts";
+import { complete } from "../gateway/client.ts";
 
 export interface IncidentEntry {
   ts: number;
@@ -33,12 +34,17 @@ export interface ReasonerIncidentEntry {
   status: string;
   acknowledgedAt: number | null;
   resolvedAt: number | null;
+  mitigatedAt: number | null;
   postMortem: string | null;
   rootCause: string | null;
   suggestedActions: unknown[];
   evidence: unknown;
   diagnosisHref: string;
   passEvidenceHref: string;
+}
+
+export interface IncidentPostMortemSuggestion {
+  suggestion: string;
 }
 
 export interface IncidentSlaMetrics {
@@ -76,6 +82,7 @@ type ReasonerIncidentRow = {
   status: string;
   acknowledged_at: number | null;
   resolved_at: number | null;
+  mitigated_at: number | null;
   post_mortem: string | null;
   root_cause: string | null;
   suggested_actions_json: string | null;
@@ -83,6 +90,8 @@ type ReasonerIncidentRow = {
 };
 
 const SLA_BREACH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const POST_MORTEM_SUGGESTION_MODEL = "editorial-heavy";
+const POST_MORTEM_SUGGESTION_TIMEOUT_MS = 20_000;
 
 function parseJsonField(value: string | null, fallback: unknown): unknown {
   if (!value) return fallback;
@@ -91,6 +100,70 @@ function parseJsonField(value: string | null, fallback: unknown): unknown {
   } catch {
     return fallback;
   }
+}
+
+function compactText(value: unknown, max = 700): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function parseLlmTextContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") return part.text;
+      return "";
+    })
+    .join("\n")
+    .trim();
+}
+
+function safeIso(ts: number | null | undefined): string {
+  if (!ts || !Number.isFinite(ts)) return "unknown";
+  return new Date(ts).toISOString();
+}
+
+function buildPostMortemTemplate(row: ReasonerIncidentRow): string {
+  const rootCause = compactText(row.root_cause, 280) || "No representative RCA has been recorded yet.";
+  const evidence = compactText(row.evidence_json, 420) || "No representative signals are available.";
+  return [
+    `${row.title} was tracked as a ${row.failure_class} incident with ${row.occurrence_count} occurrence${row.occurrence_count === 1 ? "" : "s"}.`,
+    `It was first seen at ${safeIso(row.first_seen)} and last seen at ${safeIso(row.last_seen)}; current status is ${row.status}.`,
+    `The recorded RCA is: ${rootCause}`,
+    `Representative signals: ${evidence}`,
+    "Suggested follow-up: confirm the remediation held, capture any operator action in the audit trail, and watch for recurrence over the next scheduler cycle.",
+  ].join(" ");
+}
+
+function buildSuggestionPrompt(row: ReasonerIncidentRow): string {
+  const timeline = [
+    `First seen: ${safeIso(row.first_seen)}`,
+    `Last seen: ${safeIso(row.last_seen)}`,
+    `Acknowledged: ${safeIso(row.acknowledged_at)}`,
+    `Mitigated: ${safeIso(row.mitigated_at)}`,
+    `Resolved: ${safeIso(row.resolved_at)}`,
+  ].join("\n");
+
+  return [
+    "You draft concise, factual post-mortem notes for an internal AI operations control surface.",
+    "Use only the incident data below. Do not invent services, people, external impact, or actions.",
+    "Write 4-6 plain-English sentences. Cover what happened, likely cause, timeline, representative signals, and one follow-up.",
+    "Output text only. No markdown headings, bullets, JSON, or preamble.",
+    "",
+    `Incident ID: ${row.id}`,
+    `Title: ${row.title}`,
+    `Failure class: ${row.failure_class}`,
+    `Status: ${row.status}`,
+    `Occurrence count: ${row.occurrence_count}`,
+    `Representative pass: ${row.representative_pass_id}`,
+    `Representative diagnosis: ${row.representative_diagnosis_id}`,
+    "Timeline:",
+    timeline,
+    `RCA: ${compactText(row.root_cause, 900) || "(none recorded)"}`,
+    `Suggested actions: ${compactText(row.suggested_actions_json, 900) || "[]"}`,
+    `Representative signals: ${compactText(row.evidence_json, 1400) || "(none recorded)"}`,
+  ].join("\n");
 }
 
 function isIncidentGrade(insight: Insight): boolean {
@@ -133,7 +206,7 @@ function getReasonerRows(): ReasonerIncidentRow[] {
   return db.query(`
     SELECT i.id, i.cluster_key, i.failure_class, i.title, i.first_seen, i.last_seen,
            i.occurrence_count, i.representative_pass_id, i.representative_diagnosis_id,
-           i.status, i.acknowledged_at, i.resolved_at, i.post_mortem,
+           i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at, i.post_mortem,
            d.root_cause, d.suggested_actions_json, d.evidence_json
     FROM reasoner_incidents i
     LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
@@ -186,6 +259,7 @@ function mapReasonerIncident(row: ReasonerIncidentRow): ReasonerIncidentEntry {
     status: row.status,
     acknowledgedAt: row.acknowledged_at ?? null,
     resolvedAt: row.resolved_at ?? null,
+    mitigatedAt: row.mitigated_at ?? null,
     postMortem: row.post_mortem ?? null,
     rootCause: row.root_cause ?? null,
     suggestedActions: parseJsonField(row.suggested_actions_json, []) as unknown[],
@@ -240,6 +314,14 @@ export async function incidentAckHandler(id: string): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ actionId: `acknowledge:incident:${id}` }),
+  }));
+}
+
+export async function incidentMitigateHandler(id: string): Promise<Response> {
+  return executeActionHandler(new Request("http://control.local/api/actions/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ actionId: `mitigate:incident:${id}` }),
   }));
 }
 
@@ -316,6 +398,84 @@ export async function incidentPostMortemHandler(id: string, req: Request): Promi
   });
 
   return new Response(JSON.stringify({ ok: true, postMortem, message: "post-mortem saved" }), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export async function incidentSuggestPostMortemHandler(id: string): Promise<Response> {
+  if (!isDashboardDbEnabled()) {
+    const envelope: ApiEnvelope<IncidentPostMortemSuggestion> = ok({ suggestion: "" }, { incidents: "error" });
+    return new Response(JSON.stringify(envelope), { headers: { "Content-Type": "application/json" } });
+  }
+  const db = getDashboardDb();
+  if (!db) {
+    const envelope: ApiEnvelope<IncidentPostMortemSuggestion> = ok({ suggestion: "" }, { incidents: "error" });
+    return new Response(JSON.stringify(envelope), { headers: { "Content-Type": "application/json" } });
+  }
+
+  const tenantId = getCurrentTenantContext().tenantId;
+  const row = db.query(`
+    SELECT i.id, i.cluster_key, i.failure_class, i.title, i.first_seen, i.last_seen,
+           i.occurrence_count, i.representative_pass_id, i.representative_diagnosis_id,
+           i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at, i.post_mortem,
+           d.root_cause, d.suggested_actions_json, d.evidence_json
+    FROM reasoner_incidents i
+    LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
+    WHERE i.id = ? AND (i.tenant_id = ? OR i.tenant_id IS NULL)
+    LIMIT 1
+  `).get(id, tenantId) as ReasonerIncidentRow | null;
+
+  if (!row) {
+    return new Response(JSON.stringify({ ok: false, error: "incident not found" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const fallback = buildPostMortemTemplate(row);
+  let suggestion = fallback;
+  let source: "ai" | "template" = "template";
+  let errorMessage: string | null = null;
+
+  try {
+    const response = await complete(
+      POST_MORTEM_SUGGESTION_MODEL,
+      [{ role: "user", content: buildSuggestionPrompt(row) }],
+      {
+        temperature: 0.2,
+        maxTokens: 420,
+        timeoutMs: POST_MORTEM_SUGGESTION_TIMEOUT_MS,
+        caller: "incident-postmortem-suggest",
+      },
+    );
+    const content = parseLlmTextContent(response.choices?.[0]?.message?.content);
+    if (content.length > 0) {
+      suggestion = content.slice(0, 5000);
+      source = "ai";
+    }
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : String(err);
+  }
+
+  try {
+    writeActionAudit({
+      actionKind: "post-mortem.incident.suggest",
+      actionId: `suggest-postmortem:incident:${id}`,
+      targetType: "incident",
+      targetId: id,
+      risk: "low",
+      request: { model: POST_MORTEM_SUGGESTION_MODEL },
+      result: source === "ai" ? "AI post-mortem suggestion generated" : "template post-mortem suggestion generated",
+      resultStatus: "success",
+      resultJson: { source, suggestionLength: suggestion.length },
+      error: errorMessage ? errorMessage.slice(0, 400) : undefined,
+    });
+  } catch {
+    /* Audit is best-effort; a draft suggestion must never fail because of audit storage. */
+  }
+
+  const envelope: ApiEnvelope<IncidentPostMortemSuggestion> = ok({ suggestion });
+  return new Response(JSON.stringify(envelope), {
     headers: { "Content-Type": "application/json" },
   });
 }

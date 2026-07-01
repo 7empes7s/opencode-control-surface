@@ -34,7 +34,14 @@ import {
 import { newsBitesHandler } from "./newsbites.ts";
 import { deleteArticleHandler, articleDossierPathHandler, refreshArticleImageHandler, uploadArticleImageHandler } from "./newsbites-actions.ts";
 import { infraHandler } from "./infra.ts";
-import { incidentAckHandler, incidentPostMortemHandler, incidentResolveHandler, incidentsHandler } from "./incidents.ts";
+import {
+  incidentAckHandler,
+  incidentMitigateHandler,
+  incidentPostMortemHandler,
+  incidentResolveHandler,
+  incidentSuggestPostMortemHandler,
+  incidentsHandler,
+} from "./incidents.ts";
 import { streamHandler } from "./stream.ts";
 import { actionCatalogHandler } from "./actionDescriptors.ts";
 import { actionAuditHandler, auditExportHandler } from "./audit.ts";
@@ -746,6 +753,18 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return incidentResolveHandler(decodeURIComponent(incidentResolveMatch[1]), req);
+  }
+  const incidentMitigateMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/mitigate$/);
+  if (method === "POST" && incidentMitigateMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentMitigateHandler(decodeURIComponent(incidentMitigateMatch[1]));
+  }
+  const incidentSuggestPostMortemMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/suggest-postmortem$/);
+  if (method === "POST" && incidentSuggestPostMortemMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentSuggestPostMortemHandler(decodeURIComponent(incidentSuggestPostMortemMatch[1]));
   }
   const incidentPostMortemMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/post-mortem$/);
   if (method === "POST" && incidentPostMortemMatch) {

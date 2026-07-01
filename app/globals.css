@@ -2743,6 +2743,48 @@ body {
 }
 
 /* Sortable headers */
+.incident-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.incident-field > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-weight: 700;
+}
+.incident-text-input,
+.incident-textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--bg-panel) 92%, white 4%);
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.45;
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 6%, transparent);
+}
+.incident-textarea {
+  resize: vertical;
+  min-height: 118px;
+}
+.incident-text-input:focus,
+.incident-textarea:focus {
+  outline: 2px solid color-mix(in oklch, var(--accent) 28%, transparent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+  background: var(--bg-panel);
+}
+.incidents-workflow-table .data-row-detail td {
+  overflow: visible;
+  max-width: none;
+}
+
 .data-table thead th { position: sticky; top: 0; z-index: 1; }
 .sortable-th { cursor: pointer; user-select: none; transition: color .12s ease, background-color .12s ease; }
 .sortable-th:hover { color: var(--text); background: color-mix(in oklch, white 5%, transparent); }

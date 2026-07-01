@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, Clock3, ExternalLink, FileText, Save, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { useTableControls } from "../hooks/useTableControls";
+import { authFetch } from "../lib/authFetch";
 import type { IncidentsDetail, IncidentEntry, ReasonerIncidentEntry } from "../../server/api/incidents";
 
 type IncidentsSortKey = "ts" | "severity" | "stage";
+type ReasonerIncidentSortKey = "lastSeen" | "status" | "count" | "failureClass";
 
 function severityRank(entry: IncidentEntry): number {
   if (entry.severity === "error" && entry.errorType === "critical") return 3;
@@ -81,25 +83,58 @@ function IncidentLifecycleCard({
   onChanged: () => void;
 }) {
   const ack = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/ack`);
+  const mitigate = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/mitigate`);
   const resolve = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/resolve`);
   const savePostMortem = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/post-mortem`);
   const [note, setNote] = useState(incident.postMortem ?? "");
+  const [resolveReason, setResolveReason] = useState("Resolved from incidents page");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
 
   useEffect(() => {
     setNote(incident.postMortem ?? "");
+    setSuggestionNote(null);
   }, [incident.id, incident.postMortem]);
 
   async function acknowledge() {
     if (await ack.run()) onChanged();
   }
 
+  async function mitigateIncident() {
+    if (await mitigate.run()) onChanged();
+  }
+
   async function resolveIncident() {
     if (!window.confirm(`Resolve ${incident.title}?`)) return;
-    if (await resolve.run({ reason: "Resolved from incidents page" })) onChanged();
+    if (await resolve.run({ reason: resolveReason })) onChanged();
   }
 
   async function saveNote() {
     if (await savePostMortem.run({ postMortem: note })) onChanged();
+  }
+
+  async function suggestPostMortem() {
+    setSuggesting(true);
+    setSuggestionNote(null);
+    try {
+      const res = await authFetch(`/api/incidents/${encodeURIComponent(incident.id)}/suggest-postmortem`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const json = await res.json() as { data?: { suggestion?: string }; error?: string };
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      const suggestion = json.data?.suggestion ?? "";
+      if (suggestion.trim()) {
+        setNote(suggestion);
+        setSuggestionNote("AI draft inserted. Review or edit before saving.");
+      } else {
+        setSuggestionNote("No draft was available; the note remains editable.");
+      }
+    } catch (err) {
+      setSuggestionNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSuggesting(false);
+    }
   }
 
   return (
@@ -129,6 +164,16 @@ function IncidentLifecycleCard({
           <button
             type="button"
             className="btn btn-ghost"
+            onClick={mitigateIncident}
+            disabled={mitigate.loading || incident.status === "resolved" || incident.mitigatedAt !== null}
+            style={{ minHeight: 44 }}
+          >
+            <ShieldCheck size={15} />
+            {incident.mitigatedAt ? "Mitigating" : "Mitigate"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
             onClick={resolveIncident}
             disabled={resolve.loading || incident.status === "resolved"}
             style={{ minHeight: 44 }}
@@ -139,11 +184,11 @@ function IncidentLifecycleCard({
         </div>
       </div>
 
-      {(ack.error || resolve.error || savePostMortem.error) && (
-        <div className="loading-dim error">{ack.error ?? resolve.error ?? savePostMortem.error}</div>
+      {(ack.error || mitigate.error || resolve.error || savePostMortem.error) && (
+        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? savePostMortem.error}</div>
       )}
-      {(ack.success || resolve.success || savePostMortem.success) && (
-        <div className="loading-dim">{ack.success ?? resolve.success ?? savePostMortem.success}</div>
+      {(ack.success || mitigate.success || resolve.success || savePostMortem.success) && (
+        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? savePostMortem.success}</div>
       )}
 
       <div className="insights-message" style={{ alignItems: "flex-start" }}>
@@ -165,7 +210,17 @@ function IncidentLifecycleCard({
         </div>
       </div>
 
-      <label style={{ display: "grid", gap: 8 }}>
+      <label className="incident-field">
+        <span>Resolve reason</span>
+        <input
+          value={resolveReason}
+          onChange={(event) => setResolveReason(event.currentTarget.value)}
+          className="incident-text-input"
+          placeholder="Reason recorded when resolving"
+        />
+      </label>
+
+      <label className="incident-field">
         <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700 }}>
           <FileText size={15} />
           Post-mortem note
@@ -174,15 +229,30 @@ function IncidentLifecycleCard({
           value={note}
           onChange={(event) => setNote(event.currentTarget.value)}
           rows={4}
-          style={{ width: "100%", resize: "vertical" }}
+          className="incident-textarea"
         />
       </label>
-      <div>
+      {suggestionNote && (
+        <div className={`loading-dim${suggestionNote.toLowerCase().includes("http") ? " error" : ""}`}>
+          {suggestionNote}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={suggestPostMortem}
+          disabled={suggesting}
+          style={{ minHeight: 44 }}
+        >
+          {suggesting ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}
+          Suggest with AI
+        </button>
         <button
           type="button"
           className="btn btn-ghost"
           onClick={saveNote}
-          disabled={savePostMortem.loading}
+          disabled={savePostMortem.loading || suggesting}
           style={{ minHeight: 44 }}
         >
           <Save size={15} />
@@ -202,6 +272,7 @@ export function IncidentsPage() {
   const controls = useTableControls<IncidentEntry, IncidentsSortKey>({
     rows: entries,
     pageSize: 25,
+    rowKey: (row) => `${row.type}:${row.slug}:${row.ts}`,
     filterText: (row) => [
       row.title ?? "",
       row.slug,
@@ -216,6 +287,27 @@ export function IncidentsPage() {
     },
     defaultSort: { key: "severity", dir: "desc" },
     tieBreak: ["ts"],
+  });
+  const reasonerControls = useTableControls<ReasonerIncidentEntry, ReasonerIncidentSortKey>({
+    rows: reasonerIncidents,
+    pageSize: 10,
+    rowKey: (row) => row.id,
+    filterText: (row) => [
+      row.title,
+      row.id,
+      row.failureClass,
+      row.status,
+      row.rootCause ?? "",
+      suggestedActionText(row.suggestedActions),
+    ],
+    sortValue: (row, key) => {
+      if (key === "lastSeen") return row.lastSeen;
+      if (key === "status") return row.status;
+      if (key === "count") return row.occurrenceCount;
+      return row.failureClass;
+    },
+    defaultSort: { key: "lastSeen", dir: "desc" },
+    tieBreak: ["count"],
   });
 
   if (loading && !data) return <div className="loading-dim">loading incidents…</div>;
@@ -278,6 +370,7 @@ export function IncidentsPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th className="expander-col" aria-label="details"></th>
                   <th {...controls.sortHeaderProps("severity")} style={{ width: 150 }}>severity</th>
                   <th {...controls.sortHeaderProps("stage")} style={{ width: 150 }}>domain</th>
                   <th>incident</th>
@@ -289,34 +382,56 @@ export function IncidentsPage() {
                 {controls.rows.map((entry) => {
                   const focus = entry.sourceKey ?? entry.insightId ?? entry.slug;
                   const href = entry.detectionsHref ?? `/insights?focus=${encodeURIComponent(focus)}`;
+                  const key = controls.getRowKey(entry);
+                  const expanded = controls.isExpanded(key);
                   return (
-                    <tr key={`${entry.type}:${entry.slug}:${entry.ts}`}>
-                      <td>
-                        <Pill color={entry.severity === "error" ? "red" : "amber"}>
-                          {entry.errorType}
-                        </Pill>
-                      </td>
-                      <td><Pill color={stageColor(entry.stage)}>{entry.stage}</Pill></td>
-                      <td>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          {entry.severity === "error" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}
-                          <strong>{entry.title ?? entry.slug}</strong>
-                        </div>
-                        <div className="mono dim" style={{ fontSize: 11, marginTop: 3 }}>{focus}</div>
-                      </td>
-                      <td className="mono dim">{relTime(entry.ts)}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <Link href={href} className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
-                          <ExternalLink size={13} />
-                          View detection
-                        </Link>
-                      </td>
-                    </tr>
+                    <Fragment key={key}>
+                      <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                        <td className="expander-col">
+                          <button type="button" className="table-expander" aria-label={expanded ? "Collapse details" : "Expand details"}>
+                            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                        </td>
+                        <td>
+                          <Pill color={entry.severity === "error" ? "red" : "amber"}>
+                            {entry.errorType}
+                          </Pill>
+                        </td>
+                        <td><Pill color={stageColor(entry.stage)}>{entry.stage}</Pill></td>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {entry.severity === "error" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}
+                            <strong>{entry.title ?? entry.slug}</strong>
+                          </div>
+                          <div className="mono dim" style={{ fontSize: 11, marginTop: 3 }}>{focus}</div>
+                        </td>
+                        <td className="mono dim">{relTime(entry.ts)}</td>
+                        <td style={{ textAlign: "right" }} onClick={(event) => event.stopPropagation()}>
+                          <Link href={href} className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
+                            <ExternalLink size={13} />
+                            View detection
+                          </Link>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${key}:detail`} className="data-row-detail">
+                          <td colSpan={6}>
+                            <div className="data-row-detail-inner">
+                              <div className="data-row-detail-grid">
+                                <div><span>source</span><strong>{focus}</strong></div>
+                                <div><span>manual page</span><strong>{entry.manualPageHref ?? "/insights"}</strong></div>
+                                <div><span>detected</span><strong>{new Date(entry.ts).toISOString()}</strong></div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
                 {controls.filteredCount === 0 && (
                   <tr>
-                    <td colSpan={5} className="loading-dim">no incidents match the current filter</td>
+                    <td colSpan={6} className="loading-dim">no incidents match the current filter</td>
                   </tr>
                 )}
               </tbody>
@@ -336,10 +451,59 @@ export function IncidentsPage() {
             <span>Reasoner and sentinel incidents with lifecycle state appear here after they are detected.</span>
           </div>
         ) : (
-          <div style={{ display: "grid", gap: 12 }}>
-            {reasonerIncidents.map((incident) => (
-              <IncidentLifecycleCard key={incident.id} incident={incident} onChanged={refresh} />
-            ))}
+          <div className="table-wrap incidents-workflow-table">
+            <TableControls {...reasonerControls.controlsProps} searchPlaceholder="Filter workflow incidents..." />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="expander-col" aria-label="details"></th>
+                  <th {...reasonerControls.sortHeaderProps("status")} style={{ width: 140 }}>status</th>
+                  <th>incident</th>
+                  <th {...reasonerControls.sortHeaderProps("failureClass")} style={{ width: 160 }}>class</th>
+                  <th {...reasonerControls.sortHeaderProps("count")} style={{ width: 120 }}>count</th>
+                  <th {...reasonerControls.sortHeaderProps("lastSeen")} style={{ width: 150 }}>last seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reasonerControls.rows.map((incident) => {
+                  const key = reasonerControls.getRowKey(incident);
+                  const expanded = reasonerControls.isExpanded(key);
+                  return (
+                    <Fragment key={key}>
+                      <tr className="data-row-clickable" onClick={() => reasonerControls.toggleExpanded(key)}>
+                        <td className="expander-col">
+                          <button type="button" className="table-expander" aria-label={expanded ? "Collapse lifecycle" : "Expand lifecycle"}>
+                            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          </button>
+                        </td>
+                        <td><Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill></td>
+                        <td>
+                          <strong>{incident.title}</strong>
+                          <div className="mono dim" style={{ marginTop: 3, fontSize: 11 }}>{incident.id}</div>
+                        </td>
+                        <td><Pill color="blue">{incident.failureClass}</Pill></td>
+                        <td className="mono">{incident.occurrenceCount}</td>
+                        <td className="mono dim">{relTime(incident.lastSeen)}</td>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${key}:detail`} className="data-row-detail">
+                          <td colSpan={6}>
+                            <div className="data-row-detail-inner">
+                              <IncidentLifecycleCard incident={incident} onChanged={refresh} />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+                {reasonerControls.filteredCount === 0 && (
+                  <tr>
+                    <td colSpan={6} className="loading-dim">no workflow incidents match the current filter</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
