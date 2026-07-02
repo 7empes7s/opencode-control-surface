@@ -173,4 +173,182 @@ describe("sentinel incident scanner", () => {
     expect(result.createdOrUpdated).toBe(0);
     expect(result.deduped).toBe(0);
   });
+
+  test("auto-close: clears when finding passes on rescan", () => {
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const first = runSentinelIncidentScan();
+    expect(first.createdOrUpdated).toBe(1);
+    expect(readIncidentRows()).toHaveLength(1);
+    expect(readIncidentRows()[0].status).toBe("open");
+
+    writeHealth({
+      score: 100,
+      fails: 0,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "ok", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const second = runSentinelIncidentScan();
+    expect(second.autoClosed).toBe(1);
+
+    const rows = readIncidentRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("resolved");
+  });
+
+  test("auto-close: clears when finding disappears and zero fails (removed early-return)", () => {
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const first = runSentinelIncidentScan();
+    expect(first.createdOrUpdated).toBe(1);
+
+    writeHealth({
+      score: 100,
+      fails: 0,
+      warns: 0,
+      findings: [],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const second = runSentinelIncidentScan();
+    expect(second.scanned).toBe(0);
+    expect(second.autoClosed).toBe(1);
+
+    const rows = readIncidentRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("resolved");
+  });
+
+  test("auto-close: does not close a still-failing finding", () => {
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    runSentinelIncidentScan();
+
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const second = runSentinelIncidentScan();
+    expect(second.autoClosed).toBe(0);
+
+    const rows = readIncidentRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("open");
+    expect(rows[0].occurrence_count).toBe(2);
+  });
+
+  test("auto-close: missing card does not auto-close", () => {
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    runSentinelIncidentScan();
+
+    process.env.SENTINEL_HEALTH_PATH = join(tempDir, "does-not-exist.json");
+    const second = runSentinelIncidentScan();
+    expect(second.autoClosed).toBe(0);
+
+    const rows = readIncidentRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("open");
+  });
+
+  test("auto-close: stale card does not auto-close", () => {
+    writeHealth({
+      score: 60,
+      fails: 1,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "fail", severity: "high" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    runSentinelIncidentScan();
+
+    const staleCheckedAt = Math.floor(Date.now() / 1000) - 7 * 60 * 60;
+    writeHealth({
+      score: 100,
+      fails: 0,
+      warns: 0,
+      findings: [
+        { id: "page/api-version", name: "API version page 500", status: "ok", severity: "high" },
+      ],
+      checkedAt: staleCheckedAt,
+    });
+    const second = runSentinelIncidentScan();
+    expect(second.autoClosed).toBe(0);
+
+    const rows = readIncidentRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("open");
+  });
+
+  test("auto-close: never touches non-sentinel incidents", () => {
+    const tenant = whereTenant();
+    const tenantId = tenant.params[0];
+    db().query(`
+      INSERT INTO reasoner_incidents
+        (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count,
+         representative_pass_id, representative_diagnosis_id, status, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', ?)
+    `).run(
+      "ri_other",
+      "other-cluster-key",
+      "other_class",
+      "Some other incident",
+      Date.now(),
+      Date.now(),
+      "other:rep",
+      "other:rep",
+      tenantId,
+    );
+
+    writeHealth({
+      score: 100,
+      fails: 0,
+      warns: 0,
+      findings: [],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+    const result = runSentinelIncidentScan();
+    expect(result.autoClosed).toBe(0);
+
+    const rows = readIncidentRows();
+    const other = rows.find((r) => r.id === "ri_other");
+    expect(other).toBeDefined();
+    expect(other!.status).toBe("open");
+  });
 });

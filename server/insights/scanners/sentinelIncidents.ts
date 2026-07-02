@@ -2,9 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getDashboardDb, isDashboardDbEnabled } from "../../db/dashboard.ts";
 import { whereTenant } from "../../db/tenantScope.ts";
+import { writeActionAudit } from "../../db/writer.ts";
 import { dispatchEventFireAndForget } from "../../webhooks/dispatcher.ts";
 
 const DEFAULT_SENTINEL_HEALTH_PATH = "/var/lib/mimule/product-health.json";
+const DEFAULT_SENTINEL_AUTOCLOSE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 type Finding = {
   id?: string;
@@ -29,10 +31,17 @@ type ScanResult = {
   scanned: number;
   createdOrUpdated: number;
   deduped: number;
+  autoClosed: number;
 };
 
 function getSentinelHealthPath(): string {
   return process.env.SENTINEL_HEALTH_PATH ?? DEFAULT_SENTINEL_HEALTH_PATH;
+}
+
+function sentinelAutoCloseMaxAgeMs(): number {
+  const raw = process.env.SENTINEL_AUTOCLOSE_MAX_AGE_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SENTINEL_AUTOCLOSE_MAX_AGE_MS;
 }
 
 function startOfUtcDay(ts: number): number {
@@ -71,17 +80,16 @@ function readSentinelCard(): SentinelCard | null {
 
 export function runSentinelIncidentScan(): ScanResult {
   const scannedAt = Date.now();
-  if (!isDashboardDbEnabled()) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0 };
+  if (!isDashboardDbEnabled()) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0, autoClosed: 0 };
 
   const db = getDashboardDb();
-  if (!db) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0 };
+  if (!db) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0, autoClosed: 0 };
 
   const card = readSentinelCard();
-  if (!card) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0 };
+  if (!card) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0, autoClosed: 0 };
 
   const findings = Array.isArray(card.findings) ? card.findings : [];
   const fails = findings.filter((f) => String(f.status ?? "") === "fail");
-  if (fails.length === 0) return { scannedAt, scanned: 0, createdOrUpdated: 0, deduped: 0 };
 
   const seenAtMs = typeof card.checkedAt === "number"
     ? card.checkedAt * 1000
@@ -152,5 +160,55 @@ export function runSentinelIncidentScan(): ScanResult {
     } catch { /* never throw out of scan path */ }
   }
 
-  return { scannedAt, scanned: fails.length, createdOrUpdated, deduped };
+  let autoClosed = 0;
+  const isFresh = scannedAt - seenAtMs <= sentinelAutoCloseMaxAgeMs();
+  if (isFresh) {
+    const failingFindingIds = new Set<string>();
+    for (const finding of fails) {
+      const findingId = String(finding.id ?? "").trim();
+      if (!findingId) continue;
+      failingFindingIds.add(safeId(findingId));
+    }
+
+    const openSentinelIncidents = db.query(`
+      SELECT id, representative_pass_id, title FROM reasoner_incidents
+      WHERE status = 'open' AND failure_class = 'sentinel_health' ${tenant.clause}
+    `).all(...tenant.params) as Array<{ id: string; representative_pass_id: string; title: string }>;
+
+    for (const row of openSentinelIncidents) {
+      if (!row.representative_pass_id?.startsWith("sentinel:")) continue;
+      const findingSafeId = row.representative_pass_id.slice("sentinel:".length);
+      if (failingFindingIds.has(findingSafeId)) continue;
+
+      db.query(`
+        UPDATE reasoner_incidents
+        SET status='resolved', resolved_at=COALESCE(resolved_at, ?), mitigated_at=COALESCE(mitigated_at, ?)
+        WHERE id = ? AND status = 'open' ${tenant.clause}
+      `).run(seenAtMs, seenAtMs, row.id, ...tenant.params);
+      autoClosed += 1;
+
+      writeActionAudit({
+        actor: "system",
+        actorSource: "sentinel-scan",
+        actionKind: "incidents.auto-close",
+        targetType: "incident",
+        targetId: row.id,
+        reason: `auto-closed: finding '${findingSafeId}' no longer failing in product-health scan`,
+        result: "auto-closed",
+        resultStatus: "success",
+        resultJson: { findingId: findingSafeId, clearedAt: seenAtMs },
+      });
+
+      try {
+        dispatchEventFireAndForget("incident.resolved", {
+          incidentId: row.id,
+          findingId: findingSafeId,
+          reason: "condition-cleared",
+          resolvedAt: seenAtMs,
+        });
+      } catch { /* never throw out of scan path */ }
+    }
+  }
+
+  return { scannedAt, scanned: fails.length, createdOrUpdated, deduped, autoClosed };
 }

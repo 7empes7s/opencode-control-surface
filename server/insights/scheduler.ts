@@ -50,7 +50,11 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
   const anomalies = runAnomalyScan().anomalies;
   let sentinelIncidents = 0;
   try {
-    sentinelIncidents = runSentinelIncidentScan().createdOrUpdated;
+    const sentinelResult = runSentinelIncidentScan();
+    sentinelIncidents = sentinelResult.createdOrUpdated;
+    if (sentinelResult.autoClosed > 0) {
+      console.log(`[incidents] auto-closed ${sentinelResult.autoClosed} cleared sentinel incidents`);
+    }
   } catch (error) {
     console.error("[insights] sentinel incident scan failed", error);
   }
