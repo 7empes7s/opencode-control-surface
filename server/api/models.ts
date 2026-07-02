@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { getDashboardDb } from '../db/dashboard.ts';
 import { writeActionAudit } from '../db/writer.ts';
 import { getObservabilityDb, listLiteLLMRoutingLogs, listSystemConfigs, upsertSystemConfig, insertConfigChange } from '../db/observability.ts';
@@ -6,6 +5,7 @@ import { createApprovalRequest, expireStaleRequests, listApprovalRequests, type 
 import { getCurrentTenantContext } from '../tenancy/middleware.ts';
 import { getModelQualityEntry, readModelQuality, type ModelQualityStatus } from './modelQuality.ts';
 import { getUserIdForRequest } from '../governance/rbac.ts';
+import { readJsonFileAtomic } from "../lib/atomicJson.ts";
 
 export const PROMOTION_EVAL_SCORE_THRESHOLD = 0.75;
 const PROMOTION_APPROVAL_WORKFLOW_PREFIX = "model-promotion";
@@ -84,8 +84,7 @@ function normalizeRecentFailures(value: unknown): number {
 
 function readHealthModel(logicalName: string): { qualityStatus: QualityStatus; recentFailures: number; consecutiveGarbage: number; resolvedModel: string | null } {
   try {
-    const raw = readFileSync(modelHealthPath(), "utf8");
-    const health = JSON.parse(raw) as { models?: Array<Record<string, unknown>> };
+    const health = readJsonFileAtomic<{ models?: Array<Record<string, unknown>> }>(modelHealthPath());
     const model = (health.models ?? []).find((candidate) => candidate.logicalName === logicalName);
     const quality = readModelQuality();
     const modelId = typeof model?.modelId === "string" ? model.modelId : null;
@@ -288,11 +287,20 @@ function computePromotionReadiness(input: {
 
 export function modelsHandler(): Response {
   try {
-    const raw = readFileSync(modelHealthPath(), 'utf8');
-    const health = JSON.parse(raw);
+    const health = readJsonFileAtomic<{
+      models?: Array<Record<string, any>>;
+      bestCloudHeavy?: string | null;
+      bestCloudFast?: string | null;
+      bestLocal?: string | null;
+      availableByCapability?: { heavy?: number; medium?: number; light?: number };
+      lastFullCheckAt?: number;
+      lastQuickCheckAt?: number;
+      newModelsAdded?: string[];
+      fallbacks?: Record<string, string[]>;
+    }>(modelHealthPath());
     const quality = readModelQuality();
 
-    const models = health.models.map((m: any) => {
+    const models = (health.models ?? []).map((m: any) => {
       const qualityEntry = getModelQualityEntry(quality, m.logicalName, m.modelId);
       const providerType = detectProviderType(m.logicalName, m.provider);
       const hasExplicitFree = m.modelId?.includes('free') || m.logicalName?.includes('free');

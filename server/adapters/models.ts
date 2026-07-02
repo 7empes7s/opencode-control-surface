@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { openSync, fstatSync, readSync, closeSync } from "node:fs";
+import { readJsonFileAtomic } from "../lib/atomicJson.ts";
 
 const MODEL_HEALTH_PATH = "/var/lib/mimule/model-health.json";
 const MODEL_COOLDOWNS_PATH = "/var/lib/mimule/model-cooldowns.json";
@@ -7,7 +7,7 @@ const MODEL_QUALITY_PATH = "/var/lib/mimule/model-quality.json";
 const MODEL_DISCOVERY_LOG_PATH = "/var/lib/mimule/model-discovery-log.jsonl";
 
 function readJson<T>(path: string): T | null {
-  try { return JSON.parse(readFileSync(path, "utf8")) as T; }
+  try { return readJsonFileAtomic<T | null>(path, { fallback: null }); }
   catch { return null; }
 }
 
