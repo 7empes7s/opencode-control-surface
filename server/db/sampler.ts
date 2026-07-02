@@ -5,7 +5,7 @@ import { writeEvent, writeMetricSample } from "./writer.ts";
 
 export type PrevSnapshot = {
   services: Record<string, string>;
-  gpuStatus: "up" | "down" | "unknown" | null;
+  gpuStatus: "up" | "down" | "off" | "unknown" | null;
   vastRunwayBucket: "ok" | "warn-24h" | "crit-12h" | null;
   modelsBucket: "healthy" | "degraded" | "down" | null;
   diskBucket: "ok" | "warn-70" | "crit-85" | null;
@@ -1228,6 +1228,7 @@ function gpuSeverity(status: PrevSnapshot["gpuStatus"]): Severity {
   if (status === "unknown") {
     return "warn";
   }
+  // "off" is an operator choice, not a failure — informational only.
   return "info";
 }
 

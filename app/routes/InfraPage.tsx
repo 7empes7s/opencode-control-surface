@@ -218,17 +218,22 @@ export function InfraPage() {
         <SectionCard title="gpu tunnel" id="gpu" defaultOpen={true}>
           <div className="section-card-body" style={{ padding: "12px 14px" }}>
             <div className="w-row" style={{ marginBottom: 8 }}>
-              <Pill color={d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : "amber"}>{d.gpu.status}</Pill>
+              <Pill color={d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : d.gpu.status === "off" ? "gray" : "amber"}>{d.gpu.status}</Pill>
               {d.gpu.gpuUtil !== null && <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{d.gpu.gpuUtil}% util</span>}
             </div>
+            {d.gpu.note && (
+              <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>{d.gpu.note}</div>
+            )}
             {d.gpu.loadedModels.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
                 {d.gpu.loadedModels.map((m) => <span key={m} className="chain-model">{m}</span>)}
               </div>
             )}
-            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
-              checked {d.gpu.checkedAgo >= 0 ? fmtAge(d.gpu.checkedAgo) : "—"}
-            </div>
+            {d.gpu.status !== "off" && (
+              <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>
+                checked {d.gpu.checkedAgo >= 0 ? fmtAge(d.gpu.checkedAgo) : "—"}
+              </div>
+            )}
           </div>
         </SectionCard>
 
@@ -262,19 +267,35 @@ export function InfraPage() {
                 )}
               </div>
             )}
-            {d.vastHost && (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                <div className="w-label">remote host stats</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>CPU</span><PctBar pct={d.vastHost.cpuPct} /></div>
-                  <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>RAM</span><PctBar pct={d.vastHost.ramPct} /></div>
-                  <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>GPU</span><PctBar pct={d.vastHost.gpuUtilPct} /></div>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+              <div className="w-label">remote host stats</div>
+              {d.vastHost && d.vastHost.status === "ok" ? (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>CPU</span><PctBar pct={d.vastHost.cpuPct ?? 0} /></div>
+                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>RAM</span><PctBar pct={d.vastHost.ramPct ?? 0} /></div>
+                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>GPU</span><PctBar pct={d.vastHost.gpuUtilPct ?? 0} /></div>
+                  </div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 6 }}>
+                    sampled {fmtAge(Math.round((Date.now() - d.vastHost.sampledAt) / 1000))}
+                  </div>
+                </>
+              ) : d.vastHost ? (
+                <div style={{ marginTop: 4 }}>
+                  <Pill color={d.vastHost.status === "unreachable" ? "red" : "gray"}>{d.vastHost.status}</Pill>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+                    {d.vastHost.reason ?? "No host metrics available."}
+                  </div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>
+                    last sampler run {fmtAge(Math.round((Date.now() - d.vastHost.sampledAt) / 1000))}
+                  </div>
                 </div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 6 }}>
-                  sampled {fmtAge(Math.round((Date.now() - d.vastHost.sampledAt) / 1000))}
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                  The host sampler has not run yet — it runs every 5 minutes inside the dashboard ingestor.
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </SectionCard>
       </div>

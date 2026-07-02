@@ -30,8 +30,12 @@ export interface VastAccount {
   userId: string;
 }
 
-let instanceCache: { value: VastInstance | null; ts: number } | null = null;
-let instanceInFlight: Promise<VastInstance | null> | null = null;
+// Distinguishes "the CLI query worked and there is no instance" (known, instance null —
+// GPU off by operator) from "the CLI query failed" (not known — state genuinely unknown).
+export type VastInstanceState = { known: boolean; instance: VastInstance | null };
+
+let instanceCache: { value: VastInstanceState; ts: number } | null = null;
+let instanceInFlight: Promise<VastInstanceState> | null = null;
 let accountCache: { value: VastAccount | null; ts: number } | null = null;
 let accountInFlight: Promise<VastAccount | null> | null = null;
 
@@ -40,18 +44,13 @@ function fresh<T>(cache: { value: T; ts: number } | null): T | null {
   return Date.now() - cache.ts < CACHE_TTL_MS ? cache.value : null;
 }
 
-// vastai show instances returns 3 multi-line rows per instance:
-//  Row A: # ID  Machine  Status   Num  Model  Util.%  vCPUs  RAM  Storage
-//  Row B: # SSH_Addr  SSH_Port  $/hr  Image  Net_up
-//  Row C: # Net_down  R  Label  age(h)  uptime(m)
-export async function getVastInstance(): Promise<VastInstance | null> {
-  const cached = fresh(instanceCache);
-  if (cached !== null || (instanceCache && Date.now() - instanceCache.ts < CACHE_TTL_MS)) {
+export async function getVastInstanceState(): Promise<VastInstanceState> {
+  if (instanceCache && Date.now() - instanceCache.ts < CACHE_TTL_MS) {
     return instanceCache.value;
   }
   if (instanceInFlight) return instanceInFlight;
 
-  instanceInFlight = readVastInstance();
+  instanceInFlight = readVastInstanceState();
   try {
     const value = await instanceInFlight;
     instanceCache = { value, ts: Date.now() };
@@ -61,7 +60,15 @@ export async function getVastInstance(): Promise<VastInstance | null> {
   }
 }
 
-async function readVastInstance(): Promise<VastInstance | null> {
+export async function getVastInstance(): Promise<VastInstance | null> {
+  return (await getVastInstanceState()).instance;
+}
+
+// vastai show instances returns 3 multi-line rows per instance:
+//  Row A: # ID  Machine  Status   Num  Model  Util.%  vCPUs  RAM  Storage
+//  Row B: # SSH_Addr  SSH_Port  $/hr  Image  Net_up
+//  Row C: # Net_down  R  Label  age(h)  uptime(m)
+async function readVastInstanceState(): Promise<VastInstanceState> {
   try {
     const { stdout } = await execAsync("vastai show instances", { timeout: 2000 });
     const lines = stdout.split("\n").map((l) => l.replace(STRIP_ANSI, "").trim()).filter(Boolean);
@@ -84,25 +91,28 @@ async function readVastInstance(): Promise<VastInstance | null> {
       }
     }
 
-    if (!rowA) return null;
+    if (!rowA) return { known: true, instance: null };
 
     return {
-      id: rowA[1] ?? "",
-      status: rowA[3] ?? "unknown",
-      gpu: rowA[5] ?? "",
-      vcpus: parseFloat(rowA[7] ?? "0") || 0,
-      ram: parseFloat(rowA[8] ?? "0") || 0,
-      disk: parseFloat(rowA[9] ?? "0") || 0,
-      gpuRam: 24,
-      hourlyRate: rowB ? parseFloat(rowB[3] ?? "0") || 0 : 0,
-      ip: rowB ? rowB[1] ?? "" : "",
-      sshPort: rowB ? parseInt(rowB[2] ?? "0") || 0 : 0,
-      machineId: rowA[2] ?? "",
-      uptime: 0,
-      gpuUtil: 0,
+      known: true,
+      instance: {
+        id: rowA[1] ?? "",
+        status: rowA[3] ?? "unknown",
+        gpu: rowA[5] ?? "",
+        vcpus: parseFloat(rowA[7] ?? "0") || 0,
+        ram: parseFloat(rowA[8] ?? "0") || 0,
+        disk: parseFloat(rowA[9] ?? "0") || 0,
+        gpuRam: 24,
+        hourlyRate: rowB ? parseFloat(rowB[3] ?? "0") || 0 : 0,
+        ip: rowB ? rowB[1] ?? "" : "",
+        sshPort: rowB ? parseInt(rowB[2] ?? "0") || 0 : 0,
+        machineId: rowA[2] ?? "",
+        uptime: 0,
+        gpuUtil: 0,
+      },
     };
   } catch {
-    return null;
+    return { known: false, instance: null };
   }
 }
 

@@ -216,7 +216,9 @@ function stubHome(): HomeData {
       loadedModels: ["model-a"],
       probeMs: 12,
       checkedAgo: 3,
+      note: null,
     },
+    opencode: { reachable: true, sessionCount: 4, active24h: 2, latestUpdatedAt: Date.now() },
     vast: {
       balance: 20,
       credit: 0,

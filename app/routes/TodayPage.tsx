@@ -175,9 +175,12 @@ export function TodayPage() {
         <div className="widget-grid">
           <WCard href="/infra">
             <div className="w-label">GPU status</div>
-            <Pill color={d.infraSummary.gpuStatus === "up" ? "green" : d.infraSummary.gpuStatus === "down" ? "red" : "amber"}>
+            <Pill color={d.infraSummary.gpuStatus === "up" ? "green" : d.infraSummary.gpuStatus === "down" ? "red" : d.infraSummary.gpuStatus === "off" ? "gray" : "amber"}>
               {d.infraSummary.gpuStatus}
             </Pill>
+            {d.infraSummary.gpuStatus === "off" && (
+              <div className="w-caption" style={{ marginTop: 4 }}>off by operator — cloud models in use</div>
+            )}
           </WCard>
           <WCard href="/infra">
             <div className="w-label">Vast runway</div>

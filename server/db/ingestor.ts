@@ -1,5 +1,6 @@
 import { buildHomeData } from "../api/home.ts";
 import { getLiteLLMHealthProbe } from "../api/litellm.ts";
+import { sampleVastHost } from "../adapters/vastHost.ts";
 import { createReportRun } from "../api/reports.ts";
 import type { HomeData, SourceStatus } from "../api/types.ts";
 import { getDashboardDb, isDashboardDbEnabled } from "./dashboard.ts";
@@ -208,8 +209,10 @@ export function startIngestor(
   const litellmProbeIntervalMs = options.litellmProbeIntervalMs ?? 60_000;
   const channelsProbeIntervalMs = options.channelsProbeIntervalMs ?? 60_000;
   const channelsInitialLookbackMs = Number(process.env.DASHBOARD_CHANNELS_INITIAL_LOOKBACK_MS) || 600_000;
+  const vastHostSampleIntervalMs = Number(process.env.VAST_HOST_SAMPLE_INTERVAL_MS) || 5 * 60_000;
   let lastLiteLLMProbeAt = 0;
   let lastChannelsProbeAt = Date.now() - channelsInitialLookbackMs;
+  let lastVastHostSampleAt = 0;
   let lastPruneAt = 0;
   let stopped = false;
   let inFlight = false;
@@ -248,6 +251,15 @@ export function startIngestor(
         const sinceMs = now - lastChannelsProbeAt + 1000;
         lastChannelsProbeAt = now;
         await sampleChannelLogs(sinceMs);
+      }
+      if (now - lastVastHostSampleAt >= vastHostSampleIntervalMs) {
+        lastVastHostSampleAt = now;
+        try {
+          const hostSample = await sampleVastHost();
+          writeMetricSample({ source: "vast", key: "host", value: hostSample });
+        } catch (err) {
+          console.error("[ingestor] vast host sample failed", err);
+        }
       }
       await runScheduledReports(now);
       if (now - lastPruneAt >= pruneIntervalMs) {

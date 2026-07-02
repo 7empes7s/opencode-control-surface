@@ -135,14 +135,23 @@ export interface HomeData {
   doctor: DoctorWidget;
   models: ModelsWidget;
   incidents: IncidentsWidget;
+  opencode: OpenCodeWidget;
+}
+
+export interface OpenCodeWidget {
+  reachable: boolean;
+  sessionCount: number | null;
+  active24h: number | null;
+  latestUpdatedAt: number | null;
 }
 
 export interface GpuWidget {
-  status: "up" | "down" | "unknown";
+  status: "up" | "down" | "off" | "unknown";
   gpuUtil: number | null;
   loadedModels: string[];
   probeMs: number | null;
   checkedAgo: number;
+  note: string | null;
 }
 
 export interface VastWidget {
@@ -373,10 +382,12 @@ export interface InfraDetail {
   } | null;
   vastBalance: { balance: number; credit: number; runwayHours: number | null } | null;
   vastHost: {
-    cpuPct: number; ramPct: number; diskPct: number;
-    gpuUtilPct: number; sampledAt: number;
+    status: "ok" | "off" | "unreachable" | "unknown";
+    reason: string | null;
+    cpuPct: number | null; ramPct: number | null; diskPct: number | null;
+    gpuUtilPct: number | null; sampledAt: number;
   } | null;
-  gpu: { status: string; gpuUtil: number | null; loadedModels: string[]; checkedAgo: number };
+  gpu: { status: string; gpuUtil: number | null; loadedModels: string[]; checkedAgo: number; note: string | null };
   services: { name: string; status: string }[];
   timers: {
     name: string; active: boolean; runnable?: boolean;

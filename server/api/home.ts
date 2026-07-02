@@ -4,7 +4,8 @@ import { getPipelineState } from "../adapters/pipeline.ts";
 import { getModelHealth } from "../adapters/models.ts";
 import { getDoctorStats } from "../adapters/doctor.ts";
 import { getArticles, buildNewsBitesWidget, isSiteReachable } from "../adapters/newsbites.ts";
-import { getVastInstance, getVastAccount } from "../adapters/vast.ts";
+import { getVastInstanceState, getVastAccount } from "../adapters/vast.ts";
+import { getOpenCodeSessionSummary } from "../adapters/opencode.ts";
 import { runHomeSampler } from "../db/sampler.ts";
 import { ok, type ApiEnvelope, type HomeData, type SourceStatus } from "./types.ts";
 
@@ -23,6 +24,49 @@ type HomeBuildResult = { data: HomeData; sources: Record<string, SourceStatus> }
 let cachedHome: { value: HomeBuildResult; ts: number } | null = null;
 let homeBuildInFlight: Promise<HomeBuildResult> | null = null;
 const HOME_CACHE_MS = 15_000;
+// The vast-watchdog writes gpu-health.json every 60s when it is running; anything
+// older than this is treated as "no current probe data", not as a live up/down signal.
+const GPU_HEALTH_STALE_MS = Number(process.env.DASHBOARD_GPU_HEALTH_STALE_MS) || 15 * 60 * 1000;
+
+type GpuStatusResult = { status: "up" | "down" | "off" | "unknown"; note: string | null };
+
+/**
+ * Honest GPU state: the GPU being off by operator choice (no Vast instance rented,
+ * or instance stopped) must render as "off", never as a fake "down" failure built
+ * from a stale probe file.
+ */
+export function deriveGpuStatus(input: {
+  healthStatus: string | null;
+  healthFresh: boolean;
+  instanceKnown: boolean;
+  instanceStatus: string | null; // null = no instance rented (when instanceKnown)
+}): GpuStatusResult {
+  const { healthStatus, healthFresh, instanceKnown, instanceStatus } = input;
+
+  if (healthFresh && healthStatus === "up") {
+    return { status: "up", note: null };
+  }
+  // Instance is running but the fresh probe says down → a real failure.
+  if (healthFresh && healthStatus === "down" && instanceStatus === "running") {
+    return { status: "down", note: "Vast instance is running but the GPU probe is failing — check the tunnel." };
+  }
+  if (instanceKnown && instanceStatus === null) {
+    return { status: "off", note: "No Vast instance rented — GPU off by operator. Editorial runs on cloud models." };
+  }
+  if (instanceKnown && instanceStatus === "stopped") {
+    return { status: "off", note: "Vast instance stopped — GPU off by operator. Editorial runs on cloud models." };
+  }
+  // Instance state unknown (CLI unavailable) — trust a fresh probe, otherwise be honest about not knowing.
+  if (healthFresh && healthStatus === "down") {
+    return { status: "down", note: null };
+  }
+  return {
+    status: "unknown",
+    note: healthStatus
+      ? "GPU probe data is stale and the Vast instance state could not be read."
+      : "No GPU probe data available.",
+  };
+}
 
 export async function homeHandler(): Promise<Response> {
   const { data, sources } = await getHomeDataForRequest();
@@ -64,7 +108,7 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
   const sources: Record<string, SourceStatus> = {};
 
   // ── Parallel fetch all sources ──────────────────────────────────────────
-  const [services, hetzner, pipeline, models, doctor, articles, siteUp, vastInst, vastAcct] =
+  const [services, hetzner, pipeline, models, doctor, articles, siteUp, vastInst, vastAcct, opencode] =
     await Promise.all([
       settled(getServiceStatuses),
       settled(getHetznerStats),
@@ -73,8 +117,9 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
       settled(getDoctorStats),
       settled(getArticles),
       settled(isSiteReachable),
-      settled(getVastInstance),
+      settled(getVastInstanceState),
       settled(getVastAccount),
+      settled(getOpenCodeSessionSummary),
     ]);
 
   sources.services = services.ok ? "ok" : "error";
@@ -83,7 +128,8 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
   sources.models = models.ok ? "ok" : "error";
   sources.doctor = doctor.ok ? "ok" : "error";
   sources.newsbites = articles.ok ? "ok" : "error";
-  sources.vast = (vastInst.ok && vastInst.value !== null) || (vastAcct.ok && vastAcct.value !== null) ? "ok" : "error";
+  sources.vast = (vastInst.ok && vastInst.value.known) || (vastAcct.ok && vastAcct.value !== null) ? "ok" : "error";
+  sources.opencode = opencode.ok && opencode.value.reachable ? "ok" : "error";
 
   // ── GPU health (direct file read, fast) ────────────────────────────────
   const gpuRaw = readJson<{
@@ -95,6 +141,7 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
   }>("/var/lib/mimule/gpu-health.json");
 
   const gpuAgo = gpuRaw?.checked_at ? Date.now() - gpuRaw.checked_at * 1000 : Infinity;
+  const gpuHealthFresh = gpuAgo < GPU_HEALTH_STALE_MS;
 
   // ── Pipeline breakdown ─────────────────────────────────────────────────
   const pipeData = pipeline.ok ? pipeline.value : null;
@@ -124,20 +171,30 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
     : { totalPublished: 0, publishedToday: 0, publishedLast7d: [], topVerticals: [], latestArticles: [], siteReachable: false };
 
   // ── Vast widget ────────────────────────────────────────────────────────
-  const vi = vastInst.ok ? vastInst.value : null;
+  const vastState = vastInst.ok ? vastInst.value : { known: false, instance: null };
+  const vi = vastState.instance;
   const va = vastAcct.ok ? vastAcct.value : null;
   const totalCredit = ((va?.balance ?? 0) + (va?.credit ?? 0));
   const hourly = vi?.hourlyRate ?? null;
+
+  const gpuDerived = deriveGpuStatus({
+    healthStatus: gpuRaw?.status ?? null,
+    healthFresh: gpuHealthFresh,
+    instanceKnown: vastState.known,
+    instanceStatus: vi?.status ?? null,
+  });
+  const gpuUtilRaw = gpuRaw?.gpu_max_util;
 
   const data: HomeData = {
     services: services.ok ? services.value : [],
 
     gpu: {
-      status: gpuRaw?.status === "up" ? "up" : gpuRaw?.status === "down" ? "down" : "unknown",
-      gpuUtil: gpuRaw?.gpu_max_util ?? null,
-      loadedModels: gpuRaw?.models ?? [],
-      probeMs: gpuRaw?.probe_ms ?? null,
+      status: gpuDerived.status,
+      gpuUtil: gpuDerived.status === "up" && typeof gpuUtilRaw === "number" && gpuUtilRaw >= 0 ? gpuUtilRaw : null,
+      loadedModels: gpuDerived.status === "up" ? gpuRaw?.models ?? [] : [],
+      probeMs: gpuHealthFresh ? gpuRaw?.probe_ms ?? null : null,
       checkedAgo: Math.round(gpuAgo / 1000),
+      note: gpuDerived.note,
     },
 
     vast: {
@@ -214,6 +271,15 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
       activeCount: recentAlerts.length,
       recentAlerts,
     },
+
+    opencode: opencode.ok
+      ? {
+          reachable: opencode.value.reachable,
+          sessionCount: opencode.value.sessionCount,
+          active24h: opencode.value.active24h,
+          latestUpdatedAt: opencode.value.latestUpdatedAt,
+        }
+      : { reachable: false, sessionCount: null, active24h: null, latestUpdatedAt: null },
   };
 
   return { data, sources };

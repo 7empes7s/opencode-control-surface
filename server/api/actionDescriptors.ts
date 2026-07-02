@@ -489,6 +489,7 @@ function readGpuHealth(): InfraDetail["gpu"] | undefined {
       gpuUtil: raw.gpu_max_util ?? null,
       loadedModels: raw.models ?? [],
       checkedAgo: raw.checked_at ? Math.round((Date.now() - raw.checked_at * 1000) / 1000) : -1,
+      note: null,
     };
   } catch {
     return undefined;

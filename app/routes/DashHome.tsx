@@ -6,7 +6,7 @@ import type { HomeData } from "../../server/api/types";
 import { BarChart, Bar, ResponsiveContainer, Tooltip, Cell } from "recharts";
 import { AnimatedNumber, AreaSparkline, Gauge, LiveTick, PipelineFlowBar } from "../components/AnimatedCharts";
 import { authFetch } from "../lib/authFetch";
-import { AlertTriangle, ArrowUpRight, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, ChevronDown, ChevronUp, Eye, EyeOff, Settings2, Sparkles } from "lucide-react";
 
 interface MissionControlData {
   nowCard: {
@@ -440,11 +440,126 @@ function ShowcaseTile() {
   );
 }
 
+// ── Home widget layout (hide/reorder, persisted in localStorage) ──────────
+const HOME_WIDGETS: Array<{ id: string; label: string }> = [
+  { id: "governance", label: "Governance" },
+  { id: "product-health", label: "Product health" },
+  { id: "showcase", label: "Showcase metrics" },
+  { id: "mission-control", label: "Mission control" },
+  { id: "stack-health", label: "Stack health" },
+  { id: "newsbites", label: "NewsBites" },
+  { id: "autopipeline", label: "Autopipeline" },
+  { id: "reasoner", label: "Reasoner status" },
+  { id: "orchestrator", label: "Orchestrator status" },
+  { id: "doctor", label: "Doctor" },
+  { id: "models", label: "Models" },
+  { id: "opencode-incidents", label: "OpenCode & incidents" },
+];
+const HOME_WIDGET_LABELS = Object.fromEntries(HOME_WIDGETS.map((w) => [w.id, w.label]));
+const HOME_LAYOUT_KEY = "cs.home.layout.v1";
+
+type HomeLayout = { order: string[]; hidden: string[] };
+
+function loadHomeLayout(): HomeLayout {
+  try {
+    const raw = localStorage.getItem(HOME_LAYOUT_KEY);
+    if (!raw) return { order: [], hidden: [] };
+    const parsed = JSON.parse(raw) as Partial<HomeLayout>;
+    return {
+      order: Array.isArray(parsed.order) ? parsed.order.filter((x): x is string => typeof x === "string") : [],
+      hidden: Array.isArray(parsed.hidden) ? parsed.hidden.filter((x): x is string => typeof x === "string") : [],
+    };
+  } catch {
+    return { order: [], hidden: [] };
+  }
+}
+
+function useHomeLayout() {
+  const [layout, setLayout] = useState<HomeLayout>(loadHomeLayout);
+  const [editMode, setEditMode] = useState(false);
+
+  function update(next: HomeLayout) {
+    setLayout(next);
+    try {
+      localStorage.setItem(HOME_LAYOUT_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage unavailable (private mode) — layout still applies for this visit
+    }
+  }
+
+  const knownIds = HOME_WIDGETS.map((w) => w.id);
+  const orderedIds = [
+    ...layout.order.filter((id) => knownIds.includes(id)),
+    ...knownIds.filter((id) => !layout.order.includes(id)),
+  ];
+  const hidden = layout.hidden.filter((id) => knownIds.includes(id));
+
+  function move(id: string, delta: number) {
+    const idx = orderedIds.indexOf(id);
+    if (idx === -1) return;
+    let swapWith = idx + delta;
+    while (swapWith >= 0 && swapWith < orderedIds.length && hidden.includes(orderedIds[swapWith])) {
+      swapWith += delta;
+    }
+    if (swapWith < 0 || swapWith >= orderedIds.length) return;
+    const next = [...orderedIds];
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    update({ order: next, hidden });
+  }
+
+  function hide(id: string) {
+    update({ order: orderedIds, hidden: [...hidden, id] });
+  }
+
+  function show(id: string) {
+    update({ order: orderedIds, hidden: hidden.filter((h) => h !== id) });
+  }
+
+  return { orderedIds, hidden, editMode, setEditMode, move, hide, show };
+}
+
+function HomeWidget({
+  id, order, index, lastIndex, editMode, isHidden, onMove, onHide, children,
+}: {
+  id: string;
+  order: number;
+  index: number;
+  lastIndex: number;
+  editMode: boolean;
+  isHidden: boolean;
+  onMove: (id: string, delta: number) => void;
+  onHide: (id: string) => void;
+  children: React.ReactNode;
+}) {
+  if (isHidden) return null;
+  const label = HOME_WIDGET_LABELS[id] ?? id;
+  return (
+    <div className="home-widget" style={{ order }}>
+      {editMode && (
+        <div className="home-widget-controls">
+          <span className="home-widget-controls-label">{label}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onMove(id, -1)} disabled={index === 0} aria-label={`Move ${label} up`}>
+            <ChevronUp size={14} />
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onMove(id, 1)} disabled={index === lastIndex} aria-label={`Move ${label} down`}>
+            <ChevronDown size={14} />
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onHide(id)} aria-label={`Hide ${label}`}>
+            <EyeOff size={14} /> hide
+          </button>
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 export function DashHome() {
   const { data: streamData, connected } = useStream<HomeData>("/api/stream");
   // Fallback poll for initial load if SSE hasn't fired yet
   const { data: pollData, loading, error } = useApi<HomeData>("/api/home", 60_000);
   const { data: insightsData } = useApi<{ insights: unknown[]; openCount: number }>("/api/insights?status=open", 10_000);
+  const homeLayout = useHomeLayout();
   const data = streamData ?? pollData;
 
   if (loading && !data) return <HomeLoadingState />;
@@ -453,8 +568,8 @@ export function DashHome() {
 
   const d = data;
 
-  // GPU pill color
-  const gpuColor = d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : "amber";
+  // GPU pill color — "off" is an operator choice, not a failure
+  const gpuColor = d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : d.gpu.status === "off" ? "gray" : "amber";
 
   // Autopipeline color
   const pipeColor = d.autopipeline.paused ? "amber" : "green";
@@ -467,22 +582,54 @@ export function DashHome() {
   // Model quality summary
   const qualityProblems = d.models.qualitySummary.blocked + d.models.qualitySummary.degraded + d.models.qualitySummary.probation;
 
+  const visibleIds = homeLayout.orderedIds.filter((id) => !homeLayout.hidden.includes(id));
+  const widgetProps = (id: string) => ({
+    id,
+    order: homeLayout.orderedIds.indexOf(id),
+    index: visibleIds.indexOf(id),
+    lastIndex: visibleIds.length - 1,
+    editMode: homeLayout.editMode,
+    isHidden: homeLayout.hidden.includes(id),
+    onMove: homeLayout.move,
+    onHide: homeLayout.hide,
+  });
+
   return (
-    <div className="dash-page">
+    <div className="dash-page home-customizable">
+
+      <div className="home-customize-bar">
+        {!homeLayout.editMode && homeLayout.hidden.length > 0 && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.setEditMode(true)}>
+            <Eye size={14} /> {homeLayout.hidden.length} hidden
+          </button>
+        )}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.setEditMode(!homeLayout.editMode)}>
+          <Settings2 size={14} /> {homeLayout.editMode ? "done" : "customize"}
+        </button>
+      </div>
 
       {/* ── Admin Center governance cluster ───────────── */}
-      <GovernanceCluster />
+      <HomeWidget {...widgetProps("governance")}>
+        <GovernanceCluster />
+      </HomeWidget>
 
       {/* ── Product health (sentinel scorecard) ─────────── */}
-      <ProductHealthTile />
+      <HomeWidget {...widgetProps("product-health")}>
+        <ProductHealthTile />
+      </HomeWidget>
 
       {/* ── Showcase metrics (self-correction story) ────── */}
-      <ShowcaseTile />
+      <HomeWidget {...widgetProps("showcase")}>
+        <ShowcaseTile />
+      </HomeWidget>
 
       {/* ── Mission Control deck ────────────────────────── */}
-      <MissionControlDeck />
+      <HomeWidget {...widgetProps("mission-control")}>
+        <MissionControlDeck />
+      </HomeWidget>
 
       {/* ── Stack health ─────────────────────────────── */}
+      <HomeWidget {...widgetProps("stack-health")}>
       <div className="dash-section">
         <div className="dash-section-title">stack health</div>
         <WCard href="/infra" className="full">
@@ -508,14 +655,14 @@ export function DashHome() {
             {d.gpu.gpuUtil !== null ? (
               <Gauge pct={d.gpu.gpuUtil} label="utilization" />
             ) : (
-              <div className="w-caption" style={{ marginTop: 6 }}>util not available</div>
+              <div className="w-caption" style={{ marginTop: 6 }}>{d.gpu.note ?? "util not available"}</div>
             )}
             {d.gpu.loadedModels.length > 0 && (
               <div className="w-caption" style={{ marginTop: 4 }}>
                 {d.gpu.loadedModels.join(", ")}
               </div>
             )}
-            <div className="w-caption">{fmtAge(d.gpu.checkedAgo)}</div>
+            {d.gpu.status !== "off" && <div className="w-caption">{fmtAge(d.gpu.checkedAgo)}</div>}
           </WCard>
 
           <WCard href="/infra#vast">
@@ -544,8 +691,10 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+      </HomeWidget>
 
       {/* ── NewsBites ─────────────────────────────────── */}
+      <HomeWidget {...widgetProps("newsbites")}>
       <div className="dash-section">
         <div className="dash-section-title">newsbites</div>
         <div className="widget-grid">
@@ -587,8 +736,10 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+      </HomeWidget>
 
       {/* ── Autopipeline ──────────────────────────────── */}
+      <HomeWidget {...widgetProps("autopipeline")}>
       <div className="dash-section">
         <div className="dash-section-title">autopipeline</div>
         <div className="widget-grid">
@@ -637,14 +788,20 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+      </HomeWidget>
 
       {/* ── Reasoner status ───────────────────────────── */}
-      <ReasonerStatusStrip />
+      <HomeWidget {...widgetProps("reasoner")}>
+        <ReasonerStatusStrip />
+      </HomeWidget>
 
       {/* ── Orchestrator status ───────────────────────── */}
-      <OrchestratorStatusStrip />
+      <HomeWidget {...widgetProps("orchestrator")}>
+        <OrchestratorStatusStrip />
+      </HomeWidget>
 
       {/* ── Doctor ────────────────────────────────────── */}
+      <HomeWidget {...widgetProps("doctor")}>
       <div className="dash-section">
         <div className="dash-section-title">doctor</div>
         <div className="widget-grid">
@@ -690,8 +847,10 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+      </HomeWidget>
 
       {/* ── Models ────────────────────────────────────── */}
+      <HomeWidget {...widgetProps("models")}>
       <div className="dash-section">
         <div className="dash-section-title">models</div>
         <div className="widget-grid">
@@ -777,17 +936,32 @@ export function DashHome() {
           )}
         </div>
       </div>
+      </HomeWidget>
 
       {/* ── OpenCode + Incidents ─────────────────────── */}
+      <HomeWidget {...widgetProps("opencode-incidents")}>
       <div className="dash-section">
         <div className="dash-section-title">opencode · incidents</div>
         <div className="widget-grid">
           <WCard href="/opencode">
-            <div className="w-label">opencode</div>
-            <div className="w-row">
+            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              opencode sessions
+              <Pill color={d.opencode.reachable ? "green" : "red"}>{d.opencode.reachable ? "reachable" : "unreachable"}</Pill>
+            </div>
+            {d.opencode.reachable && d.opencode.sessionCount !== null ? (
+              <>
+                <div className="w-headline"><AnimatedNumber value={d.opencode.sessionCount} /></div>
+                <div className="w-caption">
+                  {d.opencode.active24h ?? 0} active in 24h
+                  {d.opencode.latestUpdatedAt !== null && ` · latest ${fmtAge(Math.round((Date.now() - d.opencode.latestUpdatedAt) / 1000))}`}
+                </div>
+              </>
+            ) : (
+              <div className="w-caption" style={{ marginTop: 6 }}>OpenCode server did not respond — session count unavailable.</div>
+            )}
+            <div className="w-row" style={{ marginTop: 6 }}>
               <Pill color="blue">open chat →</Pill>
             </div>
-            <div className="w-caption" style={{ marginTop: 6 }}>existing session UI</div>
           </WCard>
 
           <WCard href="/incidents">
@@ -805,6 +979,18 @@ export function DashHome() {
           </WCard>
         </div>
       </div>
+      </HomeWidget>
+
+      {homeLayout.editMode && homeLayout.hidden.length > 0 && (
+        <div className="home-hidden-tray" style={{ order: 999 }}>
+          <span className="w-label">hidden widgets</span>
+          {homeLayout.hidden.map((id) => (
+            <button key={id} type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.show(id)}>
+              <Eye size={13} /> {HOME_WIDGET_LABELS[id] ?? id}
+            </button>
+          ))}
+        </div>
+      )}
 
     </div>
   );
