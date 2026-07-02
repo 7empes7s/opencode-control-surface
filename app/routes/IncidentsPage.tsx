@@ -191,6 +191,23 @@ function IncidentLifecycleCard({
         <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? savePostMortem.success}</div>
       )}
 
+      {incident.autoClosed && (
+        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+          <CheckCircle2 size={15} />
+          <div>
+            <strong>Auto-closed by system</strong>
+            <div style={{ marginTop: 4 }}>
+              {incident.autoCloseReason ?? "The underlying condition cleared in a product-health scan."}
+            </div>
+            {incident.autoCloseAt !== null && (
+              <div className="dim" style={{ marginTop: 6 }}>
+                Closed {relTime(incident.autoCloseAt)} · sentinel scan · no operator action required
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="insights-message" style={{ alignItems: "flex-start" }}>
         <Sparkles size={15} />
         <div>
@@ -299,6 +316,7 @@ export function IncidentsPage() {
       row.status,
       row.rootCause ?? "",
       suggestedActionText(row.suggestedActions),
+      row.autoClosed ? "auto-closed system" : "",
     ],
     sortValue: (row, key) => {
       if (key === "lastSeen") return row.lastSeen;
@@ -476,7 +494,10 @@ export function IncidentsPage() {
                             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                           </button>
                         </td>
-                        <td><Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill></td>
+                        <td>
+                          <Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill>
+                          {incident.autoClosed && <Pill color="gray">auto-closed</Pill>}
+                        </td>
                         <td>
                           <strong>{incident.title}</strong>
                           <div className="mono dim" style={{ marginTop: 3, fontSize: 11 }}>{incident.id}</div>

@@ -41,6 +41,10 @@ export interface ReasonerIncidentEntry {
   evidence: unknown;
   diagnosisHref: string;
   passEvidenceHref: string;
+  autoClosed: boolean;
+  resolutionSource: "system" | "operator" | null;
+  autoCloseReason: string | null;
+  autoCloseAt: number | null;
 }
 
 export interface IncidentPostMortemSuggestion {
@@ -166,6 +170,21 @@ function buildSuggestionPrompt(row: ReasonerIncidentRow): string {
   ].join("\n");
 }
 
+export function sanitizePostMortemSuggestion(raw: string): { text: string; usable: boolean } {
+  // 1) strip explicit reasoning wrappers
+  let t = String(raw ?? "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, "")
+    .replace(/<\/?(think|reasoning)>/gi, "")
+    .trim();
+  // 2) if the remaining text still reads like leaked chain-of-thought, reject it
+  const head = t.slice(0, 180).toLowerCase();
+  const reasoningStart = /^(the user (wants|is asking|has asked|would like)|okay[,.\s]|let me\b|let's\b|i need to\b|i'?ll\b|i will\b|i should\b|first,?\s+(i|let)|alright[,.\s]|so,?\s+the\b|looking at (the|this)\b|we need to\b|to (write|draft) (this|the|a))/;
+  const metaPhrase = /(let me (draft|analyze|write|think|start|begin)|i'?m going to (write|draft|analyze)|the user wants me to|i need to (write|draft|produce)\b|based on the (data|incident)[^.]{0,40}\b(let me|i'?ll|i will)\b)/i;
+  const usable = t.length > 0 && !reasoningStart.test(head) && !metaPhrase.test(t.slice(0, 500));
+  return { text: t, usable };
+}
+
 function isIncidentGrade(insight: Insight): boolean {
   if (insight.status !== "open") return false;
   if (!["ops", "security", "build"].includes(insight.domain)) return false;
@@ -216,6 +235,22 @@ function getReasonerRows(): ReasonerIncidentRow[] {
   `).all(tenantId) as ReasonerIncidentRow[];
 }
 
+function getAutoCloseAudits(): Map<string, { reason: string | null; ts: number }> {
+  const map = new Map<string, { reason: string | null; ts: number }>();
+  if (!isDashboardDbEnabled()) return map;
+  const db = getDashboardDb();
+  if (!db) return map;
+  const tenantId = getCurrentTenantContext().tenantId;
+  const rows = db.query(`
+    SELECT target_id, reason, ts FROM action_audit
+    WHERE action_kind = 'incidents.auto-close' AND target_type = 'incident'
+      AND (tenant_id = ? OR tenant_id IS NULL)
+    ORDER BY ts ASC
+  `).all(tenantId) as Array<{ target_id: string | null; reason: string | null; ts: number }>;
+  for (const r of rows) { if (r.target_id) map.set(r.target_id, { reason: r.reason, ts: r.ts }); }
+  return map;
+}
+
 function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): IncidentSlaMetrics {
   const ackDurations = rows
     .filter((row) => row.acknowledged_at !== null)
@@ -245,7 +280,10 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
   };
 }
 
-function mapReasonerIncident(row: ReasonerIncidentRow): ReasonerIncidentEntry {
+function mapReasonerIncident(row: ReasonerIncidentRow, autoCloseAudits: Map<string, { reason: string | null; ts: number }>): ReasonerIncidentEntry {
+  const auto = autoCloseAudits.get(row.id);
+  const autoClosed = auto !== undefined;
+  const resolutionSource: "system" | "operator" | null = autoClosed ? "system" : (row.status === "resolved" ? "operator" : null);
   return {
     id: row.id,
     clusterKey: row.cluster_key,
@@ -266,12 +304,17 @@ function mapReasonerIncident(row: ReasonerIncidentRow): ReasonerIncidentEntry {
     evidence: parseJsonField(row.evidence_json, null),
     diagnosisHref: `/api/reasoner/incidents/${encodeURIComponent(row.id)}`,
     passEvidenceHref: `/api/builder/passes/${encodeURIComponent(row.representative_pass_id)}/diagnosis`,
+    autoClosed,
+    resolutionSource,
+    autoCloseReason: auto?.reason ?? null,
+    autoCloseAt: auto?.ts ?? null,
   };
 }
 
 export function buildIncidentsDetail(): IncidentsDetail {
   const all = getIncidentEntries();
   const reasonerRows = getReasonerRows();
+  const autoCloseAudits = getAutoCloseAudits();
 
   const now = Date.now();
   const window24h = 24 * 60 * 60 * 1000;
@@ -297,7 +340,7 @@ export function buildIncidentsDetail(): IncidentsDetail {
 
   return {
     entries: all,
-    reasonerIncidents: reasonerRows.map(mapReasonerIncident),
+    reasonerIncidents: reasonerRows.map((row) => mapReasonerIncident(row, autoCloseAudits)),
     sla: buildSlaMetrics(reasonerRows, now),
     stats: { total: all.length, last24h, byErrorType, byStage },
   };
@@ -449,10 +492,12 @@ export async function incidentSuggestPostMortemHandler(id: string): Promise<Resp
       },
     );
     const content = parseLlmTextContent(response.choices?.[0]?.message?.content);
-    if (content.length > 0) {
-      suggestion = content.slice(0, 5000);
+    const cleaned = sanitizePostMortemSuggestion(content);
+    if (cleaned.usable) {
+      suggestion = cleaned.text.slice(0, 5000);
       source = "ai";
     }
+    // else: keep the deterministic buildPostMortemTemplate() fallback already assigned to `suggestion`
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
   }

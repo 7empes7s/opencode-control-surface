@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { writeActionAudit } from "../db/writer.ts";
 import { handleApi } from "./router.ts";
-import { buildIncidentsDetail } from "./incidents.ts";
+import { buildIncidentsDetail, sanitizePostMortemSuggestion } from "./incidents.ts";
 
 describe("incidents SLA and lifecycle API", () => {
   let tempDir: string;
@@ -184,5 +185,59 @@ describe("incidents SLA and lifecycle API", () => {
     const res = await handleApi(req, new URL(req.url));
 
     expect(res.status).toBe(401);
+  });
+
+  it("derives auto-close status from the action_audit trail, distinct from operator resolution", () => {
+    seedIncident({ id: "incident-auto-closed", firstSeen: 1_000, resolvedAt: 5_000, status: "resolved" });
+    writeActionAudit({
+      actor: "system",
+      actorSource: "sentinel-scan",
+      actionKind: "incidents.auto-close",
+      targetType: "incident",
+      targetId: "incident-auto-closed",
+      reason: "auto-closed: finding 'x' no longer failing",
+    });
+
+    seedIncident({ id: "incident-operator-resolved", firstSeen: 1_000, resolvedAt: 5_000, status: "resolved" });
+
+    seedIncident({ id: "incident-open", firstSeen: 1_000, status: "open" });
+
+    const detail = buildIncidentsDetail();
+
+    const autoClosed = detail.reasonerIncidents.find((incident) => incident.id === "incident-auto-closed");
+    expect(autoClosed?.autoClosed).toBe(true);
+    expect(autoClosed?.resolutionSource).toBe("system");
+    expect(autoClosed?.autoCloseReason).toContain("auto-closed");
+    expect(autoClosed?.autoCloseAt).toBeGreaterThan(0);
+
+    const operatorResolved = detail.reasonerIncidents.find((incident) => incident.id === "incident-operator-resolved");
+    expect(operatorResolved?.autoClosed).toBe(false);
+    expect(operatorResolved?.resolutionSource).toBe("operator");
+
+    const open = detail.reasonerIncidents.find((incident) => incident.id === "incident-open");
+    expect(open?.autoClosed).toBe(false);
+    expect(open?.resolutionSource).toBe(null);
+  });
+});
+
+describe("sanitizePostMortemSuggestion", () => {
+  it("rejects leaked chain-of-thought text", () => {
+    const raw = "The user wants me to write a post-mortem note based on the incident data provided. Let me analyze the data:\n- Incident ID: ri_x\nLet me draft: \"The";
+    const result = sanitizePostMortemSuggestion(raw);
+    expect(result.usable).toBe(false);
+  });
+
+  it("accepts a clean post-mortem unchanged", () => {
+    const raw = "The litellm.service outage was detected by sentinel_health monitoring and lasted about 30 minutes. Root cause was not recorded. Follow up by confirming the fix held.";
+    const result = sanitizePostMortemSuggestion(raw);
+    expect(result.usable).toBe(true);
+    expect(result.text).toBe(raw);
+  });
+
+  it("strips a <think> block and accepts the remaining clean text", () => {
+    const raw = "<think>I should mention the timeline and cause.</think>The service recovered after 30 minutes; monitor for recurrence.";
+    const result = sanitizePostMortemSuggestion(raw);
+    expect(result.usable).toBe(true);
+    expect(result.text.startsWith("The service recovered")).toBe(true);
   });
 });
