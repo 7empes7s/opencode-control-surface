@@ -310,8 +310,7 @@ function addIncidentActions(actions: ActionDescriptor[], incidents: CatalogInput
         risk: kind === "resolve" ? "medium" : "low",
         confirm: kind !== "acknowledge",
         reasonRequired: kind !== "acknowledge",
-        disabled: true,
-        disabledReason: "Incident lifecycle storage lands with the durable actions slice.",
+        disabled: false,
         evidenceRefs: evidence,
         sourceRoute: "/incidents",
       }));
@@ -429,7 +428,6 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addQueueActions(actions, input.queue);
   addModelActions(actions, input.models);
   addArticleActions(actions, input.articles);
-  addIncidentActions(actions, input.incidents);
   addDoctorActions(actions, input.doctorEntries);
   addVastAndGpuActions(actions, input);
   return actions;

@@ -58,6 +58,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   if (kind === "mitigate") return { confirm: true, reasonRequired: true };
   if (kind === "resolve") return { confirm: true, reasonRequired: true };
   if (kind === "mute") return { confirm: true, reasonRequired: true };
+  if (kind === "unmute") return { confirm: false, reasonRequired: false };
   return { confirm: false, reasonRequired: false };
 }
 
@@ -83,6 +84,8 @@ function rollbackHintForActionId(actionId: string): string | undefined {
   if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
     return "start-job:gateway:clear-route-override";
   }
+  if (kind === "mute" && targetType === "incident") return `unmute:incident:${targetId}`;
+  if (kind === "unmute" && targetType === "incident") return `mute:incident:${targetId}`;
   return undefined;
 }
 
@@ -402,7 +405,64 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
   }
 
   if (kind === "mute" && targetType === "incident") {
-    return { ok: false, error: "incident mute is not implemented", code: "NOT_IMPLEMENTED" };
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const now = Date.now();
+      const ctx = getCurrentTenantContext();
+      const actor = ctx.actor ?? "operator";
+      const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 2_000) : "";
+      const rawDuration = body.params?.durationMs;
+      const durationMs = typeof rawDuration === "number" && Number.isFinite(rawDuration) && rawDuration > 0
+        ? Math.min(rawDuration, 90 * 24 * 60 * 60 * 1000)
+        : null;
+      const mutedUntil = durationMs !== null ? now + durationMs : null;
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+      db.query(`
+        UPDATE reasoner_incidents
+        SET muted_at = ?,
+            muted_by = ?,
+            mute_reason = ?,
+            muted_until = ?
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(now, actor, reason, mutedUntil, targetId, ctx.tenantId);
+      const untilText = mutedUntil !== null ? ` until ${new Date(mutedUntil).toISOString()}` : " until unmuted";
+      return { ok: true, action: "mute", message: `incident ${targetId} muted${untilText}` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "unmute" && targetType === "incident") {
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const ctx = getCurrentTenantContext();
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+      db.query(`
+        UPDATE reasoner_incidents
+        SET muted_at = NULL,
+            muted_by = NULL,
+            mute_reason = NULL,
+            muted_until = NULL
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(targetId, ctx.tenantId);
+      return { ok: true, action: "unmute", message: `incident ${targetId} unmuted` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
   }
 
   return { ok: false, error: "action not supported: " + kind, code: "NOT_FOUND" };

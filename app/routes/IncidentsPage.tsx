@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
@@ -75,6 +75,14 @@ function suggestedActionText(actions: unknown[]): string {
   return String(first);
 }
 
+const MUTE_DURATIONS: { ms: number; label: string }[] = [
+  { ms: 0, label: "until unmuted" },
+  { ms: 60 * 60 * 1000, label: "1 hour" },
+  { ms: 4 * 60 * 60 * 1000, label: "4 hours" },
+  { ms: 24 * 60 * 60 * 1000, label: "24 hours" },
+  { ms: 7 * 24 * 60 * 60 * 1000, label: "7 days" },
+];
+
 function IncidentLifecycleCard({
   incident,
   onChanged,
@@ -84,10 +92,14 @@ function IncidentLifecycleCard({
 }) {
   const ack = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/ack`);
   const mitigate = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/mitigate`);
+  const mute = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/mute`);
+  const unmute = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/unmute`);
   const resolve = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/resolve`);
   const savePostMortem = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/post-mortem`);
   const [note, setNote] = useState(incident.postMortem ?? "");
   const [resolveReason, setResolveReason] = useState("Resolved from incidents page");
+  const [muteReason, setMuteReason] = useState("Muted from incidents page");
+  const [muteDuration, setMuteDuration] = useState<string>("0");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
 
@@ -107,6 +119,19 @@ function IncidentLifecycleCard({
   async function resolveIncident() {
     if (!window.confirm(`Resolve ${incident.title}?`)) return;
     if (await resolve.run({ reason: resolveReason })) onChanged();
+  }
+
+  async function muteIncident() {
+    const ms = Number(muteDuration);
+    const label = ms > 0 ? `Snooze ${incident.title} for ${MUTE_DURATIONS.find((d) => d.ms === ms)?.label ?? "a while"}?` : `Mute ${incident.title} until unmuted?`;
+    if (!window.confirm(label)) return;
+    const params: { reason: string; durationMs?: number } = { reason: muteReason };
+    if (ms > 0) params.durationMs = ms;
+    if (await mute.run(params)) onChanged();
+  }
+
+  async function unmuteIncident() {
+    if (await unmute.run()) onChanged();
   }
 
   async function saveNote() {
@@ -181,14 +206,37 @@ function IncidentLifecycleCard({
             <ShieldCheck size={15} />
             Resolve
           </button>
+          {incident.muteActive ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={unmuteIncident}
+              disabled={unmute.loading}
+              style={{ minHeight: 44 }}
+            >
+              <BellRing size={15} />
+              Unmute
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={muteIncident}
+              disabled={mute.loading || incident.status === "resolved"}
+              style={{ minHeight: 44 }}
+            >
+              <BellOff size={15} />
+              Mute
+            </button>
+          )}
         </div>
       </div>
 
-      {(ack.error || mitigate.error || resolve.error || savePostMortem.error) && (
-        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? savePostMortem.error}</div>
+      {(ack.error || mitigate.error || resolve.error || mute.error || unmute.error || savePostMortem.error) && (
+        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? mute.error ?? unmute.error ?? savePostMortem.error}</div>
       )}
-      {(ack.success || mitigate.success || resolve.success || savePostMortem.success) && (
-        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? savePostMortem.success}</div>
+      {(ack.success || mitigate.success || resolve.success || mute.success || unmute.success || savePostMortem.success) && (
+        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? mute.success ?? unmute.success ?? savePostMortem.success}</div>
       )}
 
       {incident.autoClosed && (
@@ -204,6 +252,22 @@ function IncidentLifecycleCard({
                 Closed {relTime(incident.autoCloseAt)} · sentinel scan · no operator action required
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {incident.muteActive && incident.mutedAt !== null && (
+        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+          <BellOff size={15} />
+          <div>
+            <strong>Muted</strong>
+            <div style={{ marginTop: 4 }}>{incident.muteReason ?? "No mute reason recorded."}</div>
+            <div className="dim" style={{ marginTop: 6 }}>
+              Muted {relTime(incident.mutedAt)}{incident.mutedBy ? ` by ${incident.mutedBy}` : ""}
+              {incident.mutedUntil !== null
+                ? ` · snoozed until ${new Date(incident.mutedUntil).toLocaleString()}`
+                : " · until unmuted"}
+            </div>
           </div>
         </div>
       )}
@@ -236,6 +300,33 @@ function IncidentLifecycleCard({
           placeholder="Reason recorded when resolving"
         />
       </label>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <label className="incident-field" style={{ flex: "1 1 220px" }}>
+          <span>Mute reason</span>
+          <input
+            value={muteReason}
+            onChange={(event) => setMuteReason(event.currentTarget.value)}
+            className="incident-text-input"
+            placeholder="Reason recorded when muting"
+            disabled={incident.muteActive}
+          />
+        </label>
+        <label className="incident-field" style={{ flex: "0 1 180px" }}>
+          <span>Snooze for</span>
+          <select
+            value={muteDuration}
+            onChange={(event) => setMuteDuration(event.currentTarget.value)}
+            className="incident-text-input"
+            disabled={incident.muteActive}
+            style={{ minHeight: 44 }}
+          >
+            {MUTE_DURATIONS.map((d) => (
+              <option key={d.ms} value={String(d.ms)}>{d.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       <label className="incident-field">
         <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700 }}>
@@ -317,6 +408,7 @@ export function IncidentsPage() {
       row.rootCause ?? "",
       suggestedActionText(row.suggestedActions),
       row.autoClosed ? "auto-closed system" : "",
+      row.muteActive ? "muted snoozed" : "",
     ],
     sortValue: (row, key) => {
       if (key === "lastSeen") return row.lastSeen;
@@ -497,6 +589,7 @@ export function IncidentsPage() {
                         <td>
                           <Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill>
                           {incident.autoClosed && <Pill color="gray">auto-closed</Pill>}
+                          {incident.muteActive && <Pill color="gray">muted</Pill>}
                         </td>
                         <td>
                           <strong>{incident.title}</strong>

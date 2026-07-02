@@ -178,6 +178,175 @@ describe("incidents SLA and lifecycle API", () => {
     expect(audit?.action_id).toBe("post-mortem:incident:incident-postmortem");
   });
 
+  it("mutes incidents through the token-gated audited handler", async () => {
+    seedIncident({ id: "incident-muted", firstSeen: 1_000 });
+
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-muted/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "noisy duplicate while build is already being fixed" }),
+      }),
+      new URL("http://localhost/api/incidents/incident-muted/mute"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    const row = getDashboardDb()!.query(`
+      SELECT muted_at, muted_by, mute_reason
+      FROM reasoner_incidents
+      WHERE id = ?
+    `).get("incident-muted") as { muted_at: number | null; muted_by: string | null; mute_reason: string | null };
+    expect(row.muted_at).toBeGreaterThan(0);
+    expect(row.muted_by).toBe("operator");
+    expect(row.mute_reason).toBe("noisy duplicate while build is already being fixed");
+
+    const detail = buildIncidentsDetail();
+    const muted = detail.reasonerIncidents.find((incident) => incident.id === "incident-muted");
+    expect(muted?.mutedAt).toBe(row.muted_at);
+    expect(muted?.mutedBy).toBe("operator");
+    expect(muted?.muteReason).toBe("noisy duplicate while build is already being fixed");
+    expect(muted?.mutedUntil).toBeNull();
+    expect(muted?.muteActive).toBe(true);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_id, reason, result_status FROM action_audit
+      WHERE action_id = ?
+    `).get("mute:incident:incident-muted") as { action_id: string; reason: string | null; result_status: string } | null;
+    expect(audit?.action_id).toBe("mute:incident:incident-muted");
+    expect(audit?.reason).toBe("noisy duplicate while build is already being fixed");
+    expect(audit?.result_status).toBe("success");
+  });
+
+  it("snoozes incidents with durationMs and expires the mute after the deadline", async () => {
+    seedIncident({ id: "incident-snoozed", firstSeen: 1_000 });
+
+    const before = Date.now();
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-snoozed/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "snooze for an hour", durationMs: 60 * 60 * 1000 }),
+      }),
+      new URL("http://localhost/api/incidents/incident-snoozed/mute"),
+    );
+    expect(res.status).toBe(200);
+
+    const row = getDashboardDb()!.query(`
+      SELECT muted_at, muted_until FROM reasoner_incidents WHERE id = ?
+    `).get("incident-snoozed") as { muted_at: number | null; muted_until: number | null };
+    expect(row.muted_at).toBeGreaterThanOrEqual(before);
+    expect(row.muted_until).toBe((row.muted_at ?? 0) + 60 * 60 * 1000);
+
+    const detail = buildIncidentsDetail();
+    const snoozed = detail.reasonerIncidents.find((incident) => incident.id === "incident-snoozed");
+    expect(snoozed?.mutedUntil).toBe(row.muted_until);
+    expect(snoozed?.muteActive).toBe(true);
+
+    // Simulate the deadline passing: an expired snooze reads as not muted.
+    getDashboardDb()!.query(`
+      UPDATE reasoner_incidents SET muted_until = ? WHERE id = ?
+    `).run(Date.now() - 1_000, "incident-snoozed");
+    const expired = buildIncidentsDetail().reasonerIncidents.find((incident) => incident.id === "incident-snoozed");
+    expect(expired?.muteActive).toBe(false);
+    expect(expired?.mutedAt).not.toBeNull();
+  });
+
+  it("caps snooze duration at 90 days and ignores invalid durations", async () => {
+    seedIncident({ id: "incident-capped", firstSeen: 1_000 });
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-capped/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "absurd snooze", durationMs: 400 * 24 * 60 * 60 * 1000 }),
+      }),
+      new URL("http://localhost/api/incidents/incident-capped/mute"),
+    );
+    expect(res.status).toBe(200);
+    const row = getDashboardDb()!.query(`
+      SELECT muted_at, muted_until FROM reasoner_incidents WHERE id = ?
+    `).get("incident-capped") as { muted_at: number; muted_until: number };
+    expect(row.muted_until - row.muted_at).toBe(90 * 24 * 60 * 60 * 1000);
+
+    seedIncident({ id: "incident-bad-duration", firstSeen: 1_000 });
+    const badRes = await handleApi(
+      apiReq("/api/incidents/incident-bad-duration/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "negative duration", durationMs: -5 }),
+      }),
+      new URL("http://localhost/api/incidents/incident-bad-duration/mute"),
+    );
+    expect(badRes.status).toBe(200);
+    const badRow = getDashboardDb()!.query(`
+      SELECT muted_until FROM reasoner_incidents WHERE id = ?
+    `).get("incident-bad-duration") as { muted_until: number | null };
+    expect(badRow.muted_until).toBeNull();
+  });
+
+  it("unmutes incidents, clears all mute state, and audits the action", async () => {
+    seedIncident({ id: "incident-unmuted", firstSeen: 1_000 });
+    const muteRes = await handleApi(
+      apiReq("/api/incidents/incident-unmuted/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "temporary mute", durationMs: 60 * 60 * 1000 }),
+      }),
+      new URL("http://localhost/api/incidents/incident-unmuted/mute"),
+    );
+    expect(muteRes.status).toBe(200);
+
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-unmuted/unmute", { method: "POST" }),
+      new URL("http://localhost/api/incidents/incident-unmuted/unmute"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    const row = getDashboardDb()!.query(`
+      SELECT muted_at, muted_by, mute_reason, muted_until FROM reasoner_incidents WHERE id = ?
+    `).get("incident-unmuted") as { muted_at: number | null; muted_by: string | null; mute_reason: string | null; muted_until: number | null };
+    expect(row.muted_at).toBeNull();
+    expect(row.muted_by).toBeNull();
+    expect(row.mute_reason).toBeNull();
+    expect(row.muted_until).toBeNull();
+
+    const detail = buildIncidentsDetail();
+    const unmuted = detail.reasonerIncidents.find((incident) => incident.id === "incident-unmuted");
+    expect(unmuted?.muteActive).toBe(false);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_id, result_status FROM action_audit WHERE action_id = ?
+    `).get("unmute:incident:incident-unmuted") as { action_id: string; result_status: string } | null;
+    expect(audit?.action_id).toBe("unmute:incident:incident-unmuted");
+    expect(audit?.result_status).toBe("success");
+  });
+
+  it("rejects unmute without an operator token", async () => {
+    seedIncident({ id: "incident-unmute-no-token", firstSeen: 1_000 });
+    const req = apiReq("/api/incidents/incident-unmute-no-token/unmute", { method: "POST" }, "");
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(401);
+  });
+
+  it("excludes actively muted incidents from the SLA breach count, and counts them again after expiry", async () => {
+    const now = Date.now();
+    seedIncident({ id: "incident-breaching", firstSeen: now - 25 * 60 * 60 * 1000, status: "open" });
+    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(1);
+
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-breaching/mute", {
+        method: "POST",
+        body: JSON.stringify({ reason: "known issue, fix scheduled", durationMs: 60 * 60 * 1000 }),
+      }),
+      new URL("http://localhost/api/incidents/incident-breaching/mute"),
+    );
+    expect(res.status).toBe(200);
+    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(0);
+
+    getDashboardDb()!.query(`
+      UPDATE reasoner_incidents SET muted_until = ? WHERE id = ?
+    `).run(now - 1_000, "incident-breaching");
+    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(1);
+  });
+
   it("rejects ack without an operator token", async () => {
     seedIncident({ id: "incident-no-token", firstSeen: 1_000 });
 

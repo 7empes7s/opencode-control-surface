@@ -37,6 +37,8 @@ import { infraHandler } from "./infra.ts";
 import {
   incidentAckHandler,
   incidentMitigateHandler,
+  incidentMuteHandler,
+  incidentUnmuteHandler,
   incidentPostMortemHandler,
   incidentResolveHandler,
   incidentSuggestPostMortemHandler,
@@ -760,6 +762,18 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return incidentMitigateHandler(decodeURIComponent(incidentMitigateMatch[1]));
+  }
+  const incidentMuteMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/mute$/);
+  if (method === "POST" && incidentMuteMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentMuteHandler(decodeURIComponent(incidentMuteMatch[1]), req);
+  }
+  const incidentUnmuteMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/unmute$/);
+  if (method === "POST" && incidentUnmuteMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentUnmuteHandler(decodeURIComponent(incidentUnmuteMatch[1]), req);
   }
   const incidentSuggestPostMortemMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/suggest-postmortem$/);
   if (method === "POST" && incidentSuggestPostMortemMatch) {

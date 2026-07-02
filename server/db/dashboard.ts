@@ -773,7 +773,11 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       occurrence_count INTEGER NOT NULL DEFAULT 1,
       representative_pass_id TEXT NOT NULL,
       representative_diagnosis_id TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'open'
+      status TEXT NOT NULL DEFAULT 'open',
+      muted_at INTEGER,
+      muted_by TEXT,
+      mute_reason TEXT,
+      muted_until INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_status ON reasoner_incidents (status);
     CREATE INDEX IF NOT EXISTS idx_reasoner_incidents_occurrence ON reasoner_incidents (occurrence_count);
@@ -1205,6 +1209,10 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
   ensureColumn(db, "reasoner_incidents", "mitigated_at", "INTEGER");
   ensureColumn(db, "reasoner_incidents", "mitigated_by", "TEXT");
   ensureColumn(db, "reasoner_incidents", "resolved_at", "INTEGER");
+  ensureColumn(db, "reasoner_incidents", "muted_at", "INTEGER");
+  ensureColumn(db, "reasoner_incidents", "muted_by", "TEXT");
+  ensureColumn(db, "reasoner_incidents", "mute_reason", "TEXT");
+  ensureColumn(db, "reasoner_incidents", "muted_until", "INTEGER");
   ensureColumn(db, "reasoner_incidents", "post_mortem", "TEXT");
   ensureColumn(db, "reasoner_incident_members", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_playbooks", "tenant_id", "TEXT");

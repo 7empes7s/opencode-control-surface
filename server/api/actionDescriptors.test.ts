@@ -28,7 +28,7 @@ test("catalog marks allowlisted and non-allowlisted service restarts", () => {
   expect(denied?.disabledReason).toContain("allowlist");
 });
 
-test("catalog includes disabled incident lifecycle descriptors", () => {
+test("catalog omits synthetic incident lifecycle descriptors", () => {
   const actions = buildActionCatalog({
     incidents: [
       {
@@ -49,12 +49,8 @@ test("catalog includes disabled incident lifecycle descriptors", () => {
   });
 
   const incidentActions = actions.filter((action) => action.targetType === "incident");
-  const doctorIncident = actions.find((action) => action.targetId === "doctor-abandoned:story-b:verify:quality_garbage");
 
-  expect(incidentActions.map((action) => action.kind).sort()).toEqual(["acknowledge", "acknowledge", "mute", "mute", "resolve", "resolve"]);
-  expect(incidentActions.every((action) => action.disabled)).toBe(true);
-  expect(incidentActions.every((action) => action.evidenceRefs.length > 0)).toBe(true);
-  expect(doctorIncident?.evidenceRefs.some((ref) => ref.ref.includes("doctor-log.jsonl"))).toBe(true);
+  expect(incidentActions).toEqual([]);
 });
 
 test("catalog includes model policy descriptors with audit-ready metadata", () => {

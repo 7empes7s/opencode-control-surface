@@ -35,6 +35,11 @@ export interface ReasonerIncidentEntry {
   acknowledgedAt: number | null;
   resolvedAt: number | null;
   mitigatedAt: number | null;
+  mutedAt: number | null;
+  mutedBy: string | null;
+  muteReason: string | null;
+  mutedUntil: number | null;
+  muteActive: boolean;
   postMortem: string | null;
   rootCause: string | null;
   suggestedActions: unknown[];
@@ -87,6 +92,10 @@ type ReasonerIncidentRow = {
   acknowledged_at: number | null;
   resolved_at: number | null;
   mitigated_at: number | null;
+  muted_at: number | null;
+  muted_by: string | null;
+  mute_reason: string | null;
+  muted_until: number | null;
   post_mortem: string | null;
   root_cause: string | null;
   suggested_actions_json: string | null;
@@ -225,7 +234,8 @@ function getReasonerRows(): ReasonerIncidentRow[] {
   return db.query(`
     SELECT i.id, i.cluster_key, i.failure_class, i.title, i.first_seen, i.last_seen,
            i.occurrence_count, i.representative_pass_id, i.representative_diagnosis_id,
-           i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at, i.post_mortem,
+           i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at,
+           i.muted_at, i.muted_by, i.mute_reason, i.muted_until, i.post_mortem,
            d.root_cause, d.suggested_actions_json, d.evidence_json
     FROM reasoner_incidents i
     LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
@@ -263,7 +273,7 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
     ? Math.max(...openRows.map((row) => Math.max(0, now - row.first_seen)))
     : null;
   const breachingUnacknowledgedCount = openRows.filter((row) =>
-    row.acknowledged_at === null && now - row.first_seen > SLA_BREACH_THRESHOLD_MS
+    row.acknowledged_at === null && now - row.first_seen > SLA_BREACH_THRESHOLD_MS && !isMuteActive(row, now)
   ).length;
 
   const mean = (values: number[]) =>
@@ -278,6 +288,11 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
     breachingUnacknowledgedCount,
     breachThresholdMs: SLA_BREACH_THRESHOLD_MS,
   };
+}
+
+function isMuteActive(row: Pick<ReasonerIncidentRow, "muted_at" | "muted_until">, now = Date.now()): boolean {
+  if (row.muted_at === null) return false;
+  return row.muted_until === null || row.muted_until > now;
 }
 
 function mapReasonerIncident(row: ReasonerIncidentRow, autoCloseAudits: Map<string, { reason: string | null; ts: number }>): ReasonerIncidentEntry {
@@ -298,6 +313,11 @@ function mapReasonerIncident(row: ReasonerIncidentRow, autoCloseAudits: Map<stri
     acknowledgedAt: row.acknowledged_at ?? null,
     resolvedAt: row.resolved_at ?? null,
     mitigatedAt: row.mitigated_at ?? null,
+    mutedAt: row.muted_at ?? null,
+    mutedBy: row.muted_by ?? null,
+    muteReason: row.mute_reason ?? null,
+    mutedUntil: row.muted_until ?? null,
+    muteActive: isMuteActive(row),
     postMortem: row.post_mortem ?? null,
     rootCause: row.root_cause ?? null,
     suggestedActions: parseJsonField(row.suggested_actions_json, []) as unknown[],
@@ -365,6 +385,46 @@ export async function incidentMitigateHandler(id: string): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ actionId: `mitigate:incident:${id}` }),
+  }));
+}
+
+export async function incidentMuteHandler(id: string, req: Request): Promise<Response> {
+  let body: { reason?: string; durationMs?: number } = {};
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    body = {};
+  }
+  const durationMs = typeof body.durationMs === "number" && Number.isFinite(body.durationMs) && body.durationMs > 0
+    ? body.durationMs
+    : undefined;
+  return executeActionHandler(new Request("http://control.local/api/actions/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      actionId: `mute:incident:${id}`,
+      confirmed: true,
+      reason: body.reason?.trim() || "Muted from incidents page",
+      ...(durationMs !== undefined ? { params: { durationMs } } : {}),
+    }),
+  }));
+}
+
+export async function incidentUnmuteHandler(id: string, req: Request): Promise<Response> {
+  let body: { reason?: string } = {};
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    body = {};
+  }
+  return executeActionHandler(new Request("http://control.local/api/actions/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      actionId: `unmute:incident:${id}`,
+      confirmed: true,
+      reason: body.reason?.trim() || "Unmuted from incidents page",
+    }),
   }));
 }
 
