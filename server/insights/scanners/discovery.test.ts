@@ -6,6 +6,7 @@ import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../../db/dash
 import {
   listDiscoveredAssets,
   reconcileDiscoveredAssets,
+  stableProcessSignature,
   type DiscoveredAssetInput,
 } from "../../discovery/reconcile.ts";
 import { getInsight } from "../store.ts";
@@ -78,10 +79,8 @@ describe("discovery inventory reconciliation", () => {
 });
 
 describe("discovery scanner", () => {
-  test("emits and persists an unregistered AI system finding", () => {
-    reconcileDiscoveredAssets([assetInput], Date.now());
-
-    const result = runDiscoveryScan();
+  test("emits and persists an unregistered AI system finding for a currently-present asset", () => {
+    const result = runDiscoveryScan([assetInput]);
     const asset = listDiscoveredAssets("unregistered").find((item) => item.signature === "ollama serve")!;
     const finding = result.findings.find((item) => item.sourceKey === `discovery:unregistered-ai-system:${asset.id}`);
 
@@ -89,5 +88,69 @@ describe("discovery scanner", () => {
     expect(finding!.title).toBe("An unregistered AI system was discovered");
     expect(finding!.manualPageHref).toBe("/insights");
     expect(getInsight(finding!.id)).not.toBeNull();
+  });
+
+  test("does NOT flag historical assets that are no longer present, and auto-resolves their insights", () => {
+    const t0 = Date.now();
+    const first = runDiscoveryScan([assetInput], t0);
+    expect(first.findings).toHaveLength(1);
+    const insightId = first.findings[0].id;
+
+    // Next scan: the asset has vanished (process exited). The registry keeps the row,
+    // but the inbox must not — and the open insight auto-resolves with an audit entry.
+    const second = runDiscoveryScan([], t0 + 60_000);
+    expect(second.findings).toHaveLength(0);
+    expect(second.resolvedCount).toBe(1);
+    expect(getInsight(insightId)!.status).toBe("resolved");
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_kind FROM action_audit WHERE target_id = ? AND action_kind = 'insights.auto-resolve'
+    `).get(insightId) as { action_kind: string } | null;
+    expect(audit?.action_kind).toBe("insights.auto-resolve");
+  });
+
+  test("re-appearing assets re-open a finding on the same stable identity", () => {
+    const t0 = Date.now();
+    runDiscoveryScan([assetInput], t0);
+    runDiscoveryScan([], t0 + 60_000);
+    const third = runDiscoveryScan([assetInput], t0 + 120_000);
+    expect(third.findings).toHaveLength(1);
+
+    // Same asset id both times — identity is stable, not per-invocation.
+    const assets = listDiscoveredAssets("unregistered").filter((item) => item.signature === "ollama serve");
+    expect(assets).toHaveLength(1);
+  });
+
+  test("prunes unregistered assets past the retention window but keeps operator-decided rows", () => {
+    const old = Date.now() - 45 * 24 * 60 * 60 * 1000;
+    reconcileDiscoveredAssets([assetInput], old);
+    reconcileDiscoveredAssets([{ ...assetInput, signature: "vllm serve" }], old);
+    getDashboardDb()!.query("UPDATE discovered_assets SET status = 'ignored', ignored_reason = 'known' WHERE signature = 'vllm serve'").run();
+
+    reconcileDiscoveredAssets([], Date.now());
+    const signatures = listDiscoveredAssets().map((a) => a.signature);
+    expect(signatures).not.toContain("ollama serve");
+    expect(signatures).toContain("vllm serve");
+  });
+});
+
+describe("stable process signatures", () => {
+  test("collapses per-session cmdline churn to one identity", () => {
+    const a = stableProcessSignature("node /usr/bin/opencode serve --port 4096 --hostname 0.0.0.0");
+    const b = stableProcessSignature("node /usr/bin/opencode serve --port 5011 --hostname 127.0.0.1");
+    expect(a).toBe(b);
+    expect(a).toContain("opencode");
+  });
+
+  test("keeps distinct AI systems distinct", () => {
+    const opencode = stableProcessSignature("node /usr/bin/opencode serve --port 4096");
+    const mcp = stableProcessSignature("node /usr/bin/mcp-server-filesystem /opt/ai-vault");
+    expect(opencode).not.toBe(mcp);
+  });
+
+  test("collapses shell-snapshot noise from CLI sessions", () => {
+    const a = stableProcessSignature("/bin/bash -c source /root/.claude/shell-snapshots/snapshot-bash-111-aa.sh");
+    const b = stableProcessSignature("/bin/bash -c source /root/.claude/shell-snapshots/snapshot-bash-222-bb.sh");
+    expect(a).toBe(b);
   });
 });

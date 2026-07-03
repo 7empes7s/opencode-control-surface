@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,9 +13,7 @@ let stubbedError: Error | null = null;
 let stubbedAnswerByModel: Record<string, string> = {};
 let stubbedJudgeByModel: Record<string, string> = {};
 
-mock.module("../gateway/router.ts", () => {
-  return {
-    gatewayComplete: async (
+const stubGatewayComplete = async (
       logicalModel: string,
       req: { model?: string; messages?: Array<{ content?: string }> },
       opts: { caller?: string; traceId?: string | null; timeoutMs?: number } = {},
@@ -53,13 +51,10 @@ mock.module("../gateway/router.ts", () => {
         ],
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       };
-    },
-  };
-});
+    };
 
-// After mock.module is registered, dynamically import the module under test.
 const modelEval = await import("./modelEval.ts");
-const { runModelEvalOnce, __TESTING__ } = modelEval;
+const { runModelEvalOnce, setGatewayCompleteForTests, __TESTING__ } = modelEval;
 void __TESTING__; // expose for tests if needed
 
 function withTestTenantContext<R>(context: { tenantId: string }, fn: () => R): R {
@@ -130,6 +125,10 @@ beforeEach(() => {
     if (db) db.run("DELETE FROM operator_state WHERE key = 'model-eval.daily-marker'");
   } catch { /* ignore — table may not exist yet on first call */ }
 
+  // Inject the gateway stub through the module's test seam (module mocks leak
+  // across bun test files; the seam is scoped and restored in afterEach).
+  setGatewayCompleteForTests(stubGatewayComplete as never);
+
   // Reset call log + stubs
   gatewayCalls.length = 0;
   stubbedError = null;
@@ -144,6 +143,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setGatewayCompleteForTests(null);
   closeDashboardDb();
   if (prevDb === undefined) delete process.env.DASHBOARD_DB;
   else process.env.DASHBOARD_DB = prevDb;

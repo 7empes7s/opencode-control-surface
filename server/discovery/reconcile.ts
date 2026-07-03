@@ -70,6 +70,25 @@ function normalizeSignature(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+const INTERPRETERS = new Set(["node", "bun", "python", "python3", "sh", "bash", "zsh", "npm", "npx", "bunx", "deno"]);
+
+// Process identity must be stable across restarts and sessions. Raw cmdlines carry
+// session ids, ports, and per-run paths, so hashing them creates a new "asset" for
+// every invocation and floods the inbox. Collapse to: executable + script + the AI
+// technologies matched. The latest full cmdline stays in the fingerprint as evidence.
+export function stableProcessSignature(cmdline: string): string {
+  const tokens = cmdline.split(" ").filter(Boolean);
+  const argv0 = basename(tokens[0] ?? "unknown");
+  let script = "";
+  if (INTERPRETERS.has(argv0)) {
+    const scriptToken = tokens.slice(1).find((token) => !token.startsWith("-"));
+    if (scriptToken) script = basename(scriptToken);
+  }
+  const keywordMatches = cmdline.match(new RegExp(AI_SIGNATURE.source, "gi")) ?? [];
+  const keywords = [...new Set(keywordMatches.map((keyword) => keyword.toLowerCase()))].sort();
+  return normalizeSignature(`${argv0}${script ? ` ${script}` : ""} [${keywords.join("+")}]`);
+}
+
 function command(name: string, args: string[], timeout = 1500): string {
   try {
     return execFileSync(name, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "ignore"] });
@@ -98,12 +117,11 @@ export function discoverProcesses(procRoot = "/proc"): DiscoveredAssetInput[] {
       const raw = readFileSync(join(procRoot, pid, "cmdline"), "utf8");
       const cmdline = raw.replace(/\0/g, " ").trim();
       if (!cmdline || !AI_SIGNATURE.test(cmdline)) continue;
-      const signature = normalizeSignature(cmdline);
       pushUnique(out, {
         kind: "process",
-        signature,
+        signature: stableProcessSignature(cmdline),
         sourceProbe: "proc-cmdline",
-        fingerprint: { pid: Number(pid), cmdline: signature },
+        fingerprint: { pid: Number(pid), cmdline: normalizeSignature(cmdline) },
       });
     } catch {
       // Processes can disappear while scanning.
@@ -303,6 +321,15 @@ export function reconcileDiscoveredAssets(inputs: DiscoveredAssetInput[], now = 
   }
 
   const tenant = whereTenant();
+
+  // Registry hygiene: unregistered assets that have not been seen for the retention
+  // window are dropped (registered/ignored entries are operator decisions and kept).
+  const retentionMs = Number(process.env.DISCOVERY_RETENTION_MS) || 30 * 24 * 60 * 60 * 1000;
+  db.query(`
+    DELETE FROM discovered_assets
+    WHERE status = 'unregistered' AND last_seen < ? ${tenant.clause}
+  `).run(now - retentionMs, ...tenant.params);
+
   const dbRows = db.query(`
     SELECT id, tenant_id, kind, signature, source_probe, first_seen, last_seen, status,
            fingerprint_json, registered_name, owner, criticality, attached_service,

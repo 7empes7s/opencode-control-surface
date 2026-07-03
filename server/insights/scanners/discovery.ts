@@ -4,6 +4,7 @@ import {
   getAssetDisplayName,
   reconcileDiscoveredAssets,
   type DiscoveredAsset,
+  type DiscoveredAssetInput,
 } from "../../discovery/reconcile.ts";
 import { getDashboardDb } from "../../db/dashboard.ts";
 import { writeActionAudit } from "../../db/writer.ts";
@@ -80,14 +81,17 @@ function add(results: Insight[], input: InsightInput, emittedSourceKeys: string[
   }
 }
 
-export function runDiscoveryScan(): ScanResult {
-  const scannedAt = Date.now();
+export function runDiscoveryScan(inputsOverride?: DiscoveredAssetInput[], scannedAt = Date.now()): ScanResult {
   const findings: Insight[] = [];
   const emittedSourceKeys: string[] = [];
   if (!getDashboardDb()) return { scannedAt, assetsSeen: 0, findings, resolvedCount: 0 };
 
-  const assets = reconcileDiscoveredAssets(discoverAiAssets(), scannedAt);
+  const assets = reconcileDiscoveredAssets(inputsOverride ?? discoverAiAssets(), scannedAt);
   for (const asset of assets) {
+    // Presence-based flagging: only assets seen in THIS scan belong in the inbox.
+    // Historical registry rows (asset gone, process exited) must not raise findings —
+    // they fall out of emittedSourceKeys and their insights auto-resolve below.
+    if (asset.lastSeen < scannedAt) continue;
     const descriptor = mapDiscoveryAssetToInsight(asset, scannedAt);
     if (descriptor) add(findings, descriptor, emittedSourceKeys);
   }

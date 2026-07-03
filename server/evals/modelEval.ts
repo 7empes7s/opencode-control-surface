@@ -1,5 +1,11 @@
 import { loadGatewayConfig } from "../gateway/config.ts";
-import { gatewayComplete, type GatewayCompleteOptions } from "../gateway/router.ts";
+import { gatewayComplete as realGatewayComplete, type GatewayCompleteOptions } from "../gateway/router.ts";
+
+// Injection seam for tests (mock.module leaks across bun test files; never use it here).
+let gatewayComplete: typeof realGatewayComplete = realGatewayComplete;
+export function setGatewayCompleteForTests(fn: typeof realGatewayComplete | null): void {
+  gatewayComplete = fn ?? realGatewayComplete;
+}
 import { readOperatorState, writeOperatorState, writeMetricSample } from "../db/writer.ts";
 import { isDashboardDbEnabled } from "../db/dashboard.ts";
 

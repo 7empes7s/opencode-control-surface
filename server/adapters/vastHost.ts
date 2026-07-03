@@ -19,7 +19,10 @@ export type VastHostSample = {
   sampledAt: number;
 };
 
-const SAMPLE_PATH = process.env.VAST_HOST_SAMPLE_PATH || "/var/lib/control-surface/vast-host.json";
+// Resolved at call time (not module load) so tests can point it at a temp path.
+function samplePath(): string {
+  return process.env.VAST_HOST_SAMPLE_PATH || "/var/lib/control-surface/vast-host.json";
+}
 const SSH_KEY = process.env.VAST_SSH_KEY_PATH || "/root/.ssh/vast_gpu";
 const SSH_TIMEOUT_MS = Number(process.env.VAST_HOST_SSH_TIMEOUT_MS) || 5000;
 
@@ -38,10 +41,11 @@ function parsePct(line: string | undefined): number | null {
 
 function persistSample(sample: VastHostSample): VastHostSample {
   try {
-    mkdirSync(dirname(SAMPLE_PATH), { recursive: true });
-    const tmpPath = `${SAMPLE_PATH}.tmp`;
+    mkdirSync(dirname(samplePath()), { recursive: true });
+    const path = samplePath();
+    const tmpPath = `${path}.tmp`;
     writeFileSync(tmpPath, JSON.stringify(sample, null, 2));
-    renameSync(tmpPath, SAMPLE_PATH);
+    renameSync(tmpPath, path);
   } catch (error) {
     console.error("[vast-host] failed to persist sample", error);
   }
@@ -50,7 +54,7 @@ function persistSample(sample: VastHostSample): VastHostSample {
 
 export function readVastHostSample(): VastHostSample | null {
   try {
-    const raw = JSON.parse(readFileSync(SAMPLE_PATH, "utf8")) as Partial<VastHostSample>;
+    const raw = JSON.parse(readFileSync(samplePath(), "utf8")) as Partial<VastHostSample>;
     if (typeof raw.sampledAt !== "number" || typeof raw.status !== "string") return null;
     return {
       status: raw.status as VastHostSample["status"],
