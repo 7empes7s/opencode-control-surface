@@ -302,6 +302,11 @@ The workflow modal mixes native checkboxes and `<select>` elements. Some feature
 
 ## 10. Verification Checklist
 
+> **Status (2026-07-03 audit):** these 8 boxes are the acceptance checklist for the
+> multi-viewport Playwright pass (e2e/multi-viewport.pw.ts), which is scheduled as the
+> next dedicated mobile/style slice. Left unchecked on purpose — they get ticked by
+> that run's evidence, not by hand.
+
 After implementing, verify with Playwright across:
 - **Desktop:** 1920×1080
 - **Tablet:** 820×1180
