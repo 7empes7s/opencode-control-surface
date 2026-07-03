@@ -8,6 +8,12 @@ import { useTableControls } from "../hooks/useTableControls";
 import { authFetch } from "../lib/authFetch";
 
 interface CostData {
+  headline?: {
+    monthToDateCents: number | null;
+    projectedMonthEndCents: number | null;
+    savedVsPaidBaselineCents: number | null;
+    freeShare: number | null;
+  };
   budgets: Array<{
     id: string;
     scope: string;
@@ -319,6 +325,12 @@ export function CostPage() {
   if (!data) return null;
 
   const d = data;
+  const headline = d.headline ?? {
+    monthToDateCents: null,
+    projectedMonthEndCents: null,
+    savedVsPaidBaselineCents: null,
+    freeShare: null,
+  };
 
   // Format currency
   const fmtCurrency = (cents: number | null): string => {
@@ -388,6 +400,41 @@ export function CostPage() {
         <div className="page-title">Cost Management</div>
         <div className="page-actions">
           <button className="btn-secondary" onClick={refresh}>Refresh</button>
+        </div>
+      </div>
+
+      {/* CFO Headline Band */}
+      <div className="dash-section">
+        <div className="dash-section-title">This Month at a Glance</div>
+        <div className="widget-grid">
+          <div className="w-card">
+            <div className="w-label">Spend (MTD)</div>
+            <div className="w-headline">{fmtCurrency(headline.monthToDateCents)}</div>
+            {headline.monthToDateCents === null && (
+              <div className="w-caption" title="No priced gateway calls recorded this month yet">needs gateway ledger data</div>
+            )}
+          </div>
+          <div className="w-card">
+            <div className="w-label">Projected Month-End</div>
+            <div className="w-headline">{fmtCurrency(headline.projectedMonthEndCents)}</div>
+            {headline.projectedMonthEndCents === null && (
+              <div className="w-caption" title="Projection needs at least 2 elapsed days of priced spend this month">needs 2+ days of spend data</div>
+            )}
+          </div>
+          <div className="w-card">
+            <div className="w-label">Saved by Free-First</div>
+            <div className="w-headline">{fmtCurrency(headline.savedVsPaidBaselineCents)}</div>
+            {headline.savedVsPaidBaselineCents === null && (
+              <div className="w-caption" title="Savings need a cloud-paid price catalog entry and token counts on free-routed calls">needs price catalog / token data</div>
+            )}
+          </div>
+          <div className="w-card">
+            <div className="w-label">Free-Routed Share</div>
+            <div className="w-headline">{headline.freeShare !== null ? fmtPct(headline.freeShare) : "—"}</div>
+            {headline.freeShare === null && (
+              <div className="w-caption" title="No gateway calls recorded this month yet">needs gateway ledger data</div>
+            )}
+          </div>
         </div>
       </div>
 

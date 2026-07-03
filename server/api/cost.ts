@@ -713,12 +713,93 @@ function readModelDiscoveryHistory(limit = 100): DiscoveryHistoryRow[] {
   return out.slice(0, limit);
 }
 
+export interface CostHeadline {
+  monthToDateCents: number | null;
+  projectedMonthEndCents: number | null;
+  savedVsPaidBaselineCents: number | null;
+  freeShare: number | null;
+}
+
+const NULL_HEADLINE: CostHeadline = {
+  monthToDateCents: null,
+  projectedMonthEndCents: null,
+  savedVsPaidBaselineCents: null,
+  freeShare: null,
+};
+
+export function computeCostHeadline(now = Date.now()): CostHeadline {
+  const db = getDashboardDb();
+  if (!db) return { ...NULL_HEADLINE };
+
+  try {
+    const nowDate = new Date(now);
+    const year = nowDate.getUTCFullYear();
+    const month = nowDate.getUTCMonth();
+    const monthStart = Date.UTC(year, month, 1);
+    const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    const elapsedDays = (now - monthStart) / (24 * 60 * 60 * 1000);
+
+    const totalsRow = db.query<{ total_calls: number; total_usd: number | null; free_calls: number }, [number, number]>(`
+      SELECT COUNT(*) as total_calls,
+             SUM(cost_estimate_usd) as total_usd,
+             SUM(CASE WHEN cost_estimate_usd = 0 THEN 1 ELSE 0 END) as free_calls
+      FROM gateway_calls
+      WHERE ts >= ? AND ts <= ?
+    `).get(monthStart, now);
+
+    const totalCalls = totalsRow?.total_calls ?? 0;
+    if (totalCalls === 0) return { ...NULL_HEADLINE };
+
+    const monthToDateCents = totalsRow?.total_usd == null ? null : Math.round(totalsRow.total_usd * 100);
+    const projectedMonthEndCents = monthToDateCents === null || elapsedDays < 2
+      ? null
+      : Math.round((monthToDateCents / elapsedDays) * daysInMonth);
+    const freeCalls = totalsRow?.free_calls ?? 0;
+    const freeShare = freeCalls / totalCalls;
+
+    let savedVsPaidBaselineCents: number | null = null;
+    if (freeCalls === 0) {
+      savedVsPaidBaselineCents = 0;
+    } else {
+      const baseline = db.query<{ input_cents_per_1k: number; output_cents_per_1k: number }, []>(`
+        SELECT input_cents_per_1k, output_cents_per_1k
+        FROM provider_price_catalog
+        WHERE tier = 'cloud-paid' AND input_cents_per_1k IS NOT NULL AND output_cents_per_1k IS NOT NULL
+        ORDER BY (input_cents_per_1k + output_cents_per_1k) ASC
+        LIMIT 1
+      `).get();
+
+      const freeTokensRow = db.query<{ prompt_tokens: number | null; completion_tokens: number | null; missing_tokens: number }, [number, number]>(`
+        SELECT SUM(prompt_tokens) as prompt_tokens,
+               SUM(completion_tokens) as completion_tokens,
+               SUM(CASE WHEN prompt_tokens IS NULL OR completion_tokens IS NULL THEN 1 ELSE 0 END) as missing_tokens
+        FROM gateway_calls
+        WHERE ts >= ? AND ts <= ? AND cost_estimate_usd = 0
+      `).get(monthStart, now);
+
+      // Never invent a number: savings need a paid baseline and token counts on every free call.
+      if (baseline && freeTokensRow && freeTokensRow.missing_tokens === 0
+        && freeTokensRow.prompt_tokens !== null && freeTokensRow.completion_tokens !== null) {
+        savedVsPaidBaselineCents = Math.round(
+          (freeTokensRow.prompt_tokens / 1000) * baseline.input_cents_per_1k
+          + (freeTokensRow.completion_tokens / 1000) * baseline.output_cents_per_1k,
+        );
+      }
+    }
+
+    return { monthToDateCents, projectedMonthEndCents, savedVsPaidBaselineCents, freeShare };
+  } catch {
+    return { ...NULL_HEADLINE };
+  }
+}
+
 export async function getCostSummary(_req: Request): Promise<Response> {
   const [runway] = await Promise.all([getRealRunway()]);
 
   if (!isDashboardDbEnabled()) {
     return Response.json({
       data: {
+        headline: { ...NULL_HEADLINE },
         budgets: [],
         spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
         runway,
@@ -735,6 +816,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
     if (!db) {
       return Response.json({
         data: {
+          headline: { ...NULL_HEADLINE },
           budgets: [],
           spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
           runway,
@@ -800,6 +882,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
 
     return Response.json({
       data: {
+        headline: computeCostHeadline(now),
         budgets: budgetsWithSpend,
         spend: {
           totals: [{ total_cents: totalCents, event_count: eventCount }],
@@ -815,6 +898,7 @@ export async function getCostSummary(_req: Request): Promise<Response> {
     console.error("getCostSummary failed:", error);
     return Response.json({
       data: {
+        headline: { ...NULL_HEADLINE },
         budgets: [],
         spend: { totals: [{ total_cents: 0, event_count: 0 }], groups: [] },
         runway,
