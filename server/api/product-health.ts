@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { ok } from "./types.ts";
 
 // Written every 30 min by the Product Health Sentinel (mimule-product-sentinel.py),
 // which probes the LIVE product (pages, APIs, data freshness, deploy consistency,
@@ -9,13 +10,11 @@ const HEALTH_PATH = "/var/lib/mimule/product-health.json";
 export function productHealthHandler(): Response {
   try {
     const raw = JSON.parse(readFileSync(HEALTH_PATH, "utf8"));
-    return Response.json({ data: raw });
+    return Response.json(ok(raw, { sentinel: "ok" }));
   } catch {
-    return Response.json({
-      data: {
-        score: null, fails: 0, warns: 0, findings: [],
-        checkedAtISO: null, error: "sentinel has not run yet",
-      },
-    });
+    return Response.json(ok({
+      score: null, fails: 0, warns: 0, findings: [],
+      checkedAtISO: null, error: "sentinel has not run yet",
+    }, { sentinel: "error" }));
   }
 }
