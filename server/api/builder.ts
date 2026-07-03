@@ -726,15 +726,35 @@ export async function builderSetLifecycleHandler(workflowId: string, req: Reques
   }
 }
 
+function auditRunControl(
+  action: string,
+  targetType: "builder-run" | "builder-workflow",
+  targetId: string,
+  resultStatus: "success" | "failed",
+  detail?: string,
+): void {
+  writeActionAudit({
+    actionKind: `builder.${targetType === "builder-run" ? "run" : "workflow"}.${action}`,
+    actionId: `${targetType}:${action}:${targetId}`,
+    targetType,
+    targetId,
+    risk: "medium",
+    result: detail ?? action,
+    resultStatus,
+  });
+}
+
 export async function builderPauseWorkflowHandler(workflowId: string): Promise<Response> {
   try {
     await pauseWorkflow(workflowId);
+    auditRunControl("pause", "builder-workflow", workflowId, "success");
     return json(ok<BuilderWorkflowResponse>({
       workflow: readBuilderWorkflow(workflowId),
       runs: readBuilderRuns(workflowId),
       degraded: false,
     }, { builder: "ok" }));
   } catch (error) {
+    auditRunControl("pause", "builder-workflow", workflowId, "failed", errorMessage(error));
     return apiError(errorMessage(error), 400);
   }
 }
@@ -742,12 +762,14 @@ export async function builderPauseWorkflowHandler(workflowId: string): Promise<R
 export async function builderResumeWorkflowHandler(workflowId: string): Promise<Response> {
   try {
     await resumeWorkflow(workflowId);
+    auditRunControl("resume", "builder-workflow", workflowId, "success");
     return json(ok<BuilderWorkflowResponse>({
       workflow: readBuilderWorkflow(workflowId),
       runs: readBuilderRuns(workflowId),
       degraded: false,
     }, { builder: "ok" }));
   } catch (error) {
+    auditRunControl("resume", "builder-workflow", workflowId, "failed", errorMessage(error));
     return apiError(errorMessage(error), 400);
   }
 }
@@ -755,6 +777,7 @@ export async function builderResumeWorkflowHandler(workflowId: string): Promise<
 export async function builderRetryRunHandler(runId: string): Promise<Response> {
   try {
     const run = await retryRun(runId);
+    auditRunControl("retry", "builder-run", runId, "success", `retry started as run ${run.id}`);
     return json(ok<BuilderRunResponse>({
       run,
       passes: readBuilderPasses(run.id),
@@ -763,6 +786,7 @@ export async function builderRetryRunHandler(runId: string): Promise<Response> {
       degraded: false,
     }, { builder: "ok" }), 201);
   } catch (error) {
+    auditRunControl("retry", "builder-run", runId, "failed", errorMessage(error));
     return apiError(errorMessage(error), 400);
   }
 }
@@ -771,6 +795,7 @@ export async function builderCancelRunHandler(runId: string): Promise<Response> 
   try {
     await cancelRun(runId);
     const run = await reconcileRunStatus(runId);
+    auditRunControl("cancel", "builder-run", runId, "success");
     return json(ok<BuilderRunResponse>({
       run,
       passes: readBuilderPasses(runId),
@@ -779,6 +804,7 @@ export async function builderCancelRunHandler(runId: string): Promise<Response> 
       degraded: false,
     }, { builder: "ok" }));
   } catch (error) {
+    auditRunControl("cancel", "builder-run", runId, "failed", errorMessage(error));
     return apiError(errorMessage(error), 400);
   }
 }
@@ -790,6 +816,7 @@ export async function builderStopAfterPassHandler(runId: string): Promise<Respon
     const resultObj = typeof run.result === "object" && run.result ? run.result as Record<string, unknown> : {};
     updateBuilderRun(runId, { result: { ...resultObj, stopAfterPass: true, stopAfterPassAt: Date.now() } });
     const updated = readBuilderRun(runId);
+    auditRunControl("stop-after-pass", "builder-run", runId, "success");
     return json(ok<BuilderRunResponse>({
       run: updated,
       passes: readBuilderPasses(runId),
@@ -798,6 +825,7 @@ export async function builderStopAfterPassHandler(runId: string): Promise<Respon
       degraded: false,
     }, { builder: "ok" }));
   } catch (error) {
+    auditRunControl("stop-after-pass", "builder-run", runId, "failed", errorMessage(error));
     return apiError(errorMessage(error), 400);
   }
 }

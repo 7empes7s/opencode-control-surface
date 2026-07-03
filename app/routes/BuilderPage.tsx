@@ -1786,7 +1786,7 @@ function AiDiagnosisPanel({ passId }: { passId: string }) {
   );
 }
 
-function FailureInvestigationPanel({ passId, runId, onViewStdout }: { passId: string; runId: string; onViewStdout?: () => void }) {
+function FailureInvestigationPanel({ passId, runId, workflowId, onViewStdout }: { passId: string; runId: string; workflowId?: string; onViewStdout?: () => void }) {
   const { data, loading, error } = useAuthenticatedApi<{ data: { diagnosis: { failureClass: string; title: string; whatHappened: string; lastActivity: string; likelyCause: string; suggestedActions: string[] } } }>(`/api/builder/passes/${passId}/diagnosis`);
   const diagnosis = data?.data?.diagnosis;
   const [retrying, setRetrying] = useState(false);
@@ -1804,8 +1804,12 @@ function FailureInvestigationPanel({ passId, runId, onViewStdout }: { passId: st
     } else if (action === "view-stdout") {
       onViewStdout?.();
     } else if (action === "pause-workflow") {
+      if (!workflowId) {
+        console.error("pause skipped: no workflow id for this pass");
+        return;
+      }
       try {
-        await authFetch(`/api/builder/workflows/${runId}/pause`, { method: "POST" });
+        await authFetch(`/api/builder/workflows/${workflowId}/pause`, { method: "POST" });
         window.location.reload();
       } catch (err) {
         console.error("pause failed", err);
@@ -2392,7 +2396,7 @@ function RunDetailPanel({
                     </div>
                   )}
                   {isOpen && pass.status === "failed" && (
-                    <FailureInvestigationPanel passId={pass.id} runId={pass.runId} onViewStdout={() => { if (!expandedLogs[pass.id]) toggleLog(pass.id); }} />
+                    <FailureInvestigationPanel passId={pass.id} runId={pass.runId} workflowId={pass.workflowId} onViewStdout={() => { if (!expandedLogs[pass.id]) toggleLog(pass.id); }} />
                   )}
                   {isOpen && pass.status === "failed" && (
                     <AiDiagnosisPanel passId={pass.id} />

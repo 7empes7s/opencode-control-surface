@@ -80,6 +80,7 @@ import {
   builderArtifactsHandler,
   builderRetryRunHandler,
   builderCancelRunHandler,
+  builderStopAfterPassHandler,
   builderStartWorkflowHandler,
   builderStopWorkflowHandler,
   builderPauseWorkflowHandler,
@@ -893,7 +894,7 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && builderPassDiagnosisMatch) {
     return builderPassDiagnosisHandler(builderPassDiagnosisMatch[1]);
   }
-  const builderRunActionMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/(retry|cancel)$/);
+  const builderRunActionMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)\/(retry|cancel|stop-after-pass)$/);
   if (method === "POST" && builderRunActionMatch) {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -901,6 +902,7 @@ if (method === "GET" && pathname === "/api/stream") {
     const action = builderRunActionMatch[2];
     if (action === "retry") return builderRetryRunHandler(runId);
     if (action === "cancel") return builderCancelRunHandler(runId);
+    if (action === "stop-after-pass") return builderStopAfterPassHandler(runId);
     return builderRunnerDisabledHandler(action);
   }
   if (method === "GET" && pathname === "/api/builder/artifacts") return builderArtifactsHandler(url);

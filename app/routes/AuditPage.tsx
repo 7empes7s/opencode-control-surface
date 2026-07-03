@@ -260,7 +260,7 @@ export function AuditPage() {
           className={`btn btn-sm ${activeTab === "actions" ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setActiveTab("actions")}
         >
-          Operator Actions (stale)
+          Operator Actions
         </button>
         <button
           className={`btn btn-sm ${activeTab === "events" ? "btn-primary" : "btn-ghost"}`}
