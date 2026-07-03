@@ -196,6 +196,7 @@ import {
   reasonerDiagnosesHandler,
   reasonerDiagnosisByPassHandler,
   reasonerIncidentsHandler,
+  reasonerLoopStatsHandler,
   reasonerIncidentByIdHandler,
   reasonerResolveIncidentHandler,
   reasonerIncidentPostMortemHandler,
@@ -1335,6 +1336,7 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/reasoner/jobs") return reasonerJobsHandler();
   if (method === "GET" && pathname === "/api/reasoner/diagnoses") return reasonerDiagnosesHandler();
   if (method === "GET" && pathname === "/api/reasoner/incidents") return reasonerIncidentsHandler(url);
+  if (method === "GET" && pathname === "/api/reasoner/loop-stats") return reasonerLoopStatsHandler();
   const reasonerDiagnosisMatch = pathname.match(/^\/api\/reasoner\/diagnoses\/([^/]+)$/);
   if (method === "GET" && reasonerDiagnosisMatch) {
     return reasonerDiagnosisByPassHandler(reasonerDiagnosisMatch[1]);

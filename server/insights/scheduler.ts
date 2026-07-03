@@ -5,7 +5,7 @@ import { runRegistryScan } from "./scanners/registry.ts";
 import { runBudgetScan } from "./scanners/budget.ts";
 import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
-import { autoResolveStaleIncidents } from "../reasoner/lifecycle.ts";
+import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, detectRecurringIncidents } from "../reasoner/lifecycle.ts";
 import { runOpsScan } from "./scanners/ops.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
 import { runEdgeScan } from "./scanners/edge.ts";
@@ -66,6 +66,22 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     }
   } catch (error) {
     console.error("[insights] incident auto-resolve failed", error);
+  }
+  try {
+    const recovered = autoCloseRecoveredIncidents().closedIds.length;
+    if (recovered > 0) {
+      console.log(`[incidents] auto-closed ${recovered} incidents whose workflow recovered`);
+    }
+  } catch (error) {
+    console.error("[insights] recovered-incident sweep failed", error);
+  }
+  try {
+    const recurrence = detectRecurringIncidents();
+    if (recurrence.flagged > 0) {
+      console.log(`[incidents] flagged ${recurrence.flagged} recurring condition(s) as insights`);
+    }
+  } catch (error) {
+    console.error("[insights] recurrence detection failed", error);
   }
   let opsFindings = 0;
   try {

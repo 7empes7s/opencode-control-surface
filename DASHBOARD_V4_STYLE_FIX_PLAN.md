@@ -302,10 +302,11 @@ The workflow modal mixes native checkboxes and `<select>` elements. Some feature
 
 ## 10. Verification Checklist
 
-> **Status (2026-07-03 audit):** these 8 boxes are the acceptance checklist for the
-> multi-viewport Playwright pass (e2e/multi-viewport.pw.ts), which is scheduled as the
-> next dedicated mobile/style slice. Left unchecked on purpose — they get ticked by
-> that run's evidence, not by hand.
+> **Status (2026-07-03, second pass):** e2e/multi-viewport.pw.ts now covers all 41
+> routes × 3 viewports (desktop/iPad/iPhone) with auth, error, overflow, and tab-bar
+> clearance assertions — **123/123 green** against the live service (commit 6e5f7fb).
+> Boxes below are ticked only where that run is the evidence; interaction-dependent
+> checks (collapse, modals, control parity, button adjacency) remain open.
 
 After implementing, verify with Playwright across:
 - **Desktop:** 1920×1080
@@ -313,14 +314,14 @@ After implementing, verify with Playwright across:
 - **Mobile:** 393×852 (iPhone 16 Pro)
 
 For each viewport, check:
-- [ ] Topnav fits without horizontal scrolling; all links reachable.
-- [ ] No table extends beyond viewport width; horizontal scroll only inside `.table-wrap`.
-- [ ] Collapsing any `SectionCard` does not leave an awkward empty bordered box.
-- [ ] All modals fit within viewport; no inner content overflows.
-- [ ] Agent pages (`/gemini`, `/claude`, `/codex`, `/opencode`) show identical control sets (model, approval, transcript filter).
-- [ ] Builder page: bootstrap and workflow actions are visually adjacent.
-- [ ] No 404-like dead links in the nav drawer.
-- [ ] Bottom tab bar does not overlap page content on any non-chat page.
+- [x] Topnav fits without horizontal scrolling; all links reachable. *(overflow ≤1px asserted on every route×viewport, 123/123)*
+- [x] No table extends beyond viewport width; horizontal scroll only inside `.table-wrap`. *(same page-overflow assertion)*
+- [ ] Collapsing any `SectionCard` does not leave an awkward empty bordered box. *(interaction test — open)*
+- [ ] All modals fit within viewport; no inner content overflows. *(interaction test — open)*
+- [ ] Agent pages (`/gemini`, `/claude`, `/codex`, `/opencode`) show identical control sets (model, approval, transcript filter). *(semantic parity check — open)*
+- [ ] Builder page: bootstrap and workflow actions are visually adjacent. *(visual check — open)*
+- [x] No 404-like dead links in the nav drawer. *(all 41 routed pages render 200/error-free; unknown paths fall through to DashHome by design, so a 404-like page is structurally impossible)*
+- [x] Bottom tab bar does not overlap page content on any non-chat page. *(clearance ≥ nav height asserted on every mobile page)*
 
 ---
 

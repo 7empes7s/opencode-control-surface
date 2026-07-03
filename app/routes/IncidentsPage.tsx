@@ -371,8 +371,19 @@ function IncidentLifecycleCard({
   );
 }
 
+type LoopStats = {
+  openCount: number;
+  resolved7d: number;
+  autoClosed7d: number;
+  autoResolved7d: number;
+  autoShare: number | null;
+  meanTimeToResolveMs: number | null;
+  recurrenceFlagged: number;
+};
+
 export function IncidentsPage() {
   const { data, loading, error, refresh } = useApi<IncidentsDetail>("/api/incidents", 30_000);
+  const { data: loopStats } = useApi<LoopStats | null>("/api/reasoner/loop-stats", 60_000);
   const entries = data?.entries ?? [];
   const reasonerIncidents = data?.reasonerIncidents ?? [];
   const sla = data?.sla;
@@ -456,6 +467,23 @@ export function IncidentsPage() {
             label="Oldest open"
             value={fmtDuration(sla?.oldestOpenAgeMs ?? null)}
             detail={`${sla?.breachingUnacknowledgedCount ?? 0} breaching 24h without ack`}
+          />
+          <SlaTile
+            icon={<CheckCircle2 size={16} />}
+            label="Auto-remediated (7d)"
+            value={loopStats ? String(loopStats.autoClosed7d + loopStats.autoResolved7d) : "—"}
+            detail={loopStats
+              ? `${loopStats.autoClosed7d} condition-cleared · ${loopStats.autoResolved7d} idle-swept` +
+                (loopStats.autoShare !== null ? ` · ${Math.round(loopStats.autoShare * 100)}% of closes` : "")
+              : "loop stats unavailable"}
+          />
+          <SlaTile
+            icon={<BellRing size={16} />}
+            label="Recurring conditions"
+            value={loopStats ? String(loopStats.recurrenceFlagged) : "—"}
+            detail={loopStats && loopStats.recurrenceFlagged > 0
+              ? "auto-close is masking a flapping root cause — see Detections"
+              : "nothing keeps coming back"}
           />
         </div>
 

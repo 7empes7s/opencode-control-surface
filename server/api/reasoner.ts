@@ -300,6 +300,52 @@ export async function reasonerDiagnosisByPassHandler(passId: string): Promise<Re
   });
 }
 
+// GET /api/reasoner/loop-stats — how well the remediation loop is doing:
+// what it closed on its own, what it swept as idle, and what keeps flapping.
+export async function reasonerLoopStatsHandler(): Promise<Response> {
+  if (!isDashboardDbEnabled()) return json(ok(null, { dashboardDb: "error" }));
+  const db = getDashboardDb()!;
+  const tenantId = getCurrentTenantContext().tenantId;
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  const counts = db.query(`
+    SELECT
+      SUM(status = 'open') AS open_count,
+      SUM(status = 'resolved' AND resolved_at >= ?) AS resolved_7d,
+      AVG(CASE WHEN status = 'resolved' AND resolved_at >= ? THEN resolved_at - first_seen END) AS mean_ttr_ms
+    FROM reasoner_incidents
+    WHERE tenant_id = ? OR tenant_id IS NULL
+  `).get(weekAgo, weekAgo, tenantId) as { open_count: number | null; resolved_7d: number | null; mean_ttr_ms: number | null };
+
+  const audit = db.query(`
+    SELECT action_kind, COUNT(*) AS n
+    FROM action_audit
+    WHERE ts >= ? AND action_kind IN ('incidents.auto-close', 'incidents.auto-resolve')
+    GROUP BY action_kind
+  `).all(weekAgo) as Array<{ action_kind: string; n: number }>;
+  const autoClosed7d = audit.find((r) => r.action_kind === "incidents.auto-close")?.n ?? 0;
+  const autoResolved7d = audit.find((r) => r.action_kind === "incidents.auto-resolve")?.n ?? 0;
+
+  const recurrenceFlagged = (db.query(`
+    SELECT COUNT(*) AS n FROM insights
+    WHERE status = 'open' AND source_key LIKE 'remediation:recurrence:%'
+      AND (tenant_id = ? OR tenant_id IS NULL)
+  `).get(tenantId) as { n: number } | null)?.n ?? 0;
+
+  const resolved7d = counts.resolved_7d ?? 0;
+  const autoTotal = autoClosed7d + autoResolved7d;
+  return json(ok({
+    openCount: counts.open_count ?? 0,
+    resolved7d,
+    autoClosed7d,
+    autoResolved7d,
+    autoShare: resolved7d > 0 ? Math.min(1, autoTotal / resolved7d) : null,
+    meanTimeToResolveMs: counts.mean_ttr_ms != null ? Math.round(counts.mean_ttr_ms) : null,
+    recurrenceFlagged,
+  }, { dashboardDb: "ok" }));
+}
+
 export async function reasonerIncidentsHandler(url?: URL): Promise<Response> {
   if (!isDashboardDbEnabled()) return json(ok([], { dashboardDb: "error" }));
   const db = getDashboardDb()!;
