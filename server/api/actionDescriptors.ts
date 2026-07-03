@@ -362,40 +362,52 @@ function addDoctorActions(actions: ActionDescriptor[], doctorEntries: DoctorDeta
 }
 
 function addVastAndGpuActions(actions: ActionDescriptor[], input: CatalogInputs): void {
-  const vastEvidence = [
-    apiEvidence("Infra detail", "/api/infra"),
-    commandEvidence("Vast tunnel", "systemctl is-active vast-tunnel"),
-  ];
-  actions.push(descriptor({
-    label: "Restart tunnel",
-    kind: "start-job",
-    targetType: "vast",
-    targetId: input.vastInstance?.id || "tunnel",
-    risk: "high",
-    confirm: true,
-    reasonRequired: true,
-    evidenceRefs: vastEvidence,
-    impactPreview: "Restart vast-tunnel.service.",
-    rollbackHint: "Check journalctl -u vast-tunnel.service and restore the previous tunnel config if reconnect fails.",
-    expectedDurationMs: 30_000,
-    jobKind: "service-restart",
-    sourceRoute: "/infra",
-    requiresOnline: true,
-  }));
+  // Honest gating: only offer a "Restart tunnel" action when there is real
+  // evidence a vast-tunnel unit exists on this host (systemctl actually
+  // reported a pill for it, or the Vast.ai API returned a live instance).
+  // Otherwise this would present an actionable, high-risk restart button for
+  // infrastructure that doesn't exist on a fresh host.
+  const vastTunnelSeen = Boolean(input.services?.some((s) => s.name === "vast-tunnel"));
+  if (vastTunnelSeen || input.vastInstance) {
+    const vastEvidence = [
+      apiEvidence("Infra detail", "/api/infra"),
+      commandEvidence("Vast tunnel", "systemctl is-active vast-tunnel"),
+    ];
+    actions.push(descriptor({
+      label: "Restart tunnel",
+      kind: "start-job",
+      targetType: "vast",
+      targetId: input.vastInstance?.id || "tunnel",
+      risk: "high",
+      confirm: true,
+      reasonRequired: true,
+      evidenceRefs: vastEvidence,
+      impactPreview: "Restart vast-tunnel.service.",
+      rollbackHint: "Check journalctl -u vast-tunnel.service and restore the previous tunnel config if reconnect fails.",
+      expectedDurationMs: 30_000,
+      jobKind: "service-restart",
+      sourceRoute: "/infra",
+      requiresOnline: true,
+    }));
+  }
 
-  actions.push(descriptor({
-    label: "Copy GPU probe",
-    kind: "copy-command",
-    targetType: "gpu",
-    targetId: input.gpu?.status || "unknown",
-    risk: "low",
-    evidenceRefs: [
-      fileEvidence("GPU health", "/var/lib/mimule/gpu-health.json"),
-      commandEvidence("Ollama tags", "curl -s http://127.0.0.1:11434/api/tags"),
-    ],
-    impactPreview: "curl -s http://127.0.0.1:11434/api/tags",
-    sourceRoute: "/infra",
-  }));
+  // Similarly, only offer the GPU probe copy-command when we actually have
+  // GPU health data (or a live Vast instance) for this host.
+  if (input.gpu || input.vastInstance) {
+    actions.push(descriptor({
+      label: "Copy GPU probe",
+      kind: "copy-command",
+      targetType: "gpu",
+      targetId: input.gpu?.status || "unknown",
+      risk: "low",
+      evidenceRefs: [
+        fileEvidence("GPU health", "/var/lib/mimule/gpu-health.json"),
+        commandEvidence("Ollama tags", "curl -s http://127.0.0.1:11434/api/tags"),
+      ],
+      impactPreview: "curl -s http://127.0.0.1:11434/api/tags",
+      sourceRoute: "/infra",
+    }));
+  }
 }
 
 function addGatewayActions(actions: ActionDescriptor[]): void {

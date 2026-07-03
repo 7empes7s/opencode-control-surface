@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { existsSync } from "node:fs";
 import tls from "node:tls";
 import type { EvidenceRef } from "../../api/types.ts";
 import { getServiceStatuses } from "../../adapters/system.ts";
@@ -109,7 +110,23 @@ export function discoverPublicTargets(): EdgeTarget[] {
   for (const value of (process.env.PUBLIC_URLS ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
     urls.add(value);
   }
-  urls.add(DEFAULT_CONTROL_STATUS_URL);
+  // Only monitor the operator's OWN public status URL when they've actually
+  // configured one (CONTROL_STATUS_URL, or derivable from PUBLIC_HOSTNAME /
+  // PUBLIC_BASE_URL / DASHBOARD_PUBLIC_URL), or when this really does look
+  // like the known MIMULE host (existing production installs never set those
+  // env vars and rely on the hardcoded default -- /opt/newsbites is a cheap,
+  // reliable marker that this is that specific VPS, not just any install of
+  // this software). Unconditionally adding DEFAULT_CONTROL_STATUS_URL would
+  // make every fresh install of this software silently send outbound
+  // DNS/TLS/HTTP probes at techinsiderbytes.com and report the results as if
+  // they were this host's own edge health.
+  const looksLikeKnownMimuleHost = existsSync("/opt/newsbites");
+  const ownUrl = process.env.CONTROL_STATUS_URL
+    || (process.env.PUBLIC_HOSTNAME ? `https://${process.env.PUBLIC_HOSTNAME}/api/public-status` : null)
+    || (process.env.PUBLIC_BASE_URL ? `${process.env.PUBLIC_BASE_URL.replace(/\/$/, "")}/api/public-status` : null)
+    || (process.env.DASHBOARD_PUBLIC_URL ? `${process.env.DASHBOARD_PUBLIC_URL.replace(/\/$/, "")}/api/public-status` : null)
+    || (looksLikeKnownMimuleHost ? DEFAULT_CONTROL_STATUS_URL : null);
+  if (ownUrl) urls.add(ownUrl);
 
   const db = getDashboardDb();
   if (db) {

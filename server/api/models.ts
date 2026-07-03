@@ -297,7 +297,7 @@ export function modelsHandler(): Response {
       lastQuickCheckAt?: number;
       newModelsAdded?: string[];
       fallbacks?: Record<string, string[]>;
-    }>(modelHealthPath());
+    }>(modelHealthPath(), { fallback: {} });
     const quality = readModelQuality();
 
     const models = (health.models ?? []).map((m: any) => {
@@ -380,8 +380,28 @@ export function modelsHandler(): Response {
       }
     });
   } catch (e) {
+    // Honest degrade: a fresh host with no model-health.json (or a transient
+    // read error) is a known, expected state -- never surface a 500 for it.
     console.error('modelsHandler failed:', e);
-    return Response.json({ error: 'model-health.json unreadable' }, { status: 500 });
+    return Response.json({
+      sourceStatus: { modelHealth: "error" },
+      data: {
+        models: [],
+        cooldowns: [],
+        fallbacks: {},
+        summary: {
+          bestCloudHeavy: null,
+          bestCloudFast: null,
+          bestLocal: null,
+          availableByCapability: { heavy: 0, medium: 0, light: 0 },
+          qualitySummary: { blocked: 0, degraded: 0, probation: 0 },
+          lastFullCheckAgo: 0,
+          lastQuickCheckAgo: 0,
+          newModelsAdded: [],
+        },
+        discoveryLog: [],
+      },
+    });
   }
 }
 

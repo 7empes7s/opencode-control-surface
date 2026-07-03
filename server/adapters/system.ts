@@ -27,6 +27,21 @@ function probe(name: string, args: string[], timeoutMs = 5000): string {
   }
 }
 
+// Fresh-host honesty: `probe()` swallows every failure (including "binary not
+// found"), so a host with no systemd/docker at all looks identical to "every
+// seeded unit came back unknown". Distinguishing those matters -- on a host
+// with no systemctl/docker present, report an empty list rather than N pills
+// bearing hardcoded MIMULE service/container names. `command -v` itself never
+// throws (it just exits non-zero), so this check is cheap and side-effect free.
+function toolAvailable(name: string): boolean {
+  try {
+    execSync(`command -v ${name}`, { encoding: "utf8", timeout: 2000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildServiceNames(): string[] {
   const names = new Set<string>(CRITICAL_SERVICES_SEEDS);
   // Live discovery — fail-isolated; falls back to seeds only on error.
@@ -56,7 +71,7 @@ export function getServiceStatuses(): ServicePill[] {
   const results: ServicePill[] = [];
   const serviceNames = buildServiceNames();
 
-  if (serviceNames.length > 0) {
+  if (serviceNames.length > 0 && toolAvailable("systemctl")) {
     const raw = probe("systemctl", ["is-active", ...serviceNames, "2>/dev/null", "||", "true"]);
     const statuses = raw.trim().split("\n");
     for (let i = 0; i < serviceNames.length; i++) {
@@ -69,7 +84,7 @@ export function getServiceStatuses(): ServicePill[] {
   }
 
   const containerNames = buildContainerNames();
-  if (containerNames.length > 0) {
+  if (containerNames.length > 0 && toolAvailable("docker")) {
     const raw = probe(
       "docker",
       ["inspect", "--format='{{.Name}} {{.State.Status}}'", ...containerNames, "2>/dev/null", "||", "true"],
@@ -177,6 +192,7 @@ function buildTimerNames(): string[] {
 }
 
 export function getTimers(): TimerInfo[] {
+  if (!toolAvailable("systemctl")) return [];
   return buildTimerNames().map((name) => {
     const timerUnit = `${name}.timer`;
     try {

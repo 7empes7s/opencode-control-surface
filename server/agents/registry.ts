@@ -1,6 +1,7 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { whereTenant } from "../db/tenantScope.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
+import { getServiceStatuses } from "../adapters/system.ts";
 
 export type AgentKind = "runner" | "service" | "pipeline" | "workflow";
 export type AgentRiskTier = "low" | "medium" | "high";
@@ -246,6 +247,28 @@ function enrich(row: AgentRow): RegisteredAgent {
   };
 }
 
+// Some seed rows describe agents that only exist because an *external*
+// MIMULE-specific service is installed on this host (e.g. the NewsBites
+// autopipeline systemd unit). This map is consulted ONLY on first-ever seed
+// (INSERT OR IGNORE is a no-op on hosts that already have the row, so this
+// never touches the real production DB's existing state) -- on a fresh host
+// with no such unit discoverable, seed the honest "paused" status instead of
+// unconditionally claiming "active" for infrastructure that isn't there.
+const SEED_STATUS_REQUIRES_UNIT: Partial<Record<string, string>> = {
+  autopipeline: "newsbites-autopipeline",
+};
+
+function resolveSeedStatus(spec: SeedSpec): AgentStatus {
+  const requiredUnit = SEED_STATUS_REQUIRES_UNIT[spec.id];
+  if (!requiredUnit || spec.status !== "active") return spec.status;
+  try {
+    const pill = getServiceStatuses().find((p) => p.name === requiredUnit);
+    return pill?.status === "active" ? "active" : "paused";
+  } catch {
+    return "paused";
+  }
+}
+
 export function seedDefaultAgents(): number {
   const db = getDashboardDb();
   if (!db) return 0;
@@ -268,7 +291,7 @@ export function seedDefaultAgents(): number {
       "marouane",
       spec.purpose,
       spec.riskTier,
-      spec.status,
+      resolveSeedStatus(spec),
       spec.modelAccess,
       JSON.stringify(spec.aliases),
       now,
