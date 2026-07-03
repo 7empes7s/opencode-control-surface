@@ -16,6 +16,7 @@ let prevDb: string | undefined;
 let prevDbPath: string | undefined;
 let prevToken: string | undefined;
 let prevCooldownPath: string | undefined;
+let prevSentinelPath: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -24,10 +25,14 @@ beforeEach(() => {
   prevDbPath = process.env.DASHBOARD_DB_PATH;
   prevToken = process.env.OPERATOR_TOKEN;
   prevCooldownPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
+  prevSentinelPath = process.env.SENTINEL_HEALTH_PATH;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
   process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = join(tempDir, "model-cooldowns.json");
+  // Point the sentinel aggregator at a nonexistent file so the host's live
+  // /var/lib/mimule/product-health.json cannot leak findings into assertions.
+  process.env.SENTINEL_HEALTH_PATH = join(tempDir, "no-sentinel.json");
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   clearGatewayRouteOverrideForGatewayAdmin();
 });
@@ -43,6 +48,8 @@ afterEach(() => {
   else process.env.OPERATOR_TOKEN = prevToken;
   if (prevCooldownPath === undefined) delete process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
   else process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = prevCooldownPath;
+  if (prevSentinelPath === undefined) delete process.env.SENTINEL_HEALTH_PATH;
+  else process.env.SENTINEL_HEALTH_PATH = prevSentinelPath;
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -72,6 +79,17 @@ describe("insight aggregation", () => {
         ('price-paid', 'mimule', 'paid', 'paid-model', 'cloud-paid', 3, 9, ?),
         ('price-free', 'mimule', 'free', 'free-model', 'cloud-free', 0.1, 0.2, ?)
     `).run(now, now);
+    // The build scanner intentionally skips diagnoses whose run and workflow no
+    // longer exist (orphan de-noise), so seed a live failed run + workflow.
+    db().query(`
+      INSERT INTO builder_workflows
+        (id, project_id, name, mode, status, plan_file, config_json, created_at, updated_at)
+      VALUES ('wf-1', 'proj-1', 'test workflow', 'one-pass', 'active', 'PLAN.md', '{}', ?, ?)
+    `).run(now, now);
+    db().query(`
+      INSERT INTO builder_runs (id, workflow_id, trigger, status, started_at, finished_at)
+      VALUES ('run-1', 'wf-1', 'manual', 'failed', ?, ?)
+    `).run(now - 1000, now);
     db().query(`
       INSERT INTO reasoner_diagnoses
         (id, pass_id, run_id, workflow_id, failure_class, root_cause, evidence_json, suggested_actions_json, confidence, diagnosed_at, tenant_id)
