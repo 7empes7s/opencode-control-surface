@@ -1,7 +1,6 @@
 import { getDashboardDb } from "../db/dashboard.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import {
-  bootstrapOwnerAllowed,
   constantEqual,
   getAuthenticatedUser,
   type AuthenticatedUser,
@@ -38,8 +37,11 @@ function roleFromBinding(userId: string, tenantId: string): RbacRole {
 
 export function resolveRole(input?: AuthenticatedUser | Request | string | null, tenantId?: string): RbacRole {
   if (typeof input === "string") {
+    // Possession of the operator token IS operator identity, in every mode —
+    // see getAuthenticatedUser. bootstrapOwnerAllowed only gates the
+    // credential-less dev bootstrap.
     const token = getOperatorToken();
-    if (input && token && constantEqual(input, token) && bootstrapOwnerAllowed()) return "owner";
+    if (input && token && constantEqual(input, token)) return "owner";
     return "viewer";
   }
 
@@ -125,7 +127,7 @@ export function isOwnerRequest(req: Request): boolean {
 
 export function legacyTokenIsBootstrapOwner(token: string): boolean {
   const expected = getOperatorToken();
-  return Boolean(token && expected && constantEqual(token, expected) && bootstrapOwnerAllowed());
+  return Boolean(token && expected && constantEqual(token, expected));
 }
 
 export function resolveUserRole(userId: string, tenantId: string): RbacRole {

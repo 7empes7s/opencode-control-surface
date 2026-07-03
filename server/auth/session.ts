@@ -162,8 +162,11 @@ export function getAuthenticatedUser(req: Request): AuthenticatedUser | null {
     }
   }
 
-  if (!bootstrapOwnerAllowed(req)) return null;
-
+  // Token-derived credentials (header, bearer, HMAC legacy cookie) are valid from
+  // ANY origin in any mode: possession of the operator token IS operator identity.
+  // Only the credential-less dev bootstrap below is origin/mode gated — gating the
+  // token paths would lock the operator out of the public URL under
+  // NODE_ENV=production (the /api/auth/session exchange issues the legacy cookie).
   const token = process.env.OPERATOR_TOKEN;
   if (token) {
     const headerToken = req.headers.get("x-operator-token");
@@ -181,7 +184,7 @@ export function getAuthenticatedUser(req: Request): AuthenticatedUser | null {
     return null;
   }
 
-  if (isLocalRequest(req)) {
+  if (bootstrapOwnerAllowed(req) && isLocalRequest(req)) {
     return { userId: "dev-bootstrap", tenantId: ctx.tenantId, source: "dev-bootstrap", bootstrapOwner: true };
   }
 
