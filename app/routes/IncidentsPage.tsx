@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, Hammer, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
@@ -95,6 +95,7 @@ function IncidentLifecycleCard({
   const mute = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/mute`);
   const unmute = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/unmute`);
   const resolve = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/resolve`);
+  const escalate = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/escalate`);
   const savePostMortem = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/post-mortem`);
   const [note, setNote] = useState(incident.postMortem ?? "");
   const [resolveReason, setResolveReason] = useState("Resolved from incidents page");
@@ -119,6 +120,10 @@ function IncidentLifecycleCard({
   async function resolveIncident() {
     if (!window.confirm(`Resolve ${incident.title}?`)) return;
     if (await resolve.run({ reason: resolveReason })) onChanged();
+  }
+
+  async function escalateIncident() {
+    if (await escalate.run({ reason: "Escalated from incidents page" })) onChanged();
   }
 
   async function muteIncident() {
@@ -170,6 +175,7 @@ function IncidentLifecycleCard({
             <strong>{incident.title}</strong>
             <Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill>
             <Pill color="blue">{incident.failureClass}</Pill>
+            {incident.escalatedWorkflowId && <Pill color="amber">escalated</Pill>}
           </div>
           <div className="mono dim" style={{ marginTop: 4, fontSize: 11 }}>
             {incident.id} · {incident.occurrenceCount} occurrences · first seen {relTime(incident.firstSeen)}
@@ -206,6 +212,16 @@ function IncidentLifecycleCard({
             <ShieldCheck size={15} />
             Resolve
           </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={escalateIncident}
+            disabled={escalate.loading || incident.escalatedWorkflowId !== null}
+            style={{ minHeight: 44 }}
+          >
+            <Hammer size={15} />
+            {incident.escalatedWorkflowId ? "Escalated" : "Escalate to workflow"}
+          </button>
           {incident.muteActive ? (
             <button
               type="button"
@@ -232,11 +248,11 @@ function IncidentLifecycleCard({
         </div>
       </div>
 
-      {(ack.error || mitigate.error || resolve.error || mute.error || unmute.error || savePostMortem.error) && (
-        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? mute.error ?? unmute.error ?? savePostMortem.error}</div>
+      {(ack.error || mitigate.error || resolve.error || escalate.error || mute.error || unmute.error || savePostMortem.error) && (
+        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? escalate.error ?? mute.error ?? unmute.error ?? savePostMortem.error}</div>
       )}
-      {(ack.success || mitigate.success || resolve.success || mute.success || unmute.success || savePostMortem.success) && (
-        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? mute.success ?? unmute.success ?? savePostMortem.success}</div>
+      {(ack.success || mitigate.success || resolve.success || escalate.success || mute.success || unmute.success || savePostMortem.success) && (
+        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? escalate.success ?? mute.success ?? unmute.success ?? savePostMortem.success}</div>
       )}
 
       {incident.autoClosed && (
@@ -252,6 +268,22 @@ function IncidentLifecycleCard({
                 Closed {relTime(incident.autoCloseAt)} · sentinel scan · no operator action required
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {incident.escalatedWorkflowId && (
+        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+          <Hammer size={15} />
+          <div>
+            <strong>Escalated to workflow</strong>
+            <div className="mono dim" style={{ marginTop: 4, fontSize: 11 }}>{incident.escalatedWorkflowId}</div>
+            <div style={{ marginTop: 6 }}>
+              <Link href="/builder" className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
+                <ExternalLink size={13} />
+                Open in Builder
+              </Link>
+            </div>
           </div>
         </div>
       )}
@@ -420,6 +452,7 @@ export function IncidentsPage() {
       suggestedActionText(row.suggestedActions),
       row.autoClosed ? "auto-closed system" : "",
       row.muteActive ? "muted snoozed" : "",
+      row.escalatedWorkflowId ? "escalated workflow" : "",
     ],
     sortValue: (row, key) => {
       if (key === "lastSeen") return row.lastSeen;

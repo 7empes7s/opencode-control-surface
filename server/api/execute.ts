@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
@@ -9,6 +11,8 @@ import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
 import { setAutoApplyTier, type AutoApplyTier } from "../insights/autoapplyPolicy.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
+const ESCALATION_PLAN_DIR = "/var/lib/control-surface/incident-escalation-plans";
+const CONTROL_SURFACE_ROOT = "/opt/opencode-control-surface";
 
 interface ExecuteRequest {
   actionId: string;
@@ -59,6 +63,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   if (kind === "resolve") return { confirm: true, reasonRequired: true };
   if (kind === "mute") return { confirm: true, reasonRequired: true };
   if (kind === "unmute") return { confirm: false, reasonRequired: false };
+  if (kind === "escalate") return { confirm: false, reasonRequired: false };
   return { confirm: false, reasonRequired: false };
 }
 
@@ -70,6 +75,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
     if (targetType === "budget") return "medium";
     return "high";
   }
+  if (kind === "escalate") return "medium";
   return "low";
 }
 
@@ -87,6 +93,88 @@ function rollbackHintForActionId(actionId: string): string | undefined {
   if (kind === "mute" && targetType === "incident") return `unmute:incident:${targetId}`;
   if (kind === "unmute" && targetType === "incident") return `mute:incident:${targetId}`;
   return undefined;
+}
+
+type EscalationIncidentRow = {
+  id: string;
+  failure_class: string;
+  title: string;
+  first_seen: number;
+  last_seen: number;
+  occurrence_count: number;
+  representative_pass_id: string;
+  status: string;
+  escalated_workflow_id: string | null;
+  root_cause: string | null;
+  evidence_json: string | null;
+  suggested_actions_json: string | null;
+};
+
+function safeEscalationId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+}
+
+function escalationSuggestedActions(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return String(record.title ?? record.action ?? record.description ?? JSON.stringify(record));
+      }
+      return String(item);
+    }).filter((item) => item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function buildEscalationPlan(incident: EscalationIncidentRow, recurrence: { n: number; open_count: number | null }): string {
+  const suggested = escalationSuggestedActions(incident.suggested_actions_json);
+  const lines = [
+    `# Escalated Incident — ${incident.title}`,
+    "",
+    `Source incident: ${incident.id}`,
+    `Failure class: ${incident.failure_class}`,
+    `Status: ${incident.status}`,
+    `Occurrences: ${incident.occurrence_count} (first seen ${new Date(incident.first_seen).toISOString()}, last seen ${new Date(incident.last_seen).toISOString()})`,
+    `Recurrence: ${recurrence.n} incident${recurrence.n === 1 ? "" : "s"} for this condition in the trailing 7 days${(recurrence.open_count ?? 0) > 0 ? ` (${recurrence.open_count} still open)` : ""}`,
+    "",
+    "## Goal",
+    "",
+    "Own the fix for this incident instead of relying on auto-remediation: reproduce the failure, address the root cause, and verify it no longer recurs.",
+    "",
+    "## Root-cause hypothesis",
+    "",
+    incident.root_cause?.trim() || "No representative diagnosis has been recorded yet. Start from the evidence links below.",
+    "",
+    "## Evidence",
+    "",
+  ];
+  if (incident.evidence_json?.trim()) {
+    lines.push("```json", incident.evidence_json.trim().slice(0, 4_000), "```");
+  } else {
+    lines.push("No representative diagnosis evidence was recorded.");
+  }
+  lines.push("", "## Suggested actions", "");
+  if (suggested.length > 0) {
+    for (const action of suggested.slice(0, 10)) lines.push(`- ${action}`);
+  } else {
+    lines.push("- No suggested actions were recorded; investigate from the evidence above.");
+  }
+  lines.push(
+    "",
+    "## Links",
+    "",
+    "- Incident drawer: /incidents",
+    `- Incident API: /api/reasoner/incidents/${incident.id}`,
+    `- Pass evidence: /api/builder/passes/${incident.representative_pass_id}/diagnosis`,
+    "",
+  );
+  return lines.join("\n");
 }
 
 async function routeAndExecute(
@@ -462,6 +550,126 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       return { ok: true, action: "unmute", message: `incident ${targetId} unmuted` };
     } catch {
       return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "escalate" && targetType === "incident") {
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    try {
+      const ctx = getCurrentTenantContext();
+      const incident = db.query(`
+        SELECT i.id, i.failure_class, i.title, i.first_seen, i.last_seen, i.occurrence_count,
+               i.representative_pass_id, i.status, i.escalated_workflow_id,
+               d.root_cause, d.evidence_json, d.suggested_actions_json
+        FROM reasoner_incidents i
+        LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
+        WHERE i.id = ? AND (i.tenant_id = ? OR i.tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as EscalationIncidentRow | null;
+      if (!incident) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+
+      const { createBuilderWorkflow, readBuilderWorkflow, DEFAULT_WORKFLOW_CONFIG } = await import("../builder/store.ts");
+
+      // Idempotency: an already-escalated incident returns the existing
+      // workflow instead of creating a duplicate.
+      if (incident.escalated_workflow_id) {
+        const existing = readBuilderWorkflow(incident.escalated_workflow_id);
+        if (existing) {
+          return {
+            ok: true,
+            action: "escalate",
+            message: `incident ${targetId} is already escalated to workflow ${existing.id}`,
+            result: { workflowId: existing.id, planFile: existing.planFile, alreadyEscalated: true },
+          };
+        }
+      }
+
+      // Same joins detectRecurringIncidents uses: how often this
+      // (failure_class, title) condition recurred in the trailing 7 days.
+      const recurrence = db.query(`
+        SELECT COUNT(*) AS n, SUM(status = 'open') AS open_count
+        FROM reasoner_incidents
+        WHERE failure_class = ? AND title = ? AND first_seen >= ?
+          AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(incident.failure_class, incident.title, Date.now() - 7 * 24 * 60 * 60 * 1000, ctx.tenantId) as { n: number; open_count: number | null };
+
+      // Project = the incident's workflow's project when resolvable via its
+      // representative pass, else the control-surface repo itself.
+      const passRow = db.query(`
+        SELECT workflow_id FROM builder_passes WHERE id = ? LIMIT 1
+      `).get(incident.representative_pass_id) as { workflow_id: string } | null;
+      const sourceWorkflow = passRow ? readBuilderWorkflow(passRow.workflow_id) : null;
+      const projectRoot = sourceWorkflow?.projectRoot || CONTROL_SURFACE_ROOT;
+
+      mkdirSync(ESCALATION_PLAN_DIR, { recursive: true });
+      const planFile = join(ESCALATION_PLAN_DIR, `${safeEscalationId(incident.id)}-escalation.md`);
+      writeFileSync(planFile, buildEscalationPlan(incident, recurrence), { encoding: "utf8" });
+
+      let config;
+      if (sourceWorkflow) {
+        config = {
+          ...sourceWorkflow.config,
+          projectRoot,
+          riskPolicy: { ...sourceWorkflow.config.riskPolicy, maxPasses: 1 },
+          gitPolicy: { ...sourceWorkflow.config.gitPolicy, commit: "manual" as const, push: "never" as const },
+        };
+      } else {
+        const { getProjectValidationProfile } = await import("../builder/validation-profile.ts");
+        const profile = getProjectValidationProfile(projectRoot);
+        const internal = profile.internal.length > 0
+          ? profile.internal
+          : profile.commands.length > 0 ? profile.commands : ["bun run check"];
+        config = {
+          ...DEFAULT_WORKFLOW_CONFIG,
+          projectRoot,
+          validationProfile: { ...DEFAULT_WORKFLOW_CONFIG.validationProfile, internal },
+          riskPolicy: { ...DEFAULT_WORKFLOW_CONFIG.riskPolicy, maxPasses: 1 },
+        };
+      }
+
+      const workflow = createBuilderWorkflow({
+        name: `Escalated: ${incident.title}`.slice(0, 120),
+        projectRoot,
+        planFile,
+        mode: "once",
+        status: "draft",
+        config,
+      });
+
+      db.query(`
+        UPDATE reasoner_incidents
+        SET escalated_workflow_id = ?
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(workflow.id, targetId, ctx.tenantId);
+
+      writeActionAudit({
+        actionKind: "incidents.escalate",
+        actionId: `escalate:incident:${targetId}`,
+        targetType: "incident",
+        targetId,
+        risk: "medium",
+        reason: body.reason,
+        request: { incidentId: targetId },
+        result: `created draft workflow ${workflow.id}`,
+        resultStatus: "success",
+        resultJson: { workflowId: workflow.id, planFile },
+        evidence: [
+          { label: "Incident", kind: "api", ref: `/api/reasoner/incidents/${targetId}` },
+          { label: "Escalation plan", kind: "file", ref: planFile },
+        ],
+        rollbackHint: "Delete the generated draft workflow from /builder if it is not needed.",
+      });
+
+      return {
+        ok: true,
+        action: "escalate",
+        message: `incident ${targetId} escalated to draft workflow ${workflow.id}`,
+        result: { workflowId: workflow.id, planFile },
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "execution failed", code: "EXEC_ERROR" };
     }
   }
 

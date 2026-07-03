@@ -150,14 +150,17 @@ export function detectRecurringIncidents(now = Date.now()): { flagged: number; r
     if (!db) return { flagged: 0, resolved: 0 };
     const tenant = whereTenant();
 
+    // Bare `id` next to MAX(last_seen) is the documented SQLite behaviour of
+    // returning the column from the row that produced the max — i.e. the
+    // group's most recent incident, used as the escalation target.
     const groups = db.query(`
-      SELECT failure_class, title, COUNT(*) AS n, MAX(last_seen) AS latest, SUM(status = 'open') AS open_count
+      SELECT failure_class, title, COUNT(*) AS n, MAX(last_seen) AS latest, SUM(status = 'open') AS open_count, id AS latest_incident_id
       FROM reasoner_incidents
       WHERE first_seen >= ? ${tenant.clause}
       GROUP BY failure_class, title
       HAVING n >= ?
     `).all(now - RECURRENCE_WINDOW_MS, ...tenant.params, RECURRENCE_THRESHOLD) as Array<{
-      failure_class: string; title: string; n: number; latest: number; open_count: number;
+      failure_class: string; title: string; n: number; latest: number; open_count: number; latest_incident_id: string | null;
     }>;
 
     const activeKeys: string[] = [];
@@ -181,7 +184,7 @@ export function detectRecurringIncidents(now = Date.now()): { flagged: number; r
           ref: `/api/reasoner/incidents?status=all`,
           redacted: false,
         }],
-        actionDescriptorId: null,
+        actionDescriptorId: g.latest_incident_id ? `escalate:incident:${g.latest_incident_id}` : null,
         manualPageHref: "/incidents",
         createdAt: now,
       });

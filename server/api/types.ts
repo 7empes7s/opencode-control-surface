@@ -83,6 +83,7 @@ export interface ActionDescriptor {
     | "acknowledge"
     | "resolve"
     | "mute"
+    | "escalate"
     | "external-link"
     | "copy-command"
     | "export"

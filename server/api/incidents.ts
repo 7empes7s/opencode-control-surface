@@ -41,6 +41,7 @@ export interface ReasonerIncidentEntry {
   mutedUntil: number | null;
   muteActive: boolean;
   postMortem: string | null;
+  escalatedWorkflowId: string | null;
   rootCause: string | null;
   suggestedActions: unknown[];
   evidence: unknown;
@@ -97,6 +98,7 @@ type ReasonerIncidentRow = {
   mute_reason: string | null;
   muted_until: number | null;
   post_mortem: string | null;
+  escalated_workflow_id: string | null;
   root_cause: string | null;
   suggested_actions_json: string | null;
   evidence_json: string | null;
@@ -226,6 +228,27 @@ export function getIncidentEntries(): IncidentEntry[] {
     .slice(0, 500);
 }
 
+export interface EscalatableIncident {
+  id: string;
+  title: string;
+  escalatedWorkflowId: string | null;
+}
+
+export function getEscalatableIncidents(): EscalatableIncident[] {
+  if (!isDashboardDbEnabled()) return [];
+  const db = getDashboardDb();
+  if (!db) return [];
+  const tenantId = getCurrentTenantContext().tenantId;
+  const rows = db.query(`
+    SELECT id, title, escalated_workflow_id
+    FROM reasoner_incidents
+    WHERE status = 'open' AND (tenant_id = ? OR tenant_id IS NULL)
+    ORDER BY last_seen DESC
+    LIMIT 150
+  `).all(tenantId) as Array<{ id: string; title: string; escalated_workflow_id: string | null }>;
+  return rows.map((row) => ({ id: row.id, title: row.title, escalatedWorkflowId: row.escalated_workflow_id ?? null }));
+}
+
 function getReasonerRows(): ReasonerIncidentRow[] {
   if (!isDashboardDbEnabled()) return [];
   const db = getDashboardDb();
@@ -236,6 +259,7 @@ function getReasonerRows(): ReasonerIncidentRow[] {
            i.occurrence_count, i.representative_pass_id, i.representative_diagnosis_id,
            i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at,
            i.muted_at, i.muted_by, i.mute_reason, i.muted_until, i.post_mortem,
+           i.escalated_workflow_id,
            d.root_cause, d.suggested_actions_json, d.evidence_json
     FROM reasoner_incidents i
     LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
@@ -319,6 +343,7 @@ function mapReasonerIncident(row: ReasonerIncidentRow, autoCloseAudits: Map<stri
     mutedUntil: row.muted_until ?? null,
     muteActive: isMuteActive(row),
     postMortem: row.post_mortem ?? null,
+    escalatedWorkflowId: row.escalated_workflow_id ?? null,
     rootCause: row.root_cause ?? null,
     suggestedActions: parseJsonField(row.suggested_actions_json, []) as unknown[],
     evidence: parseJsonField(row.evidence_json, null),
@@ -442,6 +467,24 @@ export async function incidentResolveHandler(id: string, req: Request): Promise<
       actionId: `resolve:incident:${id}`,
       confirmed: true,
       reason: body.reason?.trim() || "Resolved from incidents page",
+    }),
+  }));
+}
+
+export async function incidentEscalateHandler(id: string, req: Request): Promise<Response> {
+  let body: { reason?: string } = {};
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    body = {};
+  }
+  return executeActionHandler(new Request("http://control.local/api/actions/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      actionId: `escalate:incident:${id}`,
+      confirmed: true,
+      reason: body.reason?.trim() || "Escalated from incidents page",
     }),
   }));
 }

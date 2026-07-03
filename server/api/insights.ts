@@ -72,6 +72,8 @@ function inferActionEnforcement(actionId: string): ActionEnforcement {
   }
   if (kind === "mutate-policy") return { risk: "high", confirm: true, reasonRequired: true };
   if (kind === "resolve" || kind === "mute") return { risk: "medium", confirm: true, reasonRequired: true };
+  // Single Apply, no approval gate: escalation only creates a draft workflow.
+  if (kind === "escalate") return { risk: "medium", confirm: false, reasonRequired: false };
   return { risk: "low", confirm: false, reasonRequired: false };
 }
 

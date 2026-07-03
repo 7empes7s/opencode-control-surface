@@ -6,7 +6,7 @@ import { getPipelineState, type QueueItem } from "../adapters/pipeline.ts";
 import { getServiceStatuses, getTimers } from "../adapters/system.ts";
 import { getVastAccount, getVastInstance } from "../adapters/vast.ts";
 import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS } from "./actions.ts";
-import { getIncidentEntries } from "./incidents.ts";
+import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
 
 const GPU_HEALTH_PATH = "/var/lib/mimule/gpu-health.json";
@@ -18,6 +18,7 @@ type CatalogInputs = {
   models?: ModelsDetail["models"];
   articles?: NewsBitesDetail["articles"];
   incidents?: Array<{ ts: number; type: string; slug: string; stage: string; errorType: string }>;
+  reasonerIncidents?: EscalatableIncident[];
   doctorEntries?: DoctorDetail["entries"];
   vastInstance?: InfraDetail["vastInstance"];
   vastBalance?: InfraDetail["vastBalance"];
@@ -318,6 +319,28 @@ function addIncidentActions(actions: ActionDescriptor[], incidents: CatalogInput
   }
 }
 
+function addIncidentEscalationActions(actions: ActionDescriptor[], reasonerIncidents: EscalatableIncident[] = []): void {
+  for (const incident of reasonerIncidents.slice(0, 150)) {
+    const escalated = incident.escalatedWorkflowId !== null;
+    actions.push(descriptor({
+      label: "Escalate to workflow",
+      kind: "escalate",
+      targetType: "incident",
+      targetId: incident.id,
+      risk: "medium",
+      disabled: escalated,
+      disabledReason: escalated ? `Already escalated to workflow ${incident.escalatedWorkflowId}.` : undefined,
+      evidenceRefs: [
+        apiEvidence("Incidents detail", "/api/incidents"),
+        apiEvidence("Reasoner incidents", "/api/reasoner/incidents?status=all"),
+      ],
+      impactPreview: `Create a draft builder workflow pre-seeded with the context of "${incident.title}".`,
+      rollbackHint: "Delete the generated draft workflow from /builder if it is not needed.",
+      sourceRoute: "/incidents",
+    }));
+  }
+}
+
 function addDoctorActions(actions: ActionDescriptor[], doctorEntries: DoctorDetail["entries"] = []): void {
   actions.push(descriptor({
     label: "Run doctor scan",
@@ -440,6 +463,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addQueueActions(actions, input.queue);
   addModelActions(actions, input.models);
   addArticleActions(actions, input.articles);
+  addIncidentEscalationActions(actions, input.reasonerIncidents);
   addDoctorActions(actions, input.doctorEntries);
   addVastAndGpuActions(actions, input);
   return actions;
@@ -510,7 +534,7 @@ function readGpuHealth(): InfraDetail["gpu"] | undefined {
 
 export async function actionCatalogHandler(url: URL): Promise<Response> {
   const sources: Record<string, "ok" | "error"> = {};
-  const [services, timers, pipeline, models, articles, doctor, incidents, gpu, vastInstance, vastBalance] = await Promise.all([
+  const [services, timers, pipeline, models, articles, doctor, incidents, reasonerIncidents, gpu, vastInstance, vastBalance] = await Promise.all([
     settled(sources, "services", getServiceStatuses),
     settled(sources, "timers", getTimers),
     settled(sources, "pipeline", getPipelineState),
@@ -518,6 +542,7 @@ export async function actionCatalogHandler(url: URL): Promise<Response> {
     settled(sources, "articles", getAllArticles),
     settled(sources, "doctor", doctorEntries),
     settled(sources, "incidents", readIncidents),
+    settled(sources, "reasonerIncidents", getEscalatableIncidents),
     settled(sources, "gpu", readGpuHealth),
     settled(sources, "vastInstance", getVastInstance),
     settled(sources, "vastBalance", getVastAccount),
@@ -530,6 +555,7 @@ export async function actionCatalogHandler(url: URL): Promise<Response> {
     models: models?.models,
     articles,
     incidents,
+    reasonerIncidents,
     doctorEntries: doctor,
     vastInstance: vastInstance ? {
       id: vastInstance.id,
