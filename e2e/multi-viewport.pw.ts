@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test, expect, type Page } from "@playwright/test";
+import { ROUTES } from "./routes";
 
 // Authenticate with the origin-scoped operator session cookie (the same value
 // POST /api/auth/session issues) so pages render their real content. A global
@@ -31,53 +32,6 @@ test.beforeEach(async ({ context, baseURL }) => {
     url: baseURL ?? "http://localhost:3000",
   }]);
 });
-
-// Every static route in app/App.tsx (param/wildcard routes excluded; "/" is the
-// catch-all DashHome). Keep in sync with the router — a missing entry here means
-// a page ships with zero viewport coverage.
-const ROUTES = [
-  "/",
-  "/status",
-  "/opencode",
-  "/codex",
-  "/claude",
-  "/gemini",
-  "/admin",
-  "/autopipeline",
-  "/insights",
-  "/security",
-  "/agents",
-  "/scout",
-  "/doctor",
-  "/models",
-  "/litellm",
-  "/newsbites",
-  "/infra",
-  "/incidents",
-  "/jobs",
-  "/agent-team",
-  "/audit",
-  "/today",
-  "/settings",
-  "/builder",
-  "/brainstorm",
-  "/governance",
-  "/traces",
-  "/gateway",
-  "/workflows",
-  "/projects",
-  "/about",
-  "/marketplace",
-  "/install",
-  "/cost",
-  "/finance-intel",
-  "/channels",
-  "/content-health",
-  "/reports",
-  "/data-explorer",
-  "/compliance",
-  "/feature-flags",
-];
 
 // Console noise that is not a page defect: transient backend probe failures the
 // UI is designed to degrade around, and stream reconnects in a headless run.

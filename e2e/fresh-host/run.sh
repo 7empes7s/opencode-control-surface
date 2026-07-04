@@ -13,7 +13,10 @@
 #
 # Hard rails: never touches the live :3000 service, never runs systemctl,
 # never commits/pushes. Container is capped --memory 2g --cpus 2, named
-# cs-freshhost, and removed on every entry/exit of this script.
+# cs-freshhost, and removed on every entry/exit of this script -- UNLESS
+# FRESH_HOST_KEEP=1, in which case the container is left running after the API
+# probe (e.g. so a UI test project can be pointed at it) and the caller is
+# responsible for `docker rm -f cs-freshhost` when done.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,11 +31,14 @@ REPORT_MD="$REPORT_DIR/REPORT.md"
 BOOT_LOG="$WORKDIR/boot.log"
 TOKEN="fresh-smoke-token"
 MAX_WAIT_ITERS="${FRESH_HOST_MAX_WAIT_ITERS:-150}"  # 150 * 2s = 5 min for install+build+boot
+KEEP="${FRESH_HOST_KEEP:-0}"
 
 cleanup() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+if [ "$KEEP" != "1" ]; then
+  trap cleanup EXIT
+fi
 
 echo "[run.sh] removing any previous $CONTAINER container"
 cleanup
@@ -111,4 +117,10 @@ bun run "$REPORT_DIR/probe.mjs" "$REPO/server/api/router.ts" "http://localhost:$
 } >> "$REPORT_MD"
 
 echo "[run.sh] report written to $REPORT_MD"
+
+if [ "$KEEP" = "1" ]; then
+  echo "[run.sh] FRESH_HOST_KEEP=1 -- leaving $CONTAINER running at http://localhost:${HOST_PORT}"
+  echo "[run.sh] remove it when done: docker rm -f $CONTAINER"
+fi
+
 exit "$PROBE_EXIT"
