@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.0.0",
-    "better-sqlite3": "11.5.0",
     "clsx": "^2.1.0",
     "date-fns": "^4.1.0",
     "docx": "^9.7.1",

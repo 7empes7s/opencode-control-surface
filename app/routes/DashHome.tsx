@@ -554,6 +554,81 @@ function HomeWidget({
   );
 }
 
+// ── First-run setup banner ─────────────────────────────────────────────────
+// Shown on the home route only while GET /api/setup/state reports
+// needsSetup: true (a genuinely never-touched install — see
+// server/api/setup.ts for the exact conditions). "Later" dismisses for this
+// page load only and writes nothing server-side, so the banner returns next
+// session until the operator actually finishes setup.
+function FirstRunSetupBanner() {
+  const { data } = useApi<{ needsSetup: boolean }>("/api/setup/state", 0);
+  const [dismissed, setDismissed] = useState(false);
+  const [tenantName, setTenantName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!data?.needsSetup || dismissed) return null;
+
+  async function finishSetup() {
+    const name = tenantName.trim();
+    if (!name) {
+      setError("Enter a name for this installation first.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await authFetch("/api/setup/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenantName: name }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as { error?: string }));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      setDismissed(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="dash-section"
+      style={{ background: "var(--bg-sub)", borderLeft: "4px solid var(--accent)", borderRadius: 4, padding: "12px 16px", marginBottom: 12 }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div className="w-label">first-run setup</div>
+          <div style={{ marginTop: 4, fontSize: 13 }}>Welcome — name this installation to finish setup.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            className="modal-input"
+            style={{ width: 200 }}
+            placeholder="e.g. Acme Corp"
+            value={tenantName}
+            onChange={(e) => setTenantName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") finishSetup(); }}
+            disabled={saving}
+            aria-label="Installation name"
+          />
+          <button type="button" className="btn btn-primary btn-sm" onClick={finishSetup} disabled={saving}>
+            {saving ? "…" : "Finish setup"}
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissed(true)} disabled={saving}>
+            Later
+          </button>
+        </div>
+      </div>
+      {error && <div className="modal-error" style={{ marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
 export function DashHome() {
   const { data: streamData, connected } = useStream<HomeData>("/api/stream");
   // Fallback poll for initial load if SSE hasn't fired yet
@@ -596,6 +671,8 @@ export function DashHome() {
 
   return (
     <div className="dash-page home-customizable">
+
+      <FirstRunSetupBanner />
 
       <div className="home-customize-bar">
         {!homeLayout.editMode && homeLayout.hidden.length > 0 && (

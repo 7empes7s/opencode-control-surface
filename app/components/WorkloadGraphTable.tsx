@@ -16,6 +16,15 @@ function getStatusColor(status: string) {
   }
 }
 
+// A hardcoded green "success" pill when the section has never run anything
+// (success + failed + running all 0) reads as fake liveness on a fresh host
+// (e.g. "0 success" still painted green for a service that has never
+// executed here). Fall back to the neutral/gray pill class in that case —
+// green is only honest once there's at least one non-zero count to report.
+function successPillColor(summary: { success: number; failed: number; running: number }) {
+  return summary.success === 0 && summary.failed === 0 && summary.running === 0 ? "gray" : "green";
+}
+
 function SortArrow({ active, dir }: { active: boolean; dir?: "asc" | "desc" }) {
   return <span className="sortable-th-arrow">{active ? (dir === "asc" ? "▲" : "▼") : "⇅"}</span>;
 }
@@ -168,7 +177,7 @@ export function WorkloadGraphTable() {
         <div className="w-card" style={{ padding: "8px 12px" }}>
           <div className="w-label">newsbites</div>
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <span className="pill green" style={{ fontSize: 10 }}>{data.summary.newsbites.success} success</span>
+            <span className={`pill ${successPillColor(data.summary.newsbites)}`} style={{ fontSize: 10 }}>{data.summary.newsbites.success} success</span>
             <span className="pill red" style={{ fontSize: 10 }}>{data.summary.newsbites.failed} failed</span>
             <span className="pill amber" style={{ fontSize: 10 }}>{data.summary.newsbites.running} running</span>
           </div>
@@ -176,7 +185,7 @@ export function WorkloadGraphTable() {
         <div className="w-card" style={{ padding: "8px 12px" }}>
           <div className="w-label">autopipeline</div>
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <span className="pill green" style={{ fontSize: 10 }}>{data.summary.autopipeline.success} success</span>
+            <span className={`pill ${successPillColor(data.summary.autopipeline)}`} style={{ fontSize: 10 }}>{data.summary.autopipeline.success} success</span>
             <span className="pill red" style={{ fontSize: 10 }}>{data.summary.autopipeline.failed} failed</span>
             <span className="pill amber" style={{ fontSize: 10 }}>{data.summary.autopipeline.running} running</span>
           </div>
@@ -184,7 +193,7 @@ export function WorkloadGraphTable() {
         <div className="w-card" style={{ padding: "8px 12px" }}>
           <div className="w-label">builder</div>
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <span className="pill green" style={{ fontSize: 10 }}>{data.summary.builder.success} success</span>
+            <span className={`pill ${successPillColor(data.summary.builder)}`} style={{ fontSize: 10 }}>{data.summary.builder.success} success</span>
             <span className="pill red" style={{ fontSize: 10 }}>{data.summary.builder.failed} failed</span>
             <span className="pill amber" style={{ fontSize: 10 }}>{data.summary.builder.running} running</span>
           </div>
@@ -192,7 +201,7 @@ export function WorkloadGraphTable() {
         <div className="w-card" style={{ padding: "8px 12px" }}>
           <div className="w-label">agents</div>
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <span className="pill green" style={{ fontSize: 10 }}>{data.summary.agent.success} success</span>
+            <span className={`pill ${successPillColor(data.summary.agent)}`} style={{ fontSize: 10 }}>{data.summary.agent.success} success</span>
             <span className="pill red" style={{ fontSize: 10 }}>{data.summary.agent.failed} failed</span>
             <span className="pill amber" style={{ fontSize: 10 }}>{data.summary.agent.running} running</span>
           </div>

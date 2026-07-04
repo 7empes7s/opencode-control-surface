@@ -11,18 +11,13 @@
 #   - REPORT.json shows any CRASH or ERROR-5xx verdict for any route, or
 #   - REPORT.json shows any LEAK beyond the one documented open leak
 #     (/api/actions/catalog, vastInstance/vastBalance source-status keys), or
-#   - the fresh-host-ui Playwright project reports any failing spec NOT in the
-#     small documented-known-findings allowlist below.
+#   - the fresh-host-ui Playwright project reports any failing spec.
 #
-# Documented known UI finding (pre-existing, out of this gate's file scope --
-# e2e/fresh-host/ + playwright.config.ts only -- flagged for a follow-up fix,
-# not silently hidden):
-#   /today -- app/components/WorkloadGraphTable.tsx:171-173,179-181,187-189,
-#   195-197 renders the workload "success" pill in a hardcoded green regardless
-#   of the actual count (e.g. "0 success" still paints green), which reads as
-#   fake liveness for the newsbites row on a host where nothing has ever run.
-#   Recommended fix: color should reflect the real count (e.g. gray when
-#   success + failed + running are all 0).
+# The one previously-documented KNOWN/ACCEPTED finding (fake-green "0 success"
+# pill on /today, app/components/WorkloadGraphTable.tsx) was fixed by SPEC 5 —
+# the success pill now renders gray when success+failed+running are all 0 —
+# so this gate no longer carries a known-exception allowlist. Any failing spec
+# is now a real gate failure.
 #
 # Hard rails: never touches the live :3000 service, never runs systemctl,
 # never commits/pushes. Container is capped (via run.sh) + named cs-freshhost
@@ -104,7 +99,6 @@ fi
 UI_TOTAL=0
 UI_PASS=0
 UI_FAIL=0
-UI_KNOWN=0
 UI_ROWS=""
 UI_FAILURE_DETAIL=""
 
@@ -130,39 +124,26 @@ else
     UI_PASS=$(printf '%s\n' "$SPEC_ROWS" | awk -F'\t' '$2=="true"' | wc -l | tr -d ' ')
     UI_FAIL=$(printf '%s\n' "$SPEC_ROWS" | awk -F'\t' '$2=="false"' | wc -l | tr -d ' ')
 
-    # One compact JSON object per failing spec, so we can tell a genuinely
-    # NEW/unexpected failure apart from the one documented known finding
-    # above (matched on title AND that its own failure text mentions
-    # "newsbites", not just any /today regression).
+    # One compact JSON object per failing spec -- every failure is now a real
+    # gate failure (no known-exception allowlist; see header note).
     FAILING_SPECS=$(jq -c '[.. | objects | select(has("specs")) | .specs[]?] | .[] | select(.ok == false)' "$UI_JSON" 2>/dev/null)
 
     UNEXPECTED_COUNT=0
     while IFS= read -r specjson; do
       [ -z "$specjson" ] && continue
       title=$(jq -r '.title' <<< "$specjson")
-      if [ "$title" = "fresh-host ui /today" ] && grep -qi "newsbites" <<< "$specjson"; then
-        UI_KNOWN=$((UI_KNOWN + 1))
-        UI_FAILURE_DETAIL="${UI_FAILURE_DETAIL}### ${title} -- KNOWN/ACCEPTED (see header note; not counted as a gate failure)
+      UNEXPECTED_COUNT=$((UNEXPECTED_COUNT + 1))
+      UI_FAILURE_DETAIL="${UI_FAILURE_DETAIL}### ${title}
 $(jq -r '[.tests[]?.results[]?.error?.message // empty] | join("\n")' <<< "$specjson" 2>/dev/null)
 
 "
-      else
-        UNEXPECTED_COUNT=$((UNEXPECTED_COUNT + 1))
-        UI_FAILURE_DETAIL="${UI_FAILURE_DETAIL}### ${title}
-$(jq -r '[.tests[]?.results[]?.error?.message // empty] | join("\n")' <<< "$specjson" 2>/dev/null)
-
-"
-      fi
     done <<< "$FAILING_SPECS"
 
     while IFS=$'\t' read -r title ok; do
       [ -z "$title" ] && continue
       route="${title#fresh-host ui }"
       verdict="PASS"
-      if [ "$ok" = "false" ]; then
-        verdict="FAIL"
-        [ "$title" = "fresh-host ui /today" ] && [ "$UI_KNOWN" != "0" ] && verdict="KNOWN"
-      fi
+      [ "$ok" = "false" ] && verdict="FAIL"
       UI_ROWS="${UI_ROWS}| ${route} | ${verdict} |
 "
     done <<< "$SPEC_ROWS"
@@ -181,7 +162,7 @@ fi
   echo ""
   echo "Project: fresh-host-ui (chromium desktop) against http://localhost:${HOST_PORT}"
   echo ""
-  echo "Total routes: ${UI_TOTAL} | PASS: ${UI_PASS} | FAIL: ${UI_FAIL} (of which KNOWN/accepted: ${UI_KNOWN})"
+  echo "Total routes: ${UI_TOTAL} | PASS: ${UI_PASS} | FAIL: ${UI_FAIL}"
   echo ""
   echo "| Route | Verdict |"
   echo "|---|---|"
@@ -204,7 +185,7 @@ echo "[gate.sh] REPORT.md updated with ## UI audit section: $REPORT_MD"
 
 echo "[gate.sh] === summary ==="
 echo "[gate.sh] API probe: CRASH=${CRASH_COUNT} ERROR-5xx=${ERR5XX_COUNT} unexpected-LEAK=$([ -n "$UNEXPECTED_LEAKS" ] && echo yes || echo no)"
-echo "[gate.sh] UI audit: total=${UI_TOTAL} pass=${UI_PASS} fail=${UI_FAIL} known/accepted=${UI_KNOWN} unexpected=${UNEXPECTED_COUNT:-0}"
+echo "[gate.sh] UI audit: total=${UI_TOTAL} pass=${UI_PASS} fail=${UI_FAIL} unexpected=${UNEXPECTED_COUNT:-0}"
 
 if [ "$GATE_FAIL" != "0" ]; then
   echo "[gate.sh] GATE: FAIL"

@@ -5,6 +5,21 @@ import { dirname } from "node:path";
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
 export const DASHBOARD_SCHEMA_VERSION = 10;
 
+// Single source of truth for the seed tenant's id/name — the first-run setup
+// flow (server/api/setup.ts) computes "has this tenant been renamed yet?" by
+// comparing against this constant rather than re-hardcoding "MIMULE" in a
+// second place where it could drift from what's actually seeded below.
+export const SEED_DEFAULT_TENANT_ID = "mimule";
+export const SEED_DEFAULT_TENANT_NAME = "MIMULE";
+
+// system_configs keys for the first-run setup flow (server/api/setup.ts).
+// "pending" is written exactly once, when a brand-new database file is first
+// migrated (see the end of migrateDashboardDb); "completed" is written by
+// POST /api/setup/complete. Databases that predate this feature have neither
+// — and are treated as already set up.
+export const SETUP_PENDING_MARKER_KEY = "setup.pending";
+export const SETUP_COMPLETED_MARKER_KEY = "setup.completed";
+
 type InitDashboardDbOptions = {
   enabled?: boolean;
   path?: string;
@@ -1323,13 +1338,19 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON agents (tenant_id, status);
   `);
 
-  // Seed default tenant
+  // Seed default tenant. An empty tenants table right before this seed is the
+  // one signal that only a genuinely brand-new database file ever produces —
+  // existing installs re-run this migration on every boot but already carry
+  // their tenant row. Remember it so the first-run marker below is written
+  // exactly once, at database birth, and can never appear on a pre-existing
+  // production database (see server/api/setup.ts).
+  const isBrandNewDatabase = db.query("SELECT COUNT(*) AS c FROM tenants").get() as { c: number };
   const now = Date.now();
   db.query("INSERT OR IGNORE INTO tenants (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-    .run("mimule", "MIMULE", "active", now, now);
+    .run(SEED_DEFAULT_TENANT_ID, SEED_DEFAULT_TENANT_NAME, "active", now, now);
 
   db.query("INSERT OR IGNORE INTO tenant_settings (tenant_id, updated_at) VALUES (?, ?)")
-    .run("mimule", now);
+    .run(SEED_DEFAULT_TENANT_ID, now);
 
   db.query("INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)")
     .run(DASHBOARD_SCHEMA_VERSION, appliedAt);
@@ -1494,6 +1515,19 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     }
   } catch (err) {
     console.error("[control-surface] timestamp ms-normalization migration failed", err);
+  }
+
+  // ── First-run marker (SPEC 5 / ULTRAPLAN P0.5) ────────────────────────────
+  // Written once, at database birth only (see isBrandNewDatabase above — the
+  // tenants table was empty before this migration seeded it). The setup wizard
+  // (server/api/setup.ts) shows only while this "pending" marker exists and no
+  // "completed" marker does. Databases that predate this feature never get the
+  // pending marker, so an existing production install can never be asked to
+  // "set up" again. Deliberately down here: system_configs is only guaranteed
+  // to exist after its CREATE TABLE above (Phase 7 section).
+  if (isBrandNewDatabase.c === 0) {
+    db.query("INSERT OR IGNORE INTO system_configs (key, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?)")
+      .run(SETUP_PENDING_MARKER_KEY, JSON.stringify({ firstBootAt: appliedAt }), appliedAt, "system");
   }
 }
 

@@ -56,11 +56,14 @@ mkdir -p "$SRC"
 # NOTE: intentionally NOT `git archive HEAD` -- that freezes on the last commit
 # and would never see uncommitted fixes made during this harness's fix/re-run
 # loop (and the hard rails forbid committing just to make the harness see
-# them). `git ls-files` lists tracked, non-gitignored paths; tarring those
-# straight off the working tree picks up in-progress edits while still
-# guaranteeing no untracked VPS state (node_modules, dist, *.db, .env, secrets)
-# leaks into the fresh-host container.
-git -C "$REPO" ls-files -z | tar -cf - --null -C "$REPO" -T - | tar -x -C "$SRC"
+# them). `git ls-files --cached --others --exclude-standard` lists tracked
+# paths PLUS untracked-but-not-gitignored ones (i.e. brand-new source files
+# that aren't committed yet -- a tracked file importing a new uncommitted
+# module used to break the boot here); tarring those straight off the working
+# tree picks up all in-progress work while .gitignore still guarantees no
+# VPS state (node_modules, dist, *.db, .env, secrets) leaks into the
+# fresh-host container.
+git -C "$REPO" ls-files -z --cached --others --exclude-standard | tar -cf - --null -C "$REPO" -T - | tar -x -C "$SRC"
 if [ -d "$NODE_MODULES_CACHE" ]; then
   mv "$NODE_MODULES_CACHE" "$SRC/node_modules"
 fi

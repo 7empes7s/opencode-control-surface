@@ -306,6 +306,7 @@ import {
   featureFlagsHistoryHandler,
 } from "./featureFlags.ts";
 import { installStatusHandler } from "./install.ts";
+import { setupStateHandler, setupCompleteHandler } from "./setup.ts";
 import { docsTutorialsHandler } from "./docs.ts";
 import { cloudTierStatusHandler } from "./cloud-tier.ts";
 import {
@@ -657,6 +658,15 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/install/status") {
     if (!checkToken(req)) return unauthorized();
     return installStatusHandler();
+  }
+  // First-run setup wizard stub. GET is unauthenticated like /api/home/
+  // /api/public-status — the home route needs it before the operator has
+  // necessarily logged in, and it reveals nothing beyond a boolean.
+  if (method === "GET" && pathname === "/api/setup/state") return setupStateHandler();
+  if (method === "POST" && pathname === "/api/setup/complete") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return setupCompleteHandler(req);
   }
   if (method === "GET" && pathname === "/api/home") return homeHandler();
   if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();
