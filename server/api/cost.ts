@@ -403,6 +403,14 @@ export async function getAttribution(req: Request): Promise<Response> {
         query += "builder_run_id = ?";
         params.push(entityId);
         break;
+      case "workflow":
+        query += "workflow_id = ?";
+        params.push(entityId);
+        break;
+      case "project":
+        query += "project = ?";
+        params.push(entityId);
+        break;
       default:
         return new Response(JSON.stringify({ error: "Unsupported entity type" }), {
           status: 400,

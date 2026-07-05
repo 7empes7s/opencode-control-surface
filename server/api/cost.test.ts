@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { rmSync } from "node:fs";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
-import { computeCostHeadline, getCostSummary } from "./cost.ts";
+import { computeCostHeadline, getAttribution, getCostSummary } from "./cost.ts";
 
 const TEST_DB = "/tmp/test-cost-control-surface.db";
 
@@ -209,5 +209,105 @@ describe("computeCostHeadline", () => {
 
     expect(headline.monthToDateCents).toBe(50);
     expect(headline.projectedMonthEndCents).toBeNull();
+  });
+});
+
+// Regression coverage for a bug found while rehearsing the SPEC 6 golden demo
+// flow: server/insights/aggregate.ts's aggregateSpendAnomalies() builds evidence
+// links of the shape /api/cost/attribution/<scope_type>?entityId=<scope_id>,
+// where scope_type is always "workflow" or "project" (the only two scope_type
+// values spend_anomalies ever carries — see server/insights/scanners/anomaly.ts
+// and server/db/demo-seed.ts). getAttribution's switch previously only handled
+// "article" | "dossier" | "builder-run", so every spend-anomaly cost insight's
+// evidence link 400'd with "Unsupported entity type" -- a broken link, not a
+// demo-only issue (it affects live spend-anomaly insights too).
+describe("getAttribution", () => {
+  const previousDashboardDb = process.env.DASHBOARD_DB;
+
+  beforeEach(() => {
+    process.env.DASHBOARD_DB = "1";
+    setupTestDb();
+  });
+
+  afterEach(() => {
+    closeDashboardDb();
+    rmSync(TEST_DB, { force: true });
+
+    if (previousDashboardDb === undefined) {
+      delete process.env.DASHBOARD_DB;
+    } else {
+      process.env.DASHBOARD_DB = previousDashboardDb;
+    }
+  });
+
+  function insertCostEvent(opts: {
+    id: string;
+    workflowId?: string | null;
+    project?: string | null;
+    articleSlug?: string | null;
+    dossierId?: string | null;
+    builderRunId?: string | null;
+    costCents: number;
+  }) {
+    getDashboardDb()!.query(`
+      INSERT INTO cost_events
+        (id, tenant_id, ts, source, tier, workflow_id, project, article_slug, dossier_id, builder_run_id, cost_cents, cost_basis)
+      VALUES (?, 'mimule', ?, 'gateway', 'free', ?, ?, ?, ?, ?, ?, 'provider_free_tier')
+    `).run(
+      opts.id,
+      Date.now(),
+      opts.workflowId ?? null,
+      opts.project ?? null,
+      opts.articleSlug ?? null,
+      opts.dossierId ?? null,
+      opts.builderRunId ?? null,
+      opts.costCents,
+    );
+  }
+
+  it("resolves workflow-scoped attribution (the shape spend-anomaly evidence links use)", async () => {
+    insertCostEvent({ id: "ce-1", workflowId: "demo-wf-agent-team", costCents: 15.38 });
+    insertCostEvent({ id: "ce-2", workflowId: "other-workflow", costCents: 99 });
+
+    const req = new Request("http://localhost/api/cost/attribution/workflow?entityId=demo-wf-agent-team");
+    const res = await getAttribution(req);
+    const body = await res.json() as { entity: { type: string; id: string }; events: unknown[]; totals: { total_cents: number } };
+
+    expect(res.status).toBe(200);
+    expect(body.entity).toEqual({ type: "workflow", id: "demo-wf-agent-team" });
+    expect(body.events).toHaveLength(1);
+    expect(body.totals.total_cents).toBeCloseTo(15.38);
+  });
+
+  it("resolves project-scoped attribution", async () => {
+    insertCostEvent({ id: "ce-3", project: "insights-inbox", costCents: 5.22 });
+
+    const req = new Request("http://localhost/api/cost/attribution/project?entityId=insights-inbox");
+    const res = await getAttribution(req);
+    const body = await res.json() as { entity: { type: string; id: string }; events: unknown[] };
+
+    expect(res.status).toBe(200);
+    expect(body.entity).toEqual({ type: "project", id: "insights-inbox" });
+    expect(body.events).toHaveLength(1);
+  });
+
+  it("still resolves the pre-existing article/dossier/builder-run entity types", async () => {
+    insertCostEvent({ id: "ce-4", articleSlug: "some-article", costCents: 1 });
+    insertCostEvent({ id: "ce-5", dossierId: "some-dossier", costCents: 2 });
+    insertCostEvent({ id: "ce-6", builderRunId: "some-run", costCents: 3 });
+
+    for (const [type, id] of [["article", "some-article"], ["dossier", "some-dossier"], ["builder-run", "some-run"]] as const) {
+      const res = await getAttribution(new Request(`http://localhost/api/cost/attribution/${type}?entityId=${id}`));
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("still 400s on a genuinely unsupported entity type", async () => {
+    const req = new Request("http://localhost/api/cost/attribution/not-a-real-type?entityId=x");
+    const res = await getAttribution(req);
+    const body = await res.json() as { error: string };
+
+    expect(res.status).toBe(400);
+    expect(body.error).toBe("Unsupported entity type");
   });
 });

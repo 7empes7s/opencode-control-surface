@@ -400,9 +400,21 @@ export function GatewayPage() {
           <span className="pill amber">pending</span>
         )}
         {status?.routeOverride && (
-          <span className="pill amber" title={`Expires ${new Date(status.routeOverride.expiresAt).toLocaleString()}`}>
-            routing via {status.routeOverride.targetModel}
-          </span>
+          <>
+            <span
+              className="pill amber"
+              title={`Expires ${new Date(status.routeOverride.expiresAt).toLocaleString()}${status.routeOverride.reason ? ` — ${status.routeOverride.reason}` : ""}`}
+            >
+              routing via {status.routeOverride.targetModel}
+            </span>
+            {status.routeOverride.reason && (
+              // The operator's typed reason (required by the apply gate this
+              // override came from) was previously only visible in a hover
+              // tooltip -- easy to miss when narrating why the route changed.
+              // Surfaced as plain text so it's visible without hovering.
+              <span>&ldquo;{status.routeOverride.reason}&rdquo;</span>
+            )}
+          </>
         )}
         {updatedAt ? <span>Last updated {new Date(updatedAt).toLocaleString()}</span> : <span>Last updated after first response</span>}
         {refreshing && <span>refreshing data...</span>}

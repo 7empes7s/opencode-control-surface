@@ -746,6 +746,20 @@ body {
   backdrop-filter: blur(8px);
   flex-shrink: 0;
   min-height: 64px;
+  /* backdrop-filter alone creates a stacking context for this (position:static)
+     header, but a static box's z-index has no effect -- so that stacking
+     context still paints in plain DOM order relative to its sibling
+     .dash-page. .dash-page comes right after .dash-header in the DOM, so it
+     was painting OVER the header's entire stacking context, including the
+     tenant/project switcher dropdown (.ctx-dropdown, z-index:60) nested
+     inside it -- only the top ~10% sliver of each dropdown item (the part
+     overlapping the header's own box) was ever hit-testable; the rest of the
+     menu was visible but unclickable. Found rehearsing the SPEC 6 golden demo
+     flow's "switch to demo tenant" step. Promoting the header itself into a
+     positioned, explicitly-stacked box fixes it for both the tenant and
+     project pill dropdowns without touching their own styles. */
+  position: relative;
+  z-index: 10;
 }
 .dash-header-titles {
   display: flex;
