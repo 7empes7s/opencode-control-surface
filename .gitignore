@@ -14,3 +14,4 @@ PASS_RESULT.json
 test-results/
 # SPEC 6 demo clips (asciinema casts, webm recordings) -- binary, never committed
 e2e/demo/clips/
+__pycache__/
