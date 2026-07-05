@@ -86,10 +86,10 @@ This is the "M365 admin center but AI-led" promise made real, and it is *truthfu
 
 Goal: make the *already-real* agent-team build→audit→rollback loop demo-clean. No idea→app wizard (that's the separate Studio product, reserved until mature).
 
-- [ ] On the seeded tenant, stage a Builder run that visibly: runs a pass → validation/doctor catches a real issue → rolls back. Use a real, repeatable scenario (the codex-auditor catching a bug is the story). *(OPEN — demo scenario not staged; builder loop itself is real)*
-- [ ] `/agent-team` + `/builder` pages render this clearly for a non-technical viewer: plain-English status, "what it's doing right now," and the rollback shown as a *feature* (reversible, traced) — not a failure. *(OPEN — pages exist; non-technical narration pass not verified)*
+- [x] On the seeded tenant, stage a Builder run that visibly: runs a pass → validation/doctor catches a real issue → rolls back. Use a real, repeatable scenario (the codex-auditor catching a bug is the story). *(done 8e41554 — "Showcase Builder Demo (staged)" project + one-command stage/--fix/--reset script; real pass, real bun-test validation catching a real planted bug, reversibility shown as real git history (green-baseline/bug/fix commits + demo-bug-state tag) rather than an automated rollback engine — honest framing in e2e/demo/BUILDER_DEMO.md)*
+- [x] `/agent-team` + `/builder` pages render this clearly for a non-technical viewer: plain-English status, "what it's doing right now," and the rollback shown as a *feature* (reversible, traced) — not a failure. *(done 8e41554 — both pages walked live in failing+fixed states, zero console/page errors; two every-workflow rendering bugs fixed (detail-row overflow, uppercase ids); presenter framing documented in BUILDER_DEMO.md; known dead "pass" column for finished runs reported at BuilderPage.tsx:3455, needs an API shape change)*
 - [x] Route build failures into the Insights Inbox (suggested actions, not stack traces) so even errors demo the "AI-led" promise. *(done — scanners/build.ts maps builder_runs failures to insights)*
-- [ ] Validation gate. (Studio idea→app front door = post-showcase, separate product — see roadmap.) *(OPEN — pending the two items above)*
+- [x] Validation gate. (Studio idea→app front door = post-showcase, separate product — see roadmap.) *(done 2026-07-05 — check clean, 956 pass / 0 fail, gate.sh PASS 41/41 zero exceptions, service restarted clean, post-restart live proof of the validation-failure diagnosis fix)*
 
 ## Phase 4 — Plain-English UX on the 6 demo routes ONLY
 
