@@ -7,6 +7,7 @@ import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
 import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, detectRecurringIncidents } from "../reasoner/lifecycle.ts";
 import { runOpsScan } from "./scanners/ops.ts";
+import { runSlaScan } from "./scanners/sla.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
 import { runEdgeScan } from "./scanners/edge.ts";
 import { runGovernanceScan } from "./scanners/governance.ts";
@@ -37,6 +38,7 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
   sentinelIncidents: number;
   incidentsAutoResolved: number;
   opsFindings: number;
+  slaFindings: number;
   discoveryFindings: number;
   edgeFindings: number;
   governanceFindings: number;
@@ -88,6 +90,12 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     opsFindings = runOpsScan().findings.length;
   } catch (error) {
     console.error("[insights] ops scan failed", error);
+  }
+  let slaFindings = 0;
+  try {
+    slaFindings = runSlaScan().findings.length;
+  } catch (error) {
+    console.error("[insights] sla scan failed", error);
   }
   let discoveryFindings = 0;
   try {
@@ -149,7 +157,7 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     await runDailyDigestGate(!!opts.firstBootTick);
   }
 
-  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, incidentsAutoResolved, opsFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
+  return { aggregated, securityFindings, registryFindings, budgetFindings, anomalies, sentinelIncidents, incidentsAutoResolved, opsFindings, slaFindings, discoveryFindings, edgeFindings, governanceFindings, buildFindings, notifications };
 }
 
 export function startInsightsScanScheduler(intervalMs = 15 * 60 * 1000): void {

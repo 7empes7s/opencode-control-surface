@@ -70,6 +70,8 @@ describe("incidents SLA and lifecycle API", () => {
     acknowledgedAt?: number | null;
     resolvedAt?: number | null;
     status?: string;
+    slaDueAt?: number | null;
+    owner?: string | null;
   }) {
     const passId = `pass-${input.id}`;
     const diagnosisId = `diagnosis-${input.id}`;
@@ -77,8 +79,9 @@ describe("incidents SLA and lifecycle API", () => {
     getDashboardDb()!.query(`
       INSERT INTO reasoner_incidents
         (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count,
-         representative_pass_id, representative_diagnosis_id, status, acknowledged_at, resolved_at, tenant_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         representative_pass_id, representative_diagnosis_id, status, acknowledged_at, resolved_at,
+         sla_due_at, owner, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.id,
       `${input.id}:cluster`,
@@ -92,15 +95,24 @@ describe("incidents SLA and lifecycle API", () => {
       input.status ?? "open",
       input.acknowledgedAt ?? null,
       input.resolvedAt ?? null,
+      input.slaDueAt ?? null,
+      input.owner ?? null,
       "mimule",
     );
   }
 
-  it("computes MTTA, MTTR, open age, breach count, and RCA from real rows", () => {
+  it("computes MTTA, MTTR, open age, SLA breach/due-soon counts, and RCA from real rows", () => {
     const now = Date.now();
     seedIncident({ id: "incident-a", firstSeen: 1_000, acknowledgedAt: 4_000, resolvedAt: 11_000, status: "resolved" });
     seedIncident({ id: "incident-b", firstSeen: 2_000, acknowledgedAt: 8_000, resolvedAt: 22_000, status: "resolved" });
-    seedIncident({ id: "incident-open", firstSeen: now - 25 * 60 * 60 * 1000, status: "open" });
+    // Breached: sla_due_at is in the past.
+    seedIncident({ id: "incident-open", firstSeen: now - 25 * 60 * 60 * 1000, status: "open", slaDueAt: now - 60 * 60 * 1000 });
+    // Due-soon: sla_due_at is 30 minutes away, well within the (capped 6h) approaching window.
+    seedIncident({ id: "incident-due-soon", firstSeen: now - 60 * 60 * 1000, status: "open", slaDueAt: now + 30 * 60 * 1000 });
+    // Open but nowhere near its deadline: must not count toward either metric.
+    seedIncident({ id: "incident-not-due", firstSeen: now - 60 * 60 * 1000, status: "open", slaDueAt: now + 10 * 24 * 60 * 60 * 1000 });
+    // Open with no sla_due_at at all (e.g. pre-migration row): excluded from both.
+    seedIncident({ id: "incident-no-deadline", firstSeen: now - 60 * 60 * 1000, status: "open" });
 
     const detail = buildIncidentsDetail();
 
@@ -109,7 +121,8 @@ describe("incidents SLA and lifecycle API", () => {
     expect(detail.sla.acknowledgedSamples).toBe(2);
     expect(detail.sla.resolvedSamples).toBe(2);
     expect(detail.sla.oldestOpenAgeMs).toBeGreaterThanOrEqual(25 * 60 * 60 * 1000 - 1_000);
-    expect(detail.sla.breachingUnacknowledgedCount).toBe(1);
+    expect(detail.sla.slaBreachedOpenCount).toBe(1);
+    expect(detail.sla.slaDueSoonCount).toBe(1);
     expect(detail.reasonerIncidents.find((incident) => incident.id === "incident-a")?.rootCause).toContain("Root cause");
   });
 
@@ -319,6 +332,85 @@ describe("incidents SLA and lifecycle API", () => {
     expect(audit?.result_status).toBe("success");
   });
 
+  it("assigns an owner, reflects it in the detail payload, and audits the write", async () => {
+    seedIncident({ id: "incident-assign", firstSeen: 1_000 });
+
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-assign/assign", {
+        method: "POST",
+        body: JSON.stringify({ owner: "marouane@example.com" }),
+      }),
+      new URL("http://localhost/api/incidents/incident-assign/assign"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    const row = getDashboardDb()!.query(`
+      SELECT owner FROM reasoner_incidents WHERE id = ?
+    `).get("incident-assign") as { owner: string | null };
+    expect(row.owner).toBe("marouane@example.com");
+
+    const detail = buildIncidentsDetail();
+    const assigned = detail.reasonerIncidents.find((incident) => incident.id === "incident-assign");
+    expect(assigned?.owner).toBe("marouane@example.com");
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_kind, action_id, result_status FROM action_audit
+      WHERE action_id = ? AND action_kind = ?
+    `).get("assign:incident:incident-assign", "incidents.assign") as { action_kind: string; action_id: string; result_status: string } | null;
+    expect(audit?.action_kind).toBe("incidents.assign");
+    expect(audit?.result_status).toBe("success");
+  });
+
+  it("unassigns an incident by assigning an empty owner, clearing the column to NULL", async () => {
+    seedIncident({ id: "incident-unassign", firstSeen: 1_000, owner: "someone@example.com" });
+
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-unassign/assign", {
+        method: "POST",
+        body: JSON.stringify({ owner: "" }),
+      }),
+      new URL("http://localhost/api/incidents/incident-unassign/assign"),
+    );
+    expect(res.status).toBe(200);
+
+    const row = getDashboardDb()!.query(`
+      SELECT owner FROM reasoner_incidents WHERE id = ?
+    `).get("incident-unassign") as { owner: string | null };
+    expect(row.owner).toBeNull();
+
+    const detail = buildIncidentsDetail();
+    const unassigned = detail.reasonerIncidents.find((incident) => incident.id === "incident-unassign");
+    expect(unassigned?.owner).toBeNull();
+  });
+
+  it("rejects an owner longer than 120 characters", async () => {
+    seedIncident({ id: "incident-assign-too-long", firstSeen: 1_000 });
+    const res = await handleApi(
+      apiReq("/api/incidents/incident-assign-too-long/assign", {
+        method: "POST",
+        body: JSON.stringify({ owner: "x".repeat(121) }),
+      }),
+      new URL("http://localhost/api/incidents/incident-assign-too-long/assign"),
+    );
+    expect(res.status).toBe(400);
+    const row = getDashboardDb()!.query(`
+      SELECT owner FROM reasoner_incidents WHERE id = ?
+    `).get("incident-assign-too-long") as { owner: string | null };
+    expect(row.owner).toBeNull();
+  });
+
+  it("rejects assign without an operator token", async () => {
+    seedIncident({ id: "incident-assign-no-token", firstSeen: 1_000 });
+    const req = apiReq("/api/incidents/incident-assign-no-token/assign", {
+      method: "POST",
+      body: JSON.stringify({ owner: "someone@example.com" }),
+    }, "");
+    const res = await handleApi(req, new URL(req.url));
+    expect(res.status).toBe(401);
+  });
+
   it("rejects unmute without an operator token", async () => {
     seedIncident({ id: "incident-unmute-no-token", firstSeen: 1_000 });
     const req = apiReq("/api/incidents/incident-unmute-no-token/unmute", { method: "POST" }, "");
@@ -328,8 +420,8 @@ describe("incidents SLA and lifecycle API", () => {
 
   it("excludes actively muted incidents from the SLA breach count, and counts them again after expiry", async () => {
     const now = Date.now();
-    seedIncident({ id: "incident-breaching", firstSeen: now - 25 * 60 * 60 * 1000, status: "open" });
-    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(1);
+    seedIncident({ id: "incident-breaching", firstSeen: now - 25 * 60 * 60 * 1000, status: "open", slaDueAt: now - 60 * 60 * 1000 });
+    expect(buildIncidentsDetail().sla.slaBreachedOpenCount).toBe(1);
 
     const res = await handleApi(
       apiReq("/api/incidents/incident-breaching/mute", {
@@ -339,12 +431,12 @@ describe("incidents SLA and lifecycle API", () => {
       new URL("http://localhost/api/incidents/incident-breaching/mute"),
     );
     expect(res.status).toBe(200);
-    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(0);
+    expect(buildIncidentsDetail().sla.slaBreachedOpenCount).toBe(0);
 
     getDashboardDb()!.query(`
       UPDATE reasoner_incidents SET muted_until = ? WHERE id = ?
     `).run(now - 1_000, "incident-breaching");
-    expect(buildIncidentsDetail().sla.breachingUnacknowledgedCount).toBe(1);
+    expect(buildIncidentsDetail().sla.slaBreachedOpenCount).toBe(1);
   });
 
   it("rejects ack without an operator token", async () => {

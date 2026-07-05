@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { DiagnosisResult } from "./types.ts";
+import { computeSlaDueAt } from "./sla.ts";
 
 function normalizeClusterPart(value: string): string {
   return value
@@ -51,8 +52,8 @@ export function clusterDiagnosis(db: Database, diagnosis: DiagnosisResult): stri
     db.query(`
       INSERT INTO reasoner_incidents
         (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count,
-         representative_pass_id, representative_diagnosis_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open')
+         representative_pass_id, representative_diagnosis_id, status, sla_due_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', ?)
     `).run(
       incidentId,
       clusterKey,
@@ -62,6 +63,7 @@ export function clusterDiagnosis(db: Database, diagnosis: DiagnosisResult): stri
       seenAt,
       diagnosis.passId,
       diagnosisId,
+      computeSlaDueAt(title, seenAt),
     );
   }
 

@@ -6,6 +6,7 @@ import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { executeActionHandler } from "./execute.ts";
 import { complete } from "../gateway/client.ts";
+import { approachingWindowMs } from "../reasoner/sla.ts";
 
 export interface IncidentEntry {
   ts: number;
@@ -51,6 +52,8 @@ export interface ReasonerIncidentEntry {
   resolutionSource: "system" | "operator" | null;
   autoCloseReason: string | null;
   autoCloseAt: number | null;
+  owner: string | null;
+  slaDueAt: number | null;
 }
 
 export interface IncidentPostMortemSuggestion {
@@ -63,8 +66,11 @@ export interface IncidentSlaMetrics {
   acknowledgedSamples: number;
   resolvedSamples: number;
   oldestOpenAgeMs: number | null;
-  breachingUnacknowledgedCount: number;
-  breachThresholdMs: number;
+  // Real deadline-based metrics (ULTRAPLAN P2.3), computed from sla_due_at —
+  // same definitions as the sla.ts detector scanner. Muted incidents are
+  // excluded from both, matching the detector's mute exclusion.
+  slaBreachedOpenCount: number;
+  slaDueSoonCount: number;
 }
 
 export interface IncidentsDetail {
@@ -102,9 +108,10 @@ type ReasonerIncidentRow = {
   root_cause: string | null;
   suggested_actions_json: string | null;
   evidence_json: string | null;
+  owner: string | null;
+  sla_due_at: number | null;
 };
 
-const SLA_BREACH_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const POST_MORTEM_SUGGESTION_MODEL = "editorial-heavy";
 const POST_MORTEM_SUGGESTION_TIMEOUT_MS = 20_000;
 
@@ -259,7 +266,7 @@ function getReasonerRows(): ReasonerIncidentRow[] {
            i.occurrence_count, i.representative_pass_id, i.representative_diagnosis_id,
            i.status, i.acknowledged_at, i.resolved_at, i.mitigated_at,
            i.muted_at, i.muted_by, i.mute_reason, i.muted_until, i.post_mortem,
-           i.escalated_workflow_id,
+           i.escalated_workflow_id, i.owner, i.sla_due_at,
            d.root_cause, d.suggested_actions_json, d.evidence_json
     FROM reasoner_incidents i
     LEFT JOIN reasoner_diagnoses d ON d.id = i.representative_diagnosis_id
@@ -296,9 +303,15 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
   const oldestOpenAgeMs = openRows.length > 0
     ? Math.max(...openRows.map((row) => Math.max(0, now - row.first_seen)))
     : null;
-  const breachingUnacknowledgedCount = openRows.filter((row) =>
-    row.acknowledged_at === null && now - row.first_seen > SLA_BREACH_THRESHOLD_MS && !isMuteActive(row, now)
-  ).length;
+
+  // Same definitions as the sla.ts detector: open, un-muted, sla_due_at set.
+  const openUnmutedWithDeadline = openRows.filter((row) => row.sla_due_at !== null && !isMuteActive(row, now));
+  const slaBreachedOpenCount = openUnmutedWithDeadline.filter((row) => now > (row.sla_due_at as number)).length;
+  const slaDueSoonCount = openUnmutedWithDeadline.filter((row) => {
+    const dueAt = row.sla_due_at as number;
+    if (now > dueAt) return false;
+    return dueAt - now <= approachingWindowMs(row.title);
+  }).length;
 
   const mean = (values: number[]) =>
     values.length > 0 ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
@@ -309,8 +322,8 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
     acknowledgedSamples: ackDurations.length,
     resolvedSamples: resolveDurations.length,
     oldestOpenAgeMs,
-    breachingUnacknowledgedCount,
-    breachThresholdMs: SLA_BREACH_THRESHOLD_MS,
+    slaBreachedOpenCount,
+    slaDueSoonCount,
   };
 }
 
@@ -353,6 +366,8 @@ function mapReasonerIncident(row: ReasonerIncidentRow, autoCloseAudits: Map<stri
     resolutionSource,
     autoCloseReason: auto?.reason ?? null,
     autoCloseAt: auto?.ts ?? null,
+    owner: row.owner ?? null,
+    slaDueAt: row.sla_due_at ?? null,
   };
 }
 
@@ -410,6 +425,24 @@ export async function incidentMitigateHandler(id: string): Promise<Response> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ actionId: `mitigate:incident:${id}` }),
+  }));
+}
+
+export async function incidentAssignHandler(id: string, req: Request): Promise<Response> {
+  let body: { owner?: string } = {};
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    body = {};
+  }
+  const owner = typeof body.owner === "string" ? body.owner.trim() : "";
+  return executeActionHandler(new Request("http://control.local/api/actions/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      actionId: `assign:incident:${id}`,
+      params: { owner },
+    }),
   }));
 }
 

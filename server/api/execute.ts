@@ -64,6 +64,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   if (kind === "mute") return { confirm: true, reasonRequired: true };
   if (kind === "unmute") return { confirm: false, reasonRequired: false };
   if (kind === "escalate") return { confirm: false, reasonRequired: false };
+  if (kind === "assign") return { confirm: false, reasonRequired: false };
   return { confirm: false, reasonRequired: false };
 }
 
@@ -76,6 +77,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
     return "high";
   }
   if (kind === "escalate") return "medium";
+  if (kind === "assign") return "low";
   return "low";
 }
 
@@ -462,6 +464,47 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
         `UPDATE reasoner_incidents SET mitigated_at = ?, mitigated_by = ? WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)`
       ).run(now, actor, targetId, ctx.tenantId);
       return { ok: true, action: "mitigate", message: `incident ${targetId} marked mitigating` };
+    } catch {
+      return { ok: false, error: "database error", code: "EXEC_ERROR" };
+    }
+  }
+
+  if (kind === "assign" && targetType === "incident") {
+    const { getDashboardDb, isDashboardDbEnabled } = await import("../db/dashboard.ts");
+    if (!isDashboardDbEnabled()) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const db = getDashboardDb();
+    if (!db) return { ok: false, error: "database unavailable", code: "EXEC_ERROR" };
+    const rawOwner = typeof body.params?.owner === "string" ? body.params.owner.trim() : "";
+    if (rawOwner.length > 120) {
+      return { ok: false, error: "owner must be 1-120 characters", code: "BAD_REQUEST" };
+    }
+    const owner = rawOwner.length > 0 ? rawOwner : null;
+    try {
+      const ctx = getCurrentTenantContext();
+      const actor = ctx.actor ?? "operator";
+      const existing = db.query(`
+        SELECT id FROM reasoner_incidents
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).get(targetId, ctx.tenantId) as { id: string } | null;
+      if (!existing) return { ok: false, error: "incident not found", code: "NOT_FOUND" };
+      db.query(`
+        UPDATE reasoner_incidents
+        SET owner = ?
+        WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL)
+      `).run(owner, targetId, ctx.tenantId);
+      const message = owner ? `incident ${targetId} assigned to ${owner}` : `incident ${targetId} unassigned`;
+      writeActionAudit({
+        actor,
+        actionKind: "incidents.assign",
+        actionId: `assign:incident:${targetId}`,
+        targetType: "incident",
+        targetId,
+        risk: "low",
+        request: { owner },
+        result: message,
+        resultStatus: "success",
+      });
+      return { ok: true, action: "assign", message };
     } catch {
       return { ok: false, error: "database error", code: "EXEC_ERROR" };
     }

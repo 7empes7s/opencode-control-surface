@@ -52,10 +52,13 @@ function readIncidentRows(): Array<{
   occurrence_count: number;
   status: string;
   representative_pass_id: string;
+  first_seen: number;
+  sla_due_at: number | null;
 }> {
   const tenant = whereTenant();
   return db().query(`
-    SELECT id, cluster_key, title, failure_class, occurrence_count, status, representative_pass_id
+    SELECT id, cluster_key, title, failure_class, occurrence_count, status, representative_pass_id,
+           first_seen, sla_due_at
     FROM reasoner_incidents
     WHERE 1=1 ${tenant.clause}
     ORDER BY first_seen ASC
@@ -67,6 +70,8 @@ function readIncidentRows(): Array<{
     occurrence_count: number;
     status: string;
     representative_pass_id: string;
+    first_seen: number;
+    sla_due_at: number | null;
   }>;
 }
 
@@ -93,6 +98,30 @@ describe("sentinel incident scanner", () => {
     expect(rows.every((r) => r.failure_class === "sentinel_health")).toBe(true);
     expect(rows.every((r) => r.status === "open")).toBe(true);
     expect(rows.find((r) => r.title.includes("Home page down"))).toBeDefined();
+  });
+
+  test("sets sla_due_at at creation using the window matching the title's severity prefix", () => {
+    writeHealth({
+      score: 40,
+      fails: 2,
+      warns: 0,
+      findings: [
+        { id: "/", name: "Home page down", status: "fail", severity: "critical" },
+        { id: "data-freshness", name: "Data freshness lagging", status: "fail", severity: "medium" },
+      ],
+      checkedAt: Math.floor(Date.now() / 1000),
+    });
+
+    runSentinelIncidentScan();
+    const rows = readIncidentRows();
+
+    const critical = rows.find((r) => r.title.startsWith("[critical/"));
+    expect(critical).toBeDefined();
+    expect(critical!.sla_due_at).toBe(critical!.first_seen + 4 * 60 * 60 * 1000);
+
+    const medium = rows.find((r) => r.title.startsWith("[medium/"));
+    expect(medium).toBeDefined();
+    expect(medium!.sla_due_at).toBe(medium!.first_seen + 72 * 60 * 60 * 1000);
   });
 
   test("high impact rank is reflected in title for page/ and / findings; medium for others", () => {

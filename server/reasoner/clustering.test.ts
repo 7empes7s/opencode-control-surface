@@ -85,6 +85,28 @@ describe("clustering", () => {
     const key2 = computeClusterKey("codex-exhausted", "claude api key is exhausted");
     expect(key1).toBe(key2);
   });
+
+  test("sets sla_due_at on creation using the default 7-day window (clustering titles carry no severity prefix)", () => {
+    const db = getDashboardDb()!;
+    const now = Date.now();
+
+    const diagnosis: DiagnosisResult = {
+      passId: "pass-sla", runId: "run-sla", workflowId: "wf-sla",
+      failureClass: "build-error", rootCauseHypothesis: "TypeScript compilation failed",
+      evidence: [], suggestedActions: [], confidence: "high", diagnosedAt: now,
+    };
+    db.query(`
+      INSERT INTO reasoner_diagnoses (id, pass_id, run_id, workflow_id, failure_class, root_cause,
+        evidence_json, suggested_actions_json, confidence, diagnosed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("diag-sla", "pass-sla", "run-sla", "wf-sla", "build-error", "TypeScript compilation failed",
+      "[]", "[]", "high", now);
+
+    const incidentId = clusterDiagnosis(db, diagnosis);
+    const row = db.query("SELECT first_seen, sla_due_at FROM reasoner_incidents WHERE id = ?")
+      .get(incidentId) as { first_seen: number; sla_due_at: number };
+    expect(row.sla_due_at).toBe(row.first_seen + 7 * 24 * 60 * 60 * 1000);
+  });
 });
 
 describe("incident resolve endpoint", () => {

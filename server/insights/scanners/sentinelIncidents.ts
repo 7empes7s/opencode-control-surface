@@ -4,6 +4,7 @@ import { getDashboardDb, isDashboardDbEnabled } from "../../db/dashboard.ts";
 import { whereTenant } from "../../db/tenantScope.ts";
 import { writeActionAudit } from "../../db/writer.ts";
 import { dispatchEventFireAndForget } from "../../webhooks/dispatcher.ts";
+import { computeSlaDueAt } from "../../reasoner/sla.ts";
 
 const DEFAULT_SENTINEL_HEALTH_PATH = "/var/lib/mimule/product-health.json";
 const DEFAULT_SENTINEL_AUTOCLOSE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -133,8 +134,8 @@ export function runSentinelIncidentScan(): ScanResult {
     db.query(`
       INSERT INTO reasoner_incidents
         (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count,
-         representative_pass_id, representative_diagnosis_id, status, tenant_id)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', ?)
+         representative_pass_id, representative_diagnosis_id, status, tenant_id, sla_due_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', ?, ?)
     `).run(
       incidentId,
       key,
@@ -145,6 +146,7 @@ export function runSentinelIncidentScan(): ScanResult {
       representativePassId,
       representativePassId,
       tenantId,
+      computeSlaDueAt(title, seenAtMs),
     );
     createdOrUpdated += 1;
     // Phase G: fire-and-forget webhook for new sentinel incidents

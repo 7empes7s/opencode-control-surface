@@ -36,6 +36,7 @@ import { deleteArticleHandler, articleDossierPathHandler, refreshArticleImageHan
 import { infraHandler } from "./infra.ts";
 import {
   incidentAckHandler,
+  incidentAssignHandler,
   incidentEscalateHandler,
   incidentMitigateHandler,
   incidentMuteHandler,
@@ -775,6 +776,12 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return incidentMitigateHandler(decodeURIComponent(incidentMitigateMatch[1]));
+  }
+  const incidentAssignMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/assign$/);
+  if (method === "POST" && incidentAssignMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentAssignHandler(decodeURIComponent(incidentAssignMatch[1]), req);
   }
   const incidentMuteMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/mute$/);
   if (method === "POST" && incidentMuteMatch) {

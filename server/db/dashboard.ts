@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { computeSlaDueAt } from "../reasoner/sla.ts";
 
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
 export const DASHBOARD_SCHEMA_VERSION = 10;
@@ -1230,6 +1231,9 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
   ensureColumn(db, "reasoner_incidents", "muted_until", "INTEGER");
   ensureColumn(db, "reasoner_incidents", "post_mortem", "TEXT");
   ensureColumn(db, "reasoner_incidents", "escalated_workflow_id", "TEXT");
+  // SPEC 9 / ULTRAPLAN P2.3: resolve-by deadline + owner assignment.
+  ensureColumn(db, "reasoner_incidents", "sla_due_at", "INTEGER");
+  ensureColumn(db, "reasoner_incidents", "owner", "TEXT");
   ensureColumn(db, "reasoner_incident_members", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_playbooks", "tenant_id", "TEXT");
   ensureColumn(db, "reasoner_playbook_runs", "tenant_id", "TEXT");
@@ -1449,6 +1453,28 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     }
   } catch (err) {
     console.error("[dashboard] ops-domain insights migration failed", err);
+  }
+
+  // ── SPEC 9 / ULTRAPLAN P2.3: backfill sla_due_at for open incidents ───────
+  // Only OPEN incidents ever get a backfilled deadline — resolved historical
+  // rows stay NULL forever; we never invent a resolve-by deadline for the
+  // past. Guarded by `sla_due_at IS NULL`, so this is safe to re-run on every
+  // boot: already-backfilled (or app-set) rows are left untouched, and a
+  // freshly-resolved incident's sla_due_at (set while it was still open)
+  // is never touched or cleared here.
+  try {
+    const openRowsMissingSla = db.query(`
+      SELECT id, title, first_seen FROM reasoner_incidents
+      WHERE status = 'open' AND sla_due_at IS NULL
+    `).all() as Array<{ id: string; title: string; first_seen: number }>;
+    if (openRowsMissingSla.length > 0) {
+      const updateSla = db.query(`UPDATE reasoner_incidents SET sla_due_at = ? WHERE id = ?`);
+      for (const row of openRowsMissingSla) {
+        updateSla.run(computeSlaDueAt(row.title, row.first_seen), row.id);
+      }
+    }
+  } catch (err) {
+    console.error("[dashboard] reasoner_incidents sla_due_at backfill failed", err);
   }
 
   // ── Phase 7: system_configs + config_changes (settings persistence) ────────

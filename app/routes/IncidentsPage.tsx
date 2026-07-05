@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, Hammer, LoaderCircle, Save, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, Hammer, LoaderCircle, Save, ShieldCheck, Sparkles, User, UserX } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
@@ -96,11 +96,13 @@ function IncidentLifecycleCard({
   const unmute = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/unmute`);
   const resolve = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/resolve`);
   const escalate = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/escalate`);
+  const assign = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/assign`);
   const savePostMortem = useAction(`/api/incidents/${encodeURIComponent(incident.id)}/post-mortem`);
   const [note, setNote] = useState(incident.postMortem ?? "");
   const [resolveReason, setResolveReason] = useState("Resolved from incidents page");
   const [muteReason, setMuteReason] = useState("Muted from incidents page");
   const [muteDuration, setMuteDuration] = useState<string>("0");
+  const [ownerInput, setOwnerInput] = useState(incident.owner ?? "");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
 
@@ -108,6 +110,10 @@ function IncidentLifecycleCard({
     setNote(incident.postMortem ?? "");
     setSuggestionNote(null);
   }, [incident.id, incident.postMortem]);
+
+  useEffect(() => {
+    setOwnerInput(incident.owner ?? "");
+  }, [incident.id, incident.owner]);
 
   async function acknowledge() {
     if (await ack.run()) onChanged();
@@ -137,6 +143,15 @@ function IncidentLifecycleCard({
 
   async function unmuteIncident() {
     if (await unmute.run()) onChanged();
+  }
+
+  async function assignOwner() {
+    if (await assign.run({ owner: ownerInput })) onChanged();
+  }
+
+  async function unassignOwner() {
+    setOwnerInput("");
+    if (await assign.run({ owner: "" })) onChanged();
   }
 
   async function saveNote() {
@@ -248,11 +263,11 @@ function IncidentLifecycleCard({
         </div>
       </div>
 
-      {(ack.error || mitigate.error || resolve.error || escalate.error || mute.error || unmute.error || savePostMortem.error) && (
-        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? escalate.error ?? mute.error ?? unmute.error ?? savePostMortem.error}</div>
+      {(ack.error || mitigate.error || resolve.error || escalate.error || mute.error || unmute.error || assign.error || savePostMortem.error) && (
+        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? escalate.error ?? mute.error ?? unmute.error ?? assign.error ?? savePostMortem.error}</div>
       )}
-      {(ack.success || mitigate.success || resolve.success || escalate.success || mute.success || unmute.success || savePostMortem.success) && (
-        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? escalate.success ?? mute.success ?? unmute.success ?? savePostMortem.success}</div>
+      {(ack.success || mitigate.success || resolve.success || escalate.success || mute.success || unmute.success || assign.success || savePostMortem.success) && (
+        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? escalate.success ?? mute.success ?? unmute.success ?? assign.success ?? savePostMortem.success}</div>
       )}
 
       {incident.autoClosed && (
@@ -362,6 +377,45 @@ function IncidentLifecycleCard({
 
       <label className="incident-field">
         <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700 }}>
+          <User size={15} />
+          Owner
+        </span>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            value={ownerInput}
+            onChange={(event) => setOwnerInput(event.currentTarget.value)}
+            className="incident-text-input"
+            placeholder="Assign an owner (name or email)"
+            maxLength={120}
+            style={{ flex: "1 1 220px" }}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={assignOwner}
+            disabled={assign.loading || ownerInput.trim() === (incident.owner ?? "")}
+            style={{ minHeight: 44 }}
+          >
+            <User size={15} />
+            Assign
+          </button>
+          {incident.owner && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={unassignOwner}
+              disabled={assign.loading}
+              style={{ minHeight: 44 }}
+            >
+              <UserX size={15} />
+              Unassign
+            </button>
+          )}
+        </div>
+      </label>
+
+      <label className="incident-field">
+        <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700 }}>
           <FileText size={15} />
           Post-mortem note
         </span>
@@ -453,6 +507,7 @@ export function IncidentsPage() {
       row.autoClosed ? "auto-closed system" : "",
       row.muteActive ? "muted snoozed" : "",
       row.escalatedWorkflowId ? "escalated workflow" : "",
+      row.owner ?? "unassigned",
     ],
     sortValue: (row, key) => {
       if (key === "lastSeen") return row.lastSeen;
@@ -499,7 +554,19 @@ export function IncidentsPage() {
             icon={<AlertTriangle size={16} />}
             label="Oldest open"
             value={fmtDuration(sla?.oldestOpenAgeMs ?? null)}
-            detail={`${sla?.breachingUnacknowledgedCount ?? 0} breaching 24h without ack`}
+            detail="age of the longest currently-open incident"
+          />
+          <SlaTile
+            icon={<AlertTriangle size={16} />}
+            label="SLA breached"
+            value={String(sla?.slaBreachedOpenCount ?? 0)}
+            detail="open incidents past their resolve-by deadline"
+          />
+          <SlaTile
+            icon={<Clock3 size={16} />}
+            label="SLA due soon"
+            value={String(sla?.slaDueSoonCount ?? 0)}
+            detail="open incidents due within the warning window"
           />
           <SlaTile
             icon={<CheckCircle2 size={16} />}
@@ -631,6 +698,7 @@ export function IncidentsPage() {
                   <th {...reasonerControls.sortHeaderProps("status")} style={{ width: 140 }}>status</th>
                   <th>incident</th>
                   <th {...reasonerControls.sortHeaderProps("failureClass")} style={{ width: 160 }}>class</th>
+                  <th style={{ width: 150 }}>owner</th>
                   <th {...reasonerControls.sortHeaderProps("count")} style={{ width: 120 }}>count</th>
                   <th {...reasonerControls.sortHeaderProps("lastSeen")} style={{ width: 150 }}>last seen</th>
                 </tr>
@@ -657,12 +725,13 @@ export function IncidentsPage() {
                           <div className="mono dim" style={{ marginTop: 3, fontSize: 11 }}>{incident.id}</div>
                         </td>
                         <td><Pill color="blue">{incident.failureClass}</Pill></td>
+                        <td>{incident.owner ? incident.owner : <span className="dim">unassigned</span>}</td>
                         <td className="mono">{incident.occurrenceCount}</td>
                         <td className="mono dim">{relTime(incident.lastSeen)}</td>
                       </tr>
                       {expanded && (
                         <tr key={`${key}:detail`} className="data-row-detail">
-                          <td colSpan={6}>
+                          <td colSpan={7}>
                             <div className="data-row-detail-inner">
                               <IncidentLifecycleCard incident={incident} onChanged={refresh} />
                             </div>
@@ -674,7 +743,7 @@ export function IncidentsPage() {
                 })}
                 {reasonerControls.filteredCount === 0 && (
                   <tr>
-                    <td colSpan={6} className="loading-dim">no workflow incidents match the current filter</td>
+                    <td colSpan={7} className="loading-dim">no workflow incidents match the current filter</td>
                   </tr>
                 )}
               </tbody>
