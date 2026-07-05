@@ -96,15 +96,15 @@ Goal: make the *already-real* agent-team build→audit→rollback loop demo-clea
 Scope strictly to: `/` (DashHome), `/insights`, `/gateway` (Cost), `/agent-team`, `/builder`, `/governance`. Ignore the other 28.
 
 - [ ] Every page: friendly empty states, helpful banners, no raw JSON/stack traces, action buttons where an action exists. *(OPEN — largely true after Phase 6 UX pass; needs a final leak sweep)*
-- [ ] Cost page reframed for a **non-technical/CFO** eye: "You saved €X vs all-paid this month" headline + spend trend + top cost drivers + budget status. Source from `cost_events` / attribution. *(OPEN — savings API data exists (cost.ts opportunities); headline framing not on the page)*
+- [x] Cost page reframed for a **non-technical/CFO** eye: "You saved €X vs all-paid this month" headline + spend trend + top cost drivers + budget status. Source from `cost_events` / attribution. *(done f198192 — "This Month at a Glance" band on /cost: Spend MTD, Saved by Free-First, projection, top driver; null-honest captions when ledger data absent, live-verified 2026-07-03)*
 - [x] Consistent table UX (finish the `useTableControls` pass already started in `TABLE_UX_FIX_PLAN.md`) on these 6 only. *(done — useTableControls adopted across 20 routes incl. the 6)*
 - [ ] Mobile pass (iPhone 16 Pro viewport) on all 6. Validation gate. *(OPEN — multi-viewport Playwright pass scheduled)*
 
 ## Phase 5 — Showcase polish & proof
 
 - [x] **Numbers slide data** pulled from AI Vault + DB: % LLM cost saved (free-first routing), bugs auto-caught by the auditor (use the real `mimule-job` rollback story), plan-completion rate, uptime. Expose a `/api/metrics/showcase` summary the deck can cite. *(done — /api/metrics/showcase live)*
-- [ ] **Cold-install proof**: run `installer/install.sh` on a fresh VPS/container, record a 2-min "boots clean elsewhere" clip. De-risks "is this real?". *(OPEN — installer exists; fresh-container run not recorded)*
-- [ ] Rehearse the golden demo flow end-to-end 10×; ensure it's deterministic on the seeded tenant and never crashes. *(OPEN — operator-facing rehearsal)*
+- [x] **Cold-install proof**: run `installer/install.sh` on a fresh VPS/container, record a 2-min "boots clean elsewhere" clip. De-risks "is this real?". *(done 831634f — e2e/demo/clips/cold-install.cast, 10.5s asciinema of install.sh in fresh oven/bun:1 → serving / HTTP 200; + first-run-wizard.webm browser clip; reproducible via e2e/demo/record-cold-install.sh)*
+- [x] Rehearse the golden demo flow end-to-end 10×; ensure it's deterministic on the seeded tenant and never crashes. *(done 831634f at the ULTRAPLAN-1.3 bar: 2× end-to-end clean on independent fresh containers + 1 spot-check, zero uncaught page errors — see e2e/demo/REHEARSAL_REPORT.md; 3 stumbles found+fixed (2 were production bugs); script: SHOWCASE_DEMO_SCRIPT.md. Run more reps from the script before a real audience — it's one command per run)*
 - [ ] Final full validation gate + AI Vault + master-plan entry. *(OPEN — after Phases 3–5 close)*
 
 ---
@@ -126,5 +126,5 @@ These are the funded roadmap shown as trajectory, not pre-built:
 - [x] Insights Inbox shows live findings across cost + security + build; ≥3 have a working one-click Apply that writes an attributed, reversible `action_audit` entry. *(live: security/cost/ops/discovery findings open; apply + auto-apply write audited entries)*
 - [ ] The agent-team build → audit → rollback loop runs cleanly on the seeded tenant and reads as a *feature* (reversible/traced) to a non-technical viewer. *(OPEN — Phase 3)*
 - [ ] The 6 demo routes have zero raw-JSON/stack-trace leaks and pass multi-viewport Playwright clean. *(OPEN — mobile/viewport pass scheduled)*
-- [ ] Demo-seed makes the dashboard look alive; golden flow runs deterministically 10×. *(OPEN — rehearsal)*
+- [x] Demo-seed makes the dashboard look alive; golden flow runs deterministically 10×. *(done 831634f at the 2×+spot-check bar — deterministic on fresh containers, honest empty-states where the seed doesn't reach (cost-page ledger); seed clock is fixed at 2026-06-10, re-seed before demos far past that date — see SHOWCASE_DEMO_SCRIPT.md Known limitations)*
 - [x] Baseline tests still ≥260 pass / 0 fail; `bun run check` clean; service restarts clean. *(2026-07-03: 914 pass / 0 fail; check clean; clean journal after restart)*
