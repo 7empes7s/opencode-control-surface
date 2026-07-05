@@ -2439,10 +2439,24 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
   // validation means the pass did NOT succeed — leaving it green misleads the operator and the
   // run-risk tiles. Downgrade to "failed" so status, error, and validations agree.
   if (passId && exitCode === 0 && runStatus === "failed") {
+    const validationFailureClass = buildFailed ? "build-failed" : "validation-failed";
     updateBuilderPass(passId, {
       status: "failed",
-      failureClass: buildFailed ? "build-failed" : "validation-failed",
+      failureClass: validationFailureClass,
     });
+    // The earlier queueDiagnosis() call (a few dozen lines up, guarded by
+    // `passStatus === "failed"`) only fires when the AGENT PROCESS itself failed
+    // (nonzero exit / fatal-error detection) — that check runs before validations
+    // are executed. A pass that exits 0 but whose change breaks validation/build
+    // never reached that branch, so this failureClass ("validation-failed" /
+    // "build-failed") was silently never diagnosed: no reasoner_diagnoses row was
+    // ever written for it, and mapReasonerBuildFindings() (server/insights/scanners/build.ts)
+    // reads reasoner_diagnoses — not builder_passes — so the Insights Inbox never
+    // surfaced these real failures and the built-in "validation-failed -> Surface to
+    // operator" playbook (server/reasoner/playbooks.ts) could never be matched for
+    // them either. Queue diagnosis here too so a validation-only failure is diagnosed
+    // and reaches the inbox exactly like an agent-level failure does.
+    try { queueDiagnosis(passId, runId, run.workflowId); } catch (e) { console.error("[builder] queueDiagnosis (validation-failed) failed:", e); }
   }
 
   // Determine continuation before writing final run state

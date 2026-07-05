@@ -2827,7 +2827,13 @@ body {
   border-radius: 6px;
   background: color-mix(in oklch, var(--bg-panel) 72%, transparent);
 }
-.data-row-detail-grid span {
+/* Scoped to the label span only (direct child of the cell div) — a bare
+   `.data-row-detail-grid span` also matched the value's nested `span.mono`
+   (e.g. workflow/run ids render as `<strong><span class="mono">…</span></strong>`),
+   which wrongly applied this label's uppercase/bold/dim styling to real
+   lowercase ids (SPEC 7 UI review, e.g. workflow id rendering as
+   "BW_2E769E32-…" instead of "bw_2e769e32-…"). */
+.data-row-detail-grid > div > span {
   display: block;
   margin-bottom: 4px;
   color: var(--text-dim);
@@ -2838,6 +2844,19 @@ body {
 }
 .data-row-detail-grid strong {
   display: block;
+  /* This grid lives inside .workflows-table's <td> (BuilderPage.tsx's
+     expanded-row DetailGrid), which sets `white-space: nowrap` on every td
+     (app/globals.css:4316) to keep the summary row's own columns compact.
+     white-space is inherited, and `overflow-wrap: anywhere` alone does NOT
+     override an inherited `nowrap` — the two are independent properties, so
+     without resetting white-space here, long values (workflow/run ids, full
+     paths) render as one unbroken line that visually overflows sideways into
+     the next grid cell, overlapping its label/value text (SPEC 7 UI review:
+     confirmed via computed-style inspection — strongRect stayed the laid-out
+     162px box while the rendered text visibly spilled past it because the
+     cell wrapper is `overflow: visible`). Reset to `normal` so the existing
+     `overflow-wrap: anywhere` can actually wrap these values within their cell. */
+  white-space: normal;
   overflow-wrap: anywhere;
   font-family: var(--mono);
   font-size: 11.5px;

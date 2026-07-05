@@ -112,3 +112,61 @@ If presenting live end-to-end (not just the recorded clip), this is where `cold-
 - **Tenant/project switcher dropdown was visually present but only its top ~10% was clickable** — a CSS stacking-context bug (`app/globals.css`, `.dash-header`) trapped the dropdown below the page content for hit-testing. Fixed.
 - **The "Cost attribution" evidence link on every spend-anomaly cost insight 400'd** ("Unsupported entity type") — `getAttribution()` (`server/api/cost.ts`) didn't handle the `workflow`/`project` entity types that `aggregateSpendAnomalies()` (`server/insights/aggregate.ts`) actually generates. Fixed; this was a live bug affecting real spend-anomaly insights too, not a demo-only issue.
 - **The Gateway page's route-override reason was hover-only** — `GatewayPage.tsx` put the operator's typed Apply reason only in a `title` tooltip attribute (invisible until hovered, easy to miss while narrating live). Now shown as visible text next to the routing pill too. Fixed.
+
+---
+
+## Builder proof beat (SPEC 7 / ULTRAPLAN P1.1 / SHOWCASE Phase 3) — optional extension
+
+A second, independent scenario for the Builder / Agent Team story: **a real pass runs → a real
+validation command catches a real bug → the failure is traced and diagnosable, not hidden → the fix
+lands → green.** Full presenter script, evidence ids, and the honest staged-vs-live breakdown live in
+`e2e/demo/BUILDER_DEMO.md` — this is the short version for slotting into the golden flow above.
+
+### Setup (once, before presenting)
+
+```bash
+cd /opt/opencode-control-surface && ./e2e/demo/stage-builder-demo.sh
+```
+
+**[DEMO DATA]**: this copies a tiny, real Bun+TypeScript checkout-calculator template
+(`e2e/demo/builder-demo-template/`) to `/opt/provisioned/builder-showcase-demo`, commits the green
+baseline, then plants a real logic bug (a sign flip in a discount calculation) as a second real git
+commit, and registers it on the live service as project **"Showcase Builder Demo (staged)"** — clearly
+labeled, never confused with a real project.
+
+### Step B1 — Start the workflow, watch it catch the bug
+
+1. On `/builder`, find **"Showcase Builder Demo (staged)"** → workflow **"Showcase Builder Demo —
+   staged bug pass (once)"**. Click **Start**.
+2. **You must see**: a pass runs (an agentic CLI picks a model from the live, dynamically-resolved free
+   model roster — never a hardcoded id), then the run finishes `failed`.
+
+**Proof it's real** — **[LIVE MECHANISM]**: the failure is a genuine `bun test` run
+(`server/builder/runner.ts`'s validation runner, a real `spawnSync` against the real repo) — expand the
+run's validation row and the output is bun's own real assertion failure text
+(`Expected: 900`, `Received: 1100`), not a canned string. This is the exact same validation pipeline any
+real Builder project's workflow uses.
+
+### Step B2 — Fix it, re-run, go green
+
+1. Run `./e2e/demo/stage-builder-demo.sh --fix` (a real git commit reverting the planted bug) — or click
+   **Start** again and let an agentic pass attempt the fix itself; **say out loud whichever one actually
+   happens** — both paths are real, and which one lands depends on which free model is healthy that day.
+2. Click **Start** once more.
+3. **You must see**: the run finishes `success` — `bun test` genuinely passes now.
+
+**Proof it's real** — **[LIVE MECHANISM]**: same validation pipeline, same repo, real git history
+(`git log` in `/opt/provisioned/builder-showcase-demo` shows the green-baseline, bug, and fix commits as
+three distinct, presenter-visible commits — a real revert path, not a reset button).
+
+### Honest caveat — say this explicitly
+
+The diagnosis/Insights-Inbox/playbook leg of this story (a validation failure should queue a reasoner
+diagnosis and surface in the Insights Inbox) required a real backend fix, found while building this
+scenario (`server/builder/runner.ts` — see `e2e/demo/BUILDER_DEMO.md` for the exact gap and fix). That fix
+needs a service restart to take effect; if asked to show the Insights Inbox entry for this specific
+failure and it isn't there yet, say so plainly rather than papering over it — the fix is real and
+regression-tested, the live demonstration of it is pending a restart, and that's a normal part of shipping
+a backend fix, not a hidden defect. `./e2e/demo/stage-builder-demo.sh --reset` returns everything to the
+staged bug state and clears this demo's own runs (only this workflow's, never a broad delete) for a clean
+re-run.
