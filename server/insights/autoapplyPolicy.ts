@@ -13,6 +13,58 @@ export const SAFE_AUTO_ACTIONS: ReadonlySet<string> = new Set<string>([
 
 export const COOLDOWN_CLEAR_POLICY_KEY = "mutate-policy:model:*:cooldown-clear";
 
+// Promoted 2026-07-05 (ULTRAPLAN P2.4) — see docs/AUTOAPPLY_PROMOTION_REVIEW.md.
+// Retrying a timed-out builder pass is non-destructive: reasonerApplyPlaybookHandler
+// -> applyPlaybookAction("retry-continuation") -> startWorkflowRun() creates a NEW
+// run (old runs/passes/diagnoses intact; the project lock makes a concurrent retry
+// fail cleanly). The created run id is recorded in reasoner_playbook_runs and in the
+// auto-apply audit row, and the run can be cancelled via POST /api/builder/runs/:id/cancel.
+// NOTE: the other three SPEC-10 candidates (start-job:doctor:scan and the two
+// start-job:service:mimule-* restarts) FAILED implementation verification and were
+// refused — the review doc has the evidence. Do not add them here without re-verifying.
+export const PASS_TIMEOUT_RETRY_POLICY_KEY = "reasoner-remediate:pass-timeout";
+
+// ── Rollback-evidence affordances for auto-tier actions ─────────────────────
+// Structural requirement (SPEC 10): an auto-tier action may only execute
+// unattended when we can say, declaratively, what its rollback affordance is —
+// either a concrete rollback path with recorded target ids, or an explicit
+// read-only/diagnostic marker (rollback is vacuous by design). Auto-tier
+// actions WITHOUT an entry here are skipped by autoApplySafeInsights with the
+// audited reason `autoapply.skipped-no-rollback` and left for operator review.
+// This map is the single source of truth, keyed by policyKeyForAction(actionId);
+// keep it next to SAFE_AUTO_ACTIONS so promotions and their rollback evidence
+// are reviewed together (docs/AUTOAPPLY_PROMOTION_REVIEW.md).
+export type AutoApplyRollbackAffordance =
+  | { kind: "read-only"; note: string }
+  | { kind: "rollback"; rollbackHint: string; recordedIds: string };
+
+export const AUTO_ROLLBACK_AFFORDANCES: Readonly<Record<string, AutoApplyRollbackAffordance>> = {
+  "start-job:model-health:all": {
+    kind: "read-only",
+    note: "Diagnostic probe: re-observes every model and refreshes the model-health snapshot. It changes no policy or routing rule itself; restoring the stale snapshot would be anti-remediation, so rollback is vacuous by design.",
+  },
+  "start-job:infra:doctor-log-rotate": {
+    kind: "rollback",
+    rollbackHint: "Restore /var/lib/mimule/doctor-log.jsonl from the timestamped .jsonl.gz archive recorded in the action result (gunzip it back in place).",
+    recordedIds: "archive path in the audited action result message",
+  },
+  [COOLDOWN_CLEAR_POLICY_KEY]: {
+    kind: "rollback",
+    rollbackHint: "If clearing the cooldown was wrong, re-block the model with mutate-policy:model:<model>:block; the model id is the third segment of the audited actionId.",
+    recordedIds: "model id in the audited actionId",
+  },
+  [PASS_TIMEOUT_RETRY_POLICY_KEY]: {
+    kind: "rollback",
+    rollbackHint: "Cancel the retried run via POST /api/builder/runs/<runId>/cancel; the created run id is in the auto-apply audit resultJson and in reasoner_playbook_runs.result.",
+    recordedIds: "created builder run id(s) from the playbook results",
+  },
+};
+
+export function rollbackAffordanceForAction(actionId: string | null | undefined): AutoApplyRollbackAffordance | null {
+  if (!actionId) return null;
+  return AUTO_ROLLBACK_AFFORDANCES[policyKeyForAction(actionId)] ?? null;
+}
+
 export interface AutoApplyPolicy {
   tiers: Record<string, AutoApplyTier>;
   maxAutoAppliesPerHour: number;
@@ -112,6 +164,11 @@ export function defaultTierForAction(actionId: string | null | undefined): RiskT
   if (!actionId) return "none";
   if (SAFE_AUTO_ACTIONS.has(actionId)) return "auto";
   if (actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear")) return "auto";
+  // Promoted family (mirrors the cooldown-clear precedent): every
+  // reasoner-remediate:pass-timeout:<workflowId>:<passId>[:<incidentId>] action
+  // normalizes to PASS_TIMEOUT_RETRY_POLICY_KEY. Other playbooks stay review.
+  // See docs/AUTOAPPLY_PROMOTION_REVIEW.md for the verified rollback affordance.
+  if (policyKeyForAction(actionId) === PASS_TIMEOUT_RETRY_POLICY_KEY) return "auto";
   return "review";
 }
 

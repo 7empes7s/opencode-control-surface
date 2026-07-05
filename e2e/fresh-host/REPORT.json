@@ -38,14 +38,14 @@
       "route": "/api/admin/briefing",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 6,
+      "elapsedMs": 3,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/admin/events",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": "sourceStatus={}"
     },
     {
@@ -66,7 +66,7 @@
       "route": "/api/agent-registry",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 24,
+      "elapsedMs": 18,
       "detail": "sourceStatus={}"
     },
     {
@@ -80,21 +80,21 @@
       "route": "/api/agents/discovery",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 20,
+      "elapsedMs": 15,
       "detail": ""
     },
     {
       "route": "/api/agents/quick-prompts",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 3,
       "detail": ""
     },
     {
       "route": "/api/agents/skills",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 5,
       "detail": ""
     },
     {
@@ -122,21 +122,21 @@
       "route": "/api/audit/chain-status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 3,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/auth/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
       "route": "/api/autopipeline",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 3,
+      "elapsedMs": 4,
       "detail": "sourceStatus={\"pipeline\":\"ok\"}"
     },
     {
@@ -157,14 +157,14 @@
       "route": "/api/builder/doctor-reports",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": "sourceStatus={\"builder\":\"ok\"}"
     },
     {
       "route": "/api/builder/doctor/reports",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "detail": "sourceStatus={\"builder\":\"ok\"}"
     },
     {
@@ -178,7 +178,7 @@
       "route": "/api/builder/models",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 250,
+      "elapsedMs": 248,
       "detail": "sourceStatus={\"builder\":\"ok\",\"models\":\"ok\"}"
     },
     {
@@ -220,7 +220,7 @@
       "route": "/api/claude/sessions",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
@@ -241,7 +241,7 @@
       "route": "/api/compliance/dpa",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 3,
+      "elapsedMs": 1,
       "detail": "sourceStatus={}"
     },
     {
@@ -255,14 +255,14 @@
       "route": "/api/compliance/soc2-mapping",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/compliance/subprocessors",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": "sourceStatus={}"
     },
     {
@@ -276,7 +276,7 @@
       "route": "/api/cost",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 125,
+      "elapsedMs": 124,
       "detail": ""
     },
     {
@@ -311,7 +311,7 @@
       "route": "/api/cost/summary",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 124,
+      "elapsedMs": 123,
       "detail": ""
     },
     {
@@ -332,7 +332,7 @@
       "route": "/api/docs/tutorials",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 3,
+      "elapsedMs": 4,
       "detail": ""
     },
     {
@@ -353,7 +353,7 @@
       "route": "/api/feature-flags",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": "sourceStatus={}"
     },
     {
@@ -388,7 +388,7 @@
       "route": "/api/gateway",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 124,
+      "elapsedMs": 125,
       "detail": "sourceStatus={}"
     },
     {
@@ -430,14 +430,14 @@
       "route": "/api/gateway/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 123,
+      "elapsedMs": 122,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/gemini/health",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 3,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
@@ -458,7 +458,7 @@
       "route": "/api/governance/audit",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": ""
     },
     {
@@ -486,7 +486,7 @@
       "route": "/api/governance/retention",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
@@ -500,35 +500,35 @@
       "route": "/api/governance/users",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": ""
     },
     {
       "route": "/api/home",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 124,
+      "elapsedMs": 120,
       "detail": "sourceStatus={\"services\":\"ok\",\"hetzner\":\"ok\",\"pipeline\":\"ok\",\"models\":\"ok\",\"doctor\":\"ok\",\"newsbites\":\"ok\",\"vast\":\"error\",\"opencode\":\"error\"}"
     },
     {
       "route": "/api/incidents",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 3,
+      "elapsedMs": 2,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/infra",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 19,
+      "elapsedMs": 14,
       "detail": "sourceStatus={\"hetzner\":\"ok\",\"vast\":\"error\"}"
     },
     {
       "route": "/api/insights",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 3,
       "detail": "sourceStatus={}"
     },
     {
@@ -542,7 +542,7 @@
       "route": "/api/install/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 7,
+      "elapsedMs": 5,
       "detail": "sourceStatus={}"
     },
     {
@@ -556,7 +556,7 @@
       "route": "/api/licensing/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
@@ -577,7 +577,7 @@
       "route": "/api/litellm/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 2,
       "detail": ""
     },
     {
@@ -591,28 +591,28 @@
       "route": "/api/metrics",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 3,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/metrics/showcase",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 4,
       "detail": ""
     },
     {
       "route": "/api/mission-control",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 106,
+      "elapsedMs": 103,
       "detail": ""
     },
     {
       "route": "/api/models",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 44,
+      "elapsedMs": 42,
       "detail": ""
     },
     {
@@ -626,14 +626,14 @@
       "route": "/api/models/routing-stats",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
       "route": "/api/newsbites",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 2,
       "detail": "sourceStatus={\"newsbites\":\"ok\"}"
     },
     {
@@ -647,14 +647,14 @@
       "route": "/api/onboarding/status",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 15,
+      "elapsedMs": 12,
       "detail": ""
     },
     {
       "route": "/api/orchestrator/instances",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": ""
     },
     {
@@ -710,7 +710,7 @@
       "route": "/api/prompts",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": "sourceStatus={\"prompts\":\"ok\"}"
     },
     {
@@ -766,14 +766,14 @@
       "route": "/api/reports",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/reports/templates",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": "sourceStatus={}"
     },
     {
@@ -787,35 +787,35 @@
       "route": "/api/scout/runs",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 4,
+      "elapsedMs": 2,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/security/posture",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 9,
+      "elapsedMs": 11,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/security/secrets",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/security/trust-score",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 5,
+      "elapsedMs": 4,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/settings/access",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
@@ -829,7 +829,7 @@
       "route": "/api/settings/state",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
@@ -857,7 +857,7 @@
       "route": "/api/sso/login",
       "status": 400,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "detail": ""
     },
     {
@@ -885,7 +885,7 @@
       "route": "/api/telemetry/preview",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": ""
     },
     {
@@ -899,21 +899,21 @@
       "route": "/api/tenants",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
       "route": "/api/today",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 104,
+      "elapsedMs": 100,
       "detail": "sourceStatus={}"
     },
     {
       "route": "/api/traces",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 1,
+      "elapsedMs": 2,
       "detail": "sourceStatus={}"
     },
     {
@@ -934,7 +934,7 @@
       "route": "/api/v1/audit",
       "status": 401,
       "verdict": "HONEST",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
@@ -969,14 +969,14 @@
       "route": "/api/webhooks",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "detail": ""
     },
     {
       "route": "/api/workload",
       "status": 200,
       "verdict": "HONEST",
-      "elapsedMs": 2,
+      "elapsedMs": 3,
       "detail": "sourceStatus={}"
     },
     {
