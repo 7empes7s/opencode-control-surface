@@ -19,6 +19,11 @@ interface ExecuteRequest {
   reason?: string;
   confirmed?: boolean;
   params?: Record<string, unknown>;
+  // Set by the bulk incidents endpoint (POST /api/incidents/bulk) so every
+  // per-target action_audit row this single-action path writes can be
+  // correlated back to the batch that triggered it, without duplicating the
+  // mutation logic itself.
+  batchId?: string;
 }
 
 type ExecuteResult =
@@ -730,7 +735,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
     });
   }
 
-  const { actionId, reason, confirmed, params } = body;
+  const { actionId, reason, confirmed, params, batchId } = body;
 
   const parsed = parseActionId(actionId);
   if (!parsed) {
@@ -741,7 +746,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       targetId: "unknown",
       risk: "low",
       reason,
-      request: { actionId, confirmed, params },
+      request: { actionId, confirmed, params, batchId },
       resultStatus: "failed",
       error: "invalid actionId format",
     });
@@ -762,7 +767,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       targetId,
       risk: getRisk(kind, targetType, suffix),
       reason,
-      request: { actionId, confirmed, params },
+      request: { actionId, confirmed, params, batchId },
       resultStatus: "failed",
       error: "confirmation required",
     });
@@ -780,7 +785,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       targetId,
       risk: getRisk(kind, targetType, suffix),
       reason,
-      request: { actionId, confirmed, params },
+      request: { actionId, confirmed, params, batchId },
       resultStatus: "failed",
       error: "reason required",
     });
@@ -799,10 +804,11 @@ export async function executeActionHandler(req: Request): Promise<Response> {
     targetId,
     risk: getRisk(kind, targetType, suffix),
     reason,
-    request: { actionId, confirmed, params },
+    request: { actionId, confirmed, params, batchId },
     resultStatus: result.ok ? "success" : "failed",
     result: result.ok ? (result as { message?: string }).message : undefined,
     error: result.ok ? undefined : (result as { error: string }).error,
+    resultJson: batchId ? { batchId } : undefined,
     rollbackHint: result.ok ? rollbackHintForActionId(actionId) : undefined,
   });
 

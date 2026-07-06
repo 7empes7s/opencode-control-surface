@@ -133,6 +133,66 @@ export function autoCloseRecoveredIncidents(now = Date.now()): { closedIds: stri
   return { closedIds };
 }
 
+type ExpiredSnoozeRow = {
+  id: string;
+  muted_until: number;
+};
+
+/**
+ * Sweeps reasoner_incidents whose snooze (mute) deadline has passed and
+ * clears it, so an expired snooze doesn't rely purely on the lazy
+ * isMuteActive() check at read time (see server/api/incidents.ts and
+ * server/insights/scanners/sla.ts) to "expire" — the return is now an
+ * audited event of its own, distinct from an operator's explicit unmute.
+ * Idempotent: once muted_at is cleared the WHERE clause below no longer
+ * matches the row, so a re-run never re-audits it (same pattern as
+ * autoResolveStaleIncidents/autoCloseRecoveredIncidents above).
+ */
+export function autoUnmuteExpiredIncidents(now = Date.now()): { unmutedIds: string[] } {
+  const unmutedIds: string[] = [];
+  try {
+    if (!isDashboardDbEnabled()) return { unmutedIds };
+    const db = getDashboardDb();
+    if (!db) return { unmutedIds };
+    const tenant = whereTenant();
+
+    const candidates = db.query(`
+      SELECT id, muted_until
+      FROM reasoner_incidents
+      WHERE muted_at IS NOT NULL AND muted_until IS NOT NULL AND muted_until < ?
+        ${tenant.clause}
+    `).all(now, ...tenant.params) as ExpiredSnoozeRow[];
+
+    for (const row of candidates) {
+      db.query(`
+        UPDATE reasoner_incidents
+        SET muted_at = NULL, muted_by = NULL, mute_reason = NULL, muted_until = NULL
+        WHERE id = ?
+          ${tenant.clause}
+      `).run(row.id, ...tenant.params);
+
+      writeActionAudit({
+        actor: "system",
+        actorSource: "scheduler",
+        // Distinct from the operator "unmute.incident" kind (executeActionHandler's
+        // generic kind+"."+targetType audit) — mirrors the auto-close/auto-resolve
+        // convention of a system-distinct action_kind for scheduler-driven sweeps.
+        actionKind: "incidents.unmute-auto",
+        targetType: "incident",
+        targetId: row.id,
+        reason: `snooze expired (was until ${new Date(row.muted_until).toISOString()})`,
+        result: "auto-unmuted",
+        resultStatus: "success",
+      });
+
+      unmutedIds.push(row.id);
+    }
+  } catch (error) {
+    console.error("[incidents] snooze expiry sweep failed", error instanceof Error ? error.message : error);
+  }
+  return { unmutedIds };
+}
+
 const RECURRENCE_WINDOW_MS = 7 * DAY_MS;
 const RECURRENCE_THRESHOLD = 3;
 

@@ -474,6 +474,30 @@ export function IncidentsPage() {
   const reasonerIncidents = data?.reasonerIncidents ?? [];
   const sla = data?.sla;
   const openCriticals = entries.filter((entry) => entry.errorType === "critical").length;
+  // Honest tile labels for the bounded MTTA/MTTR window (task #23 / ULTRAPLAN
+  // rider) — falls back to 90 if the payload hasn't loaded yet.
+  const mttxWindowDays = Math.round((sla?.sampleWindowMs ?? 90 * 24 * 60 * 60 * 1000) / (24 * 60 * 60 * 1000));
+
+  // Snooze lifecycle gap-closure: mute-active incidents leave the default
+  // view, with a never-silent count + toggle to bring them back (ULTRAPLAN
+  // A1 deliverable 2). When the toggle is on, search/sort/pagination operate
+  // over the full set again, so a deep-link or search targeting a snoozed
+  // row still finds it.
+  const [showSnoozed, setShowSnoozed] = useState(false);
+  const mutedHiddenCount = reasonerIncidents.filter((incident) => incident.muteActive).length;
+  const visibleReasonerIncidents = showSnoozed
+    ? reasonerIncidents
+    : reasonerIncidents.filter((incident) => !incident.muteActive);
+
+  // Bulk ops selection (ULTRAPLAN A1 deliverable 1). Selection is a plain id
+  // set: it survives sort/filter/page changes rather than silently clearing,
+  // and the bulk bar always shows the true selected count so that's never a
+  // surprise; it's cleared after a bulk action completes.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const [bulkMuteDuration, setBulkMuteDuration] = useState<string>("0");
+
   const controls = useTableControls<IncidentEntry, IncidentsSortKey>({
     rows: entries,
     pageSize: 25,
@@ -494,7 +518,7 @@ export function IncidentsPage() {
     tieBreak: ["ts"],
   });
   const reasonerControls = useTableControls<ReasonerIncidentEntry, ReasonerIncidentSortKey>({
-    rows: reasonerIncidents,
+    rows: visibleReasonerIncidents,
     pageSize: 10,
     rowKey: (row) => row.id,
     filterText: (row) => [
@@ -519,6 +543,55 @@ export function IncidentsPage() {
     tieBreak: ["count"],
   });
 
+  const pageIds = reasonerControls.rows.map((row) => row.id);
+  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+
+  function toggleSelected(id: string, checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllOnPage(checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const id of pageIds) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  async function runBulk(action: "acknowledge" | "resolve" | "mute", extra?: { reason?: string; durationMs?: number }) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const verb = action === "acknowledge" ? "Acknowledge" : action === "resolve" ? "Resolve" : "Snooze";
+    if (!window.confirm(`${verb} ${ids.length} selected incident${ids.length === 1 ? "" : "s"}?`)) return;
+    setBulkBusy(true);
+    setBulkMessage(null);
+    try {
+      const res = await authFetch("/api/incidents/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ids, ...extra }),
+      });
+      const json = await res.json() as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || json.ok === false) throw new Error(json.error ?? `HTTP ${res.status}`);
+      // Never silent, even on full success: surface the per-target outcome message.
+      setBulkMessage(json.message ?? "Bulk action completed.");
+      setSelectedIds(new Set());
+      refresh();
+    } catch (err) {
+      setBulkMessage(err instanceof Error ? err.message : "Bulk action could not be completed.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   if (loading && !data) return <div className="loading-dim">loading incidents…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
 
@@ -540,15 +613,15 @@ export function IncidentsPage() {
         <div className="stats-grid" style={{ marginBottom: 12 }}>
           <SlaTile
             icon={<Clock3 size={16} />}
-            label="MTTA"
+            label={`MTTA (trailing ${mttxWindowDays}d)`}
             value={fmtDuration(sla?.meanTimeToAcknowledgeMs ?? null)}
-            detail={`${sla?.acknowledgedSamples ?? 0} acknowledged samples`}
+            detail={`${sla?.acknowledgedSamples ?? 0} acknowledged samples in the trailing ${mttxWindowDays}d`}
           />
           <SlaTile
             icon={<ShieldCheck size={16} />}
-            label="MTTR"
+            label={`MTTR (trailing ${mttxWindowDays}d)`}
             value={fmtDuration(sla?.meanTimeToResolveMs ?? null)}
-            detail={`${sla?.resolvedSamples ?? 0} resolved samples`}
+            detail={`${sla?.resolvedSamples ?? 0} resolved samples in the trailing ${mttxWindowDays}d`}
           />
           <SlaTile
             icon={<AlertTriangle size={16} />}
@@ -679,7 +752,20 @@ export function IncidentsPage() {
       </section>
 
       <section className="dash-section">
-        <div className="dash-section-title">reasoner incidents · SLA workflow</div>
+        <div className="dash-section-title" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span>reasoner incidents · SLA workflow</span>
+          {mutedHiddenCount > 0 && (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => setShowSnoozed((current) => !current)}
+              style={{ minHeight: 32 }}
+            >
+              <BellOff size={13} />
+              {showSnoozed ? `showing ${mutedHiddenCount} snoozed — hide` : `${mutedHiddenCount} snoozed hidden — show`}
+            </button>
+          )}
+        </div>
         {loading && !data ? (
           <div className="loading-dim">loading incident workflow...</div>
         ) : reasonerIncidents.length === 0 ? (
@@ -690,10 +776,83 @@ export function IncidentsPage() {
           </div>
         ) : (
           <div className="table-wrap incidents-workflow-table">
+            {selectedIds.size > 0 && (
+              <div className="insights-message" style={{ marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+                <strong>{selectedIds.size} selected</strong>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={bulkBusy}
+                    onClick={() => runBulk("acknowledge")}
+                    style={{ minHeight: 44 }}
+                  >
+                    <CheckCircle2 size={15} />
+                    Acknowledge
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={bulkBusy}
+                    onClick={() => runBulk("resolve", { reason: "Bulk resolved from incidents page" })}
+                    style={{ minHeight: 44 }}
+                  >
+                    <ShieldCheck size={15} />
+                    Resolve
+                  </button>
+                  <select
+                    value={bulkMuteDuration}
+                    onChange={(event) => setBulkMuteDuration(event.currentTarget.value)}
+                    className="incident-text-input"
+                    aria-label="Snooze duration for selected incidents"
+                    style={{ minHeight: 44 }}
+                  >
+                    {MUTE_DURATIONS.map((d) => (
+                      <option key={d.ms} value={String(d.ms)}>{d.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={bulkBusy}
+                    onClick={() => {
+                      const ms = Number(bulkMuteDuration);
+                      runBulk("mute", { reason: "Bulk muted from incidents page", ...(ms > 0 ? { durationMs: ms } : {}) });
+                    }}
+                    style={{ minHeight: 44 }}
+                  >
+                    <BellOff size={15} />
+                    Snooze
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={bulkBusy}
+                    onClick={() => setSelectedIds(new Set())}
+                    style={{ minHeight: 44 }}
+                  >
+                    Clear selection
+                  </button>
+                </div>
+              </div>
+            )}
+            {bulkMessage && (
+              <div className={`loading-dim${/fail|error/i.test(bulkMessage) ? " error" : ""}`} style={{ marginBottom: 12 }}>
+                {bulkMessage}
+              </div>
+            )}
             <TableControls {...reasonerControls.controlsProps} searchPlaceholder="Filter workflow incidents..." />
             <table className="data-table">
               <thead>
                 <tr>
+                  <th className="checkbox-col" aria-label="select">
+                    <input
+                      type="checkbox"
+                      checked={allOnPageSelected}
+                      onChange={(event) => toggleSelectAllOnPage(event.target.checked)}
+                      aria-label="Select all incidents on this page"
+                    />
+                  </th>
                   <th className="expander-col" aria-label="details"></th>
                   <th {...reasonerControls.sortHeaderProps("status")} style={{ width: 140 }}>status</th>
                   <th>incident</th>
@@ -710,6 +869,14 @@ export function IncidentsPage() {
                   return (
                     <Fragment key={key}>
                       <tr className="data-row-clickable" onClick={() => reasonerControls.toggleExpanded(key)}>
+                        <td className="checkbox-col" onClick={(event) => event.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(incident.id)}
+                            onChange={(event) => toggleSelected(incident.id, event.target.checked)}
+                            aria-label={`Select ${incident.title}`}
+                          />
+                        </td>
                         <td className="expander-col">
                           <button type="button" className="table-expander" aria-label={expanded ? "Collapse lifecycle" : "Expand lifecycle"}>
                             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
@@ -731,7 +898,7 @@ export function IncidentsPage() {
                       </tr>
                       {expanded && (
                         <tr key={`${key}:detail`} className="data-row-detail">
-                          <td colSpan={7}>
+                          <td colSpan={8}>
                             <div className="data-row-detail-inner">
                               <IncidentLifecycleCard incident={incident} onChanged={refresh} />
                             </div>
@@ -743,7 +910,7 @@ export function IncidentsPage() {
                 })}
                 {reasonerControls.filteredCount === 0 && (
                   <tr>
-                    <td colSpan={7} className="loading-dim">no workflow incidents match the current filter</td>
+                    <td colSpan={8} className="loading-dim">no workflow incidents match the current filter</td>
                   </tr>
                 )}
               </tbody>

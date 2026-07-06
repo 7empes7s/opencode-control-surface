@@ -103,8 +103,11 @@ describe("incidents SLA and lifecycle API", () => {
 
   it("computes MTTA, MTTR, open age, SLA breach/due-soon counts, and RCA from real rows", () => {
     const now = Date.now();
-    seedIncident({ id: "incident-a", firstSeen: 1_000, acknowledgedAt: 4_000, resolvedAt: 11_000, status: "resolved" });
-    seedIncident({ id: "incident-b", firstSeen: 2_000, acknowledgedAt: 8_000, resolvedAt: 22_000, status: "resolved" });
+    // Anchored recently (within the trailing 90d MTTX sample window) so these
+    // count toward the means — see the dedicated windowing test below for rows
+    // that fall OUTSIDE the window.
+    seedIncident({ id: "incident-a", firstSeen: now - 1_000_000, acknowledgedAt: now - 1_000_000 + 3_000, resolvedAt: now - 1_000_000 + 10_000, status: "resolved" });
+    seedIncident({ id: "incident-b", firstSeen: now - 900_000, acknowledgedAt: now - 900_000 + 6_000, resolvedAt: now - 900_000 + 20_000, status: "resolved" });
     // Breached: sla_due_at is in the past.
     seedIncident({ id: "incident-open", firstSeen: now - 25 * 60 * 60 * 1000, status: "open", slaDueAt: now - 60 * 60 * 1000 });
     // Due-soon: sla_due_at is 30 minutes away, well within the (capped 6h) approaching window.
@@ -120,10 +123,74 @@ describe("incidents SLA and lifecycle API", () => {
     expect(detail.sla.meanTimeToResolveMs).toBe(15_000);
     expect(detail.sla.acknowledgedSamples).toBe(2);
     expect(detail.sla.resolvedSamples).toBe(2);
+    expect(detail.sla.sampleWindowMs).toBe(90 * 24 * 60 * 60 * 1000);
     expect(detail.sla.oldestOpenAgeMs).toBeGreaterThanOrEqual(25 * 60 * 60 * 1000 - 1_000);
     expect(detail.sla.slaBreachedOpenCount).toBe(1);
     expect(detail.sla.slaDueSoonCount).toBe(1);
     expect(detail.reasonerIncidents.find((incident) => incident.id === "incident-a")?.rootCause).toContain("Root cause");
+  });
+
+  it("excludes ancient acknowledged_at/resolved_at samples from MTTA/MTTR (task #23) but still counts recent ones", () => {
+    const now = Date.now();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // Completion outside the window: resolved/acked 100 days ago — excluded
+    // regardless of birth.
+    seedIncident({
+      id: "incident-ancient",
+      firstSeen: now - 900 * DAY_MS,
+      acknowledgedAt: now - 100 * DAY_MS,
+      resolvedAt: now - 100 * DAY_MS,
+      status: "resolved",
+    });
+    // THE live-DB bug scenario (2023-era rows mass-closed on Jun 30): born
+    // 2 years ago but acked/resolved YESTERDAY. Completion recency alone
+    // would admit this row and its ~730d duration into the mean; the birth
+    // (first_seen) cutoff must exclude it.
+    seedIncident({
+      id: "incident-born-ancient-resolved-yesterday",
+      firstSeen: now - 730 * DAY_MS,
+      acknowledgedAt: now - DAY_MS,
+      resolvedAt: now - DAY_MS,
+      status: "resolved",
+    });
+    // A normal incident born AND completed inside the window: included.
+    seedIncident({
+      id: "incident-recent",
+      firstSeen: now - 60_000,
+      acknowledgedAt: now - 50_000,
+      resolvedAt: now - 40_000,
+      status: "resolved",
+    });
+
+    const detail = buildIncidentsDetail();
+
+    // Only the born-and-completed-in-window row counts.
+    expect(detail.sla.acknowledgedSamples).toBe(1);
+    expect(detail.sla.resolvedSamples).toBe(1);
+    expect(detail.sla.meanTimeToAcknowledgeMs).toBe(10_000);
+    expect(detail.sla.meanTimeToResolveMs).toBe(20_000);
+    expect(detail.sla.sampleWindowMs).toBe(90 * 24 * 60 * 60 * 1000);
+  });
+
+  it("reports null means and zero samples (never a fake 0ms) when no incident qualifies for the MTTX window", () => {
+    const now = Date.now();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // Only disqualified rows exist: born ancient, resolved recently — the
+    // exact shape of the live DB after the Jun 30 mass-close.
+    seedIncident({
+      id: "incident-only-disqualified",
+      firstSeen: now - 730 * DAY_MS,
+      acknowledgedAt: now - DAY_MS,
+      resolvedAt: now - DAY_MS,
+      status: "resolved",
+    });
+
+    const detail = buildIncidentsDetail();
+
+    expect(detail.sla.acknowledgedSamples).toBe(0);
+    expect(detail.sla.resolvedSamples).toBe(0);
+    expect(detail.sla.meanTimeToAcknowledgeMs).toBeNull();
+    expect(detail.sla.meanTimeToResolveMs).toBeNull();
   });
 
   it("acks and resolves incidents through token-gated audited handlers", async () => {

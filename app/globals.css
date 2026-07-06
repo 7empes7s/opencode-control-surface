@@ -2786,6 +2786,8 @@ body {
 }
 .data-table .cell-right { text-align: right; }
 .data-table .expander-col { width: 42px; text-align: center; }
+.data-table .checkbox-col { width: 36px; text-align: center; }
+.data-table .checkbox-col input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 .table-expander {
   width: 30px;
   height: 30px;

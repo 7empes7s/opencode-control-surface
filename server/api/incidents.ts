@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ok, type ApiEnvelope } from "./types.ts";
 import { listInsights } from "../insights/store.ts";
 import type { Insight } from "../insights/types.ts";
@@ -65,6 +66,11 @@ export interface IncidentSlaMetrics {
   meanTimeToResolveMs: number | null;
   acknowledgedSamples: number;
   resolvedSamples: number;
+  // Trailing window (ms) bounding which acknowledged_at/resolved_at samples
+  // feed the two means above (task #23 / ULTRAPLAN rider): without this,
+  // an incident first-seen years ago that happens to resolve today drags
+  // the mean up by its full multi-year age. See MTTX_SAMPLE_WINDOW_MS.
+  sampleWindowMs: number;
   oldestOpenAgeMs: number | null;
   // Real deadline-based metrics (ULTRAPLAN P2.3), computed from sla_due_at —
   // same definitions as the sla.ts detector scanner. Muted incidents are
@@ -292,12 +298,23 @@ function getAutoCloseAudits(): Map<string, { reason: string | null; ts: number }
   return map;
 }
 
+// Trailing window (task #23 / ULTRAPLAN rider) bounding MTTA/MTTR sample
+// eligibility: an incident only counts if it was BORN (first_seen) AND
+// completed (acknowledged_at / resolved_at) inside the trailing window —
+// "incidents born and completed within the trailing 90d". Bounding only on
+// completion recency is not enough: a 2023-era row mass-closed today has a
+// recent resolved_at but a multi-year duration that would still skew the
+// mean. oldestOpenAgeMs is intentionally NOT bounded by this — it's about
+// how old currently-open incidents are, not a resolved sample.
+export const MTTX_SAMPLE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
 function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): IncidentSlaMetrics {
+  const windowStart = now - MTTX_SAMPLE_WINDOW_MS;
   const ackDurations = rows
-    .filter((row) => row.acknowledged_at !== null)
+    .filter((row) => row.acknowledged_at !== null && row.acknowledged_at >= windowStart && row.first_seen >= windowStart)
     .map((row) => Math.max(0, (row.acknowledged_at ?? row.first_seen) - row.first_seen));
   const resolveDurations = rows
-    .filter((row) => row.resolved_at !== null)
+    .filter((row) => row.resolved_at !== null && row.resolved_at >= windowStart && row.first_seen >= windowStart)
     .map((row) => Math.max(0, (row.resolved_at ?? row.first_seen) - row.first_seen));
   const openRows = rows.filter((row) => row.status !== "resolved");
   const oldestOpenAgeMs = openRows.length > 0
@@ -321,6 +338,7 @@ function buildSlaMetrics(rows: ReasonerIncidentRow[], now = Date.now()): Inciden
     meanTimeToResolveMs: mean(resolveDurations),
     acknowledgedSamples: ackDurations.length,
     resolvedSamples: resolveDurations.length,
+    sampleWindowMs: MTTX_SAMPLE_WINDOW_MS,
     oldestOpenAgeMs,
     slaBreachedOpenCount,
     slaDueSoonCount,
@@ -502,6 +520,106 @@ export async function incidentResolveHandler(id: string, req: Request): Promise<
       reason: body.reason?.trim() || "Resolved from incidents page",
     }),
   }));
+}
+
+// Bulk acknowledge/resolve/mute (ULTRAPLAN A1). Fans out to the exact same
+// single-action path (executeActionHandler → routeAndExecute) each per-id
+// route above already uses, so every target gets its own action_audit row
+// with the single-action's existing risk/confirm/reason enforcement and
+// tenant scoping — nothing here duplicates the mutation logic. A shared
+// batchId links the resulting rows (see execute.ts ExecuteRequest.batchId).
+const BULK_INCIDENT_ACTIONS = new Set(["acknowledge", "resolve", "mute"]);
+export const BULK_INCIDENT_MAX_IDS = 50;
+
+interface BulkIncidentActionResult {
+  id: string;
+  ok: boolean;
+  error?: string;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+export async function incidentsBulkHandler(req: Request): Promise<Response> {
+  let body: { action?: string; ids?: unknown; reason?: string; durationMs?: number } = {};
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    return jsonResponse({ ok: false, error: "invalid JSON body", code: "BAD_REQUEST" }, 400);
+  }
+
+  const action = typeof body.action === "string" ? body.action : "";
+  if (!BULK_INCIDENT_ACTIONS.has(action)) {
+    return jsonResponse({ ok: false, error: `unknown bulk action: ${action || "(none)"}`, code: "BAD_REQUEST" }, 400);
+  }
+
+  const rawIds = Array.isArray(body.ids) ? body.ids : [];
+  const ids = Array.from(new Set(rawIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0)));
+  if (ids.length === 0) {
+    return jsonResponse({ ok: false, error: "ids are required", code: "BAD_REQUEST" }, 400);
+  }
+  if (ids.length > BULK_INCIDENT_MAX_IDS) {
+    return jsonResponse({
+      ok: false,
+      error: `too many ids: max ${BULK_INCIDENT_MAX_IDS} per batch, got ${ids.length}`,
+      code: "BAD_REQUEST",
+    }, 400);
+  }
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const durationMs = typeof body.durationMs === "number" && Number.isFinite(body.durationMs) && body.durationMs > 0
+    ? body.durationMs
+    : undefined;
+  // Same reason defaults the single-target handlers apply (incidentResolveHandler /
+  // incidentMuteHandler above) — reason enforcement is not loosened, just given
+  // the same honest default when the operator didn't type one.
+  const defaultReason = action === "mute"
+    ? "Bulk muted from incidents page"
+    : action === "resolve"
+      ? "Bulk resolved from incidents page"
+      : undefined;
+
+  const batchId = `batch_${randomUUID()}`;
+  const results: BulkIncidentActionResult[] = [];
+
+  for (const id of ids) {
+    try {
+      const execReq = new Request("http://control.local/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId: `${action}:incident:${id}`,
+          confirmed: true,
+          reason: reason || defaultReason,
+          batchId,
+          ...(action === "mute" && durationMs !== undefined ? { params: { durationMs } } : {}),
+        }),
+      });
+      const res = await executeActionHandler(execReq);
+      const json = await res.json().catch(() => ({ ok: false, error: "invalid response from action executor" })) as { ok: boolean; error?: string };
+      results.push({ id, ok: json.ok === true, error: json.ok ? undefined : (json.error ?? "action failed") });
+    } catch (err) {
+      // Per-target failure isolation: one bad id must never abort the batch.
+      results.push({ id, ok: false, error: err instanceof Error ? err.message : "unexpected error" });
+    }
+  }
+
+  const succeeded = results.filter((r) => r.ok);
+  const failed = results.filter((r) => !r.ok);
+  const verb = action === "acknowledge" ? "acknowledged" : action === "resolve" ? "resolved" : "muted";
+  const message = failed.length === 0
+    ? `${succeeded.length} ${verb}.`
+    : `${succeeded.length} ${verb}, ${failed.length} failed: ${failed.map((f) => `${f.id} — ${f.error}`).join("; ")}`;
+
+  return jsonResponse({
+    ok: true,
+    action,
+    batchId,
+    results,
+    summary: { total: results.length, succeeded: succeeded.length, failed: failed.length },
+    message,
+  });
 }
 
 export async function incidentEscalateHandler(id: string, req: Request): Promise<Response> {

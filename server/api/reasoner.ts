@@ -17,6 +17,12 @@ const POST_MORTEM_CALLER = "incident-postmortem";
 const POST_MORTEM_AUDIT_RELATED_LIMIT = 20;
 const POST_MORTEM_PROMPT_NAME = "incident-postmortem.system";
 
+// Loop-stats is a 7-day remediation-loop metric (task #23 / ULTRAPLAN rider):
+// mean_ttr_ms is bound to the SAME trailing window as resolved7d/autoClosed7d
+// etc. below, so an incident first-seen long ago that happens to resolve
+// today doesn't drag the mean up by its full age.
+const LOOP_STATS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 const POST_MORTEM_SYSTEM_PROMPT = `You write concise incident post-mortems for an internal control-plane product.
 Given the incident fields and related audit rows, produce a 4-7 sentence post-mortem in plain English for the operator.
 Cover: (1) what happened, (2) why it was flagged, (3) what automated or human actions were attempted, (4) outcome of the resolution, and (5) one specific follow-up recommendation.
@@ -307,16 +313,22 @@ export async function reasonerLoopStatsHandler(): Promise<Response> {
   const db = getDashboardDb()!;
   const tenantId = getCurrentTenantContext().tenantId;
   const now = Date.now();
-  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const weekAgo = now - LOOP_STATS_WINDOW_MS;
 
+  // mean_ttr_ms is bound to the trailing window on BOTH ends (task #23 /
+  // ULTRAPLAN rider): the incident must be born (first_seen) AND resolved
+  // inside the window. Without the birth cutoff, a years-old row mass-closed
+  // this week contributes a multi-year duration to a "7d" mean. resolved_7d
+  // and autoShare deliberately keep counting ALL resolutions in the window
+  // regardless of birth — closing an old incident is still a real close.
   const counts = db.query(`
     SELECT
       SUM(status = 'open') AS open_count,
       SUM(status = 'resolved' AND resolved_at >= ?) AS resolved_7d,
-      AVG(CASE WHEN status = 'resolved' AND resolved_at >= ? THEN resolved_at - first_seen END) AS mean_ttr_ms
+      AVG(CASE WHEN status = 'resolved' AND resolved_at >= ? AND first_seen >= ? THEN resolved_at - first_seen END) AS mean_ttr_ms
     FROM reasoner_incidents
     WHERE tenant_id = ? OR tenant_id IS NULL
-  `).get(weekAgo, weekAgo, tenantId) as { open_count: number | null; resolved_7d: number | null; mean_ttr_ms: number | null };
+  `).get(weekAgo, weekAgo, weekAgo, tenantId) as { open_count: number | null; resolved_7d: number | null; mean_ttr_ms: number | null };
 
   const audit = db.query(`
     SELECT action_kind, COUNT(*) AS n
@@ -342,6 +354,7 @@ export async function reasonerLoopStatsHandler(): Promise<Response> {
     autoResolved7d,
     autoShare: resolved7d > 0 ? Math.min(1, autoTotal / resolved7d) : null,
     meanTimeToResolveMs: counts.mean_ttr_ms != null ? Math.round(counts.mean_ttr_ms) : null,
+    mttrWindowMs: LOOP_STATS_WINDOW_MS,
     recurrenceFlagged,
   }, { dashboardDb: "ok" }));
 }

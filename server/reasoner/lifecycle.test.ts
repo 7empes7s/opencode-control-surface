@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import { initDashboardDb, closeDashboardDb, getDashboardDb } from "../db/dashboard.ts";
 import { getInsight } from "../insights/store.ts";
-import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, detectRecurringIncidents } from "./lifecycle.ts";
+import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, autoUnmuteExpiredIncidents, detectRecurringIncidents } from "./lifecycle.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -260,5 +260,161 @@ describe("detectRecurringIncidents", () => {
       `SELECT COUNT(*) AS n FROM insights WHERE source_key LIKE 'remediation:recurrence:%'`,
     ).get() as { n: number }).n;
     expect(count).toBe(0);
+  });
+
+  // Pin test (case-study guard): snoozing/muting an incident must NOT mask a
+  // flapping root cause from recurrence detection — that's the exact
+  // auto-remediation-masking-defects failure mode we wrote up as a case
+  // study. A muted incident still has to count toward the >=3-in-7-days
+  // occurrence total, and still gets escalated for.
+  test("a muted incident still counts toward recurrence detection — mute must not mask flapping", () => {
+    const now = Date.now();
+    for (let i = 0; i < 3; i++) {
+      insertRecurrence(`ri_muted_flap_${i}`, "[high/high] api /health failing (muted case)", now - i * DAY_MS);
+    }
+    // Snooze one of the three recurring incidents indefinitely.
+    getDashboardDb()!.query(`
+      UPDATE reasoner_incidents
+      SET muted_at = ?, muted_by = 'operator', mute_reason = 'noisy while investigating', muted_until = NULL
+      WHERE id = ?
+    `).run(now, "ri_muted_flap_0");
+
+    const { flagged } = detectRecurringIncidents(now);
+    expect(flagged).toBe(1);
+
+    const insight = getDashboardDb()!.query(
+      `SELECT id, status FROM insights WHERE source_key LIKE 'remediation:recurrence:%'`,
+    ).get() as { id: string; status: string } | null;
+    expect(insight).toBeTruthy();
+    expect(insight!.status).toBe("open");
+  });
+});
+
+describe("autoUnmuteExpiredIncidents", () => {
+  const testDbPath = `/tmp/test-snooze-expiry-${Date.now()}.sqlite`;
+  let prevDashboardDb: string | undefined;
+
+  beforeAll(() => {
+    prevDashboardDb = process.env.DASHBOARD_DB;
+    process.env.DASHBOARD_DB = "1";
+    initDashboardDb({ enabled: true, path: testDbPath });
+  });
+
+  afterAll(() => {
+    closeDashboardDb();
+    if (prevDashboardDb === undefined) delete process.env.DASHBOARD_DB;
+    else process.env.DASHBOARD_DB = prevDashboardDb;
+  });
+
+  beforeEach(() => {
+    const db = getDashboardDb()!;
+    db.query("DELETE FROM reasoner_incidents").run();
+    db.query("DELETE FROM action_audit").run();
+  });
+
+  function insertMuted(id: string, opts: {
+    mutedAt: number | null;
+    mutedUntil: number | null;
+    mutedBy?: string | null;
+    muteReason?: string | null;
+    status?: string;
+  }): void {
+    const db = getDashboardDb()!;
+    db.query(`
+      INSERT INTO reasoner_incidents
+        (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count,
+         representative_pass_id, representative_diagnosis_id, status,
+         muted_at, muted_by, mute_reason, muted_until)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, `cluster_${id}`, "test_failure", `title for ${id}`,
+      1_000, 1_000, `pass_${id}`, `diag_${id}`,
+      opts.status ?? "open",
+      opts.mutedAt, opts.mutedBy ?? "operator", opts.muteReason ?? "noisy", opts.mutedUntil,
+    );
+  }
+
+  function readMute(id: string): { muted_at: number | null; muted_by: string | null; mute_reason: string | null; muted_until: number | null } {
+    const db = getDashboardDb()!;
+    return db.query(`SELECT muted_at, muted_by, mute_reason, muted_until FROM reasoner_incidents WHERE id = ?`).get(id) as any;
+  }
+
+  test("expired snooze is cleared and audited with a system-distinct action_kind", () => {
+    const now = Date.now();
+    const until = now - 60_000;
+    insertMuted("ri_snooze_expired", { mutedAt: now - 3_600_000, mutedUntil: until });
+
+    const { unmutedIds } = autoUnmuteExpiredIncidents(now);
+
+    expect(unmutedIds).toContain("ri_snooze_expired");
+    const row = readMute("ri_snooze_expired");
+    expect(row.muted_at).toBeNull();
+    expect(row.muted_by).toBeNull();
+    expect(row.mute_reason).toBeNull();
+    expect(row.muted_until).toBeNull();
+
+    const audit = getDashboardDb()!.query(
+      `SELECT action_kind, actor, actor_source, reason, result_status FROM action_audit WHERE target_id = ?`,
+    ).get("ri_snooze_expired") as { action_kind: string; actor: string; actor_source: string; reason: string; result_status: string } | null;
+    expect(audit).toBeTruthy();
+    expect(audit!.action_kind).toBe("incidents.unmute-auto");
+    // Distinct from the operator "unmute.incident" kind — see execute.ts.
+    expect(audit!.action_kind).not.toBe("unmute.incident");
+    expect(audit!.actor).toBe("system");
+    expect(audit!.actor_source).toBe("scheduler");
+    expect(audit!.result_status).toBe("success");
+    expect(audit!.reason).toContain("snooze expired");
+    expect(audit!.reason).toContain(new Date(until).toISOString());
+  });
+
+  test("unexpired snooze (muted_until in the future) is left untouched", () => {
+    const now = Date.now();
+    insertMuted("ri_snooze_future", { mutedAt: now - 1_000, mutedUntil: now + 3_600_000 });
+
+    const { unmutedIds } = autoUnmuteExpiredIncidents(now);
+
+    expect(unmutedIds).not.toContain("ri_snooze_future");
+    const row = readMute("ri_snooze_future");
+    expect(row.muted_at).not.toBeNull();
+    expect(row.muted_until).not.toBeNull();
+  });
+
+  test("indefinite mute (muted_until IS NULL) is left untouched", () => {
+    const now = Date.now();
+    insertMuted("ri_snooze_indefinite", { mutedAt: now - 1_000, mutedUntil: null });
+
+    const { unmutedIds } = autoUnmuteExpiredIncidents(now);
+
+    expect(unmutedIds).not.toContain("ri_snooze_indefinite");
+    const row = readMute("ri_snooze_indefinite");
+    expect(row.muted_at).not.toBeNull();
+    expect(row.muted_until).toBeNull();
+  });
+
+  test("already-swept row is never re-audited (idempotent)", () => {
+    const now = Date.now();
+    insertMuted("ri_snooze_idempotent", { mutedAt: now - 3_600_000, mutedUntil: now - 60_000 });
+
+    const first = autoUnmuteExpiredIncidents(now);
+    expect(first.unmutedIds).toContain("ri_snooze_idempotent");
+
+    const second = autoUnmuteExpiredIncidents(now + 1_000);
+    expect(second.unmutedIds).not.toContain("ri_snooze_idempotent");
+
+    const auditCount = (getDashboardDb()!.query(
+      `SELECT COUNT(*) AS n FROM action_audit WHERE target_id = ? AND action_kind = 'incidents.unmute-auto'`,
+    ).get("ri_snooze_idempotent") as { n: number }).n;
+    expect(auditCount).toBe(1);
+  });
+
+  test("a non-muted incident (muted_at IS NULL) is never touched even with a stale muted_until", () => {
+    const now = Date.now();
+    // Defensive fixture: muted_until set but muted_at NULL should never happen
+    // via the mute/unmute API, but the sweep's WHERE clause must not act on it.
+    insertMuted("ri_never_muted", { mutedAt: null, mutedUntil: now - 60_000 });
+
+    const { unmutedIds } = autoUnmuteExpiredIncidents(now);
+
+    expect(unmutedIds).not.toContain("ri_never_muted");
   });
 });

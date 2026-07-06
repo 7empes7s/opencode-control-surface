@@ -5,7 +5,7 @@ import { runRegistryScan } from "./scanners/registry.ts";
 import { runBudgetScan } from "./scanners/budget.ts";
 import { runAnomalyScan } from "./scanners/anomaly.ts";
 import { runSentinelIncidentScan } from "./scanners/sentinelIncidents.ts";
-import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, detectRecurringIncidents } from "../reasoner/lifecycle.ts";
+import { autoCloseRecoveredIncidents, autoResolveStaleIncidents, autoUnmuteExpiredIncidents, detectRecurringIncidents } from "../reasoner/lifecycle.ts";
 import { runOpsScan } from "./scanners/ops.ts";
 import { runSlaScan } from "./scanners/sla.ts";
 import { runDiscoveryScan } from "./scanners/discovery.ts";
@@ -76,6 +76,14 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
     }
   } catch (error) {
     console.error("[insights] recovered-incident sweep failed", error);
+  }
+  try {
+    const expiredSnoozes = autoUnmuteExpiredIncidents().unmutedIds.length;
+    if (expiredSnoozes > 0) {
+      console.log(`[incidents] auto-unmuted ${expiredSnoozes} expired snoozes`);
+    }
+  } catch (error) {
+    console.error("[insights] snooze expiry sweep failed", error);
   }
   try {
     const recurrence = detectRecurringIncidents();

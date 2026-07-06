@@ -44,6 +44,7 @@ import {
   incidentPostMortemHandler,
   incidentResolveHandler,
   incidentSuggestPostMortemHandler,
+  incidentsBulkHandler,
   incidentsHandler,
 } from "./incidents.ts";
 import { streamHandler } from "./stream.ts";
@@ -759,6 +760,11 @@ if (method === "GET" && pathname === "/api/stream") {
     return notificationRulesHandler(url);
   }
   if (method === "GET" && pathname === "/api/incidents") return incidentsHandler();
+  if (method === "POST" && pathname === "/api/incidents/bulk") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return incidentsBulkHandler(req);
+  }
   const incidentAckMatch = pathname.match(/^\/api\/incidents\/([^/]+)\/ack$/);
   if (method === "POST" && incidentAckMatch) {
     const denied = requireMutation(req);
