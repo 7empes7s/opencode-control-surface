@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/case-studies/newsbites-v4.md` — How the control surface built NewsBites V4.
 - `docs/case-studies/tib-markets.md` — TIB Markets buildout with gateway routing and editorial pipeline integration.
 - `docs/case-studies/self-bootstrapping.md` — Control surface building itself: dogfood loop, M1–M12 journey.
+- `docs/case-studies/CASE_STUDY_CLOSED_LOOP.md` — A real recurring defect detected, escalated, root-caused, and fixed entirely through the product's own mechanisms, with a queryable audit chain (ULTRAPLAN Phase 2).
 - `docs/api-stability.md` — v1 freeze policy, semver rules, and migration path for breaking changes.
 - `docs/workflow-definition.md` — Frozen schema reference for workflow definition format.
 - `docs/continuity-plan.md` — Backwards compatibility policy, deprecation windows, and support tiers.
