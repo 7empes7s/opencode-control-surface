@@ -1,15 +1,62 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useApi } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import type { DoctorDetail } from "../../server/api/types";
 import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls, type TableSortValue } from "../hooks/useTableControls";
+import { ConfirmModal } from "../components/ConfirmModal";
+import { authFetch } from "../lib/authFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
+
+// Mirrors server/api/actions.ts DOCTOR_REQUEUE_CLASS_MAX — display only, the
+// real cap is enforced server-side regardless of this value.
+const DOCTOR_REQUEUE_CLASS_DISPLAY_MAX = 10;
+
+type JobPollRow = { status: string; error: string | null; outputTail: string };
+
+async function fetchJob(jobId: string): Promise<JobPollRow | null> {
+  const res = await authFetch(`/api/jobs/${jobId}`);
+  if (!res.ok) return null;
+  const body = await res.json() as { data?: { jobs?: JobPollRow[] } };
+  return body.data?.jobs?.[0] ?? null;
+}
+
+// Honest, never-silent description of a finished per-entry requeue job:
+// success carries the pipeline doctor's own decision (action/reason); failure
+// (including the legitimate "not currently stuck" refusal) surfaces the
+// pipeline's message verbatim.
+function describeRequeueJob(job: JobPollRow): string {
+  if (job.status === "failed") return job.error || "requeue failed";
+  try {
+    const parsed = JSON.parse(job.outputTail || "{}") as { action?: string; reason?: string; message?: string };
+    if (parsed?.action) return `doctor decided: ${parsed.action}${parsed.reason ? ` — ${parsed.reason}` : ""}`;
+    if (parsed?.message) return String(parsed.message);
+  } catch { /* non-JSON output */ }
+  return "requeue completed";
+}
+
+function describeClassFixJob(job: JobPollRow): string {
+  if (job.status === "failed") return job.error || "fix-all-of-class failed";
+  try {
+    const summary = JSON.parse(job.outputTail || "{}") as {
+      total?: number; acted?: number; dispatched?: number; refused?: number; failed?: number;
+    };
+    const parts = [`dispatched ${summary.dispatched ?? 0}`];
+    if (summary.refused) parts.push(`${summary.refused} not currently stuck`);
+    if (summary.failed) parts.push(`${summary.failed} failed`);
+    const capped = (summary.total ?? 0) > (summary.acted ?? 0)
+      ? ` (acted on ${summary.acted} of ${summary.total} — capped at ${DOCTOR_REQUEUE_CLASS_DISPLAY_MAX})`
+      : "";
+    return `${parts.join(", ")}${capped}`;
+  } catch {
+    return "fix-all-of-class completed";
+  }
+}
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -32,7 +79,15 @@ function rowSearchText(values: TableSortValue[]) {
 
 type DoctorEntry = DoctorDetail["entries"][number];
 
-function DecisionLogTable({ entries }: { entries: DoctorEntry[] }) {
+interface RowRunState {
+  loading: boolean;
+  jobId?: string;
+  status?: "running" | "success" | "failed";
+  message?: string;
+  error?: string;
+}
+
+function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; onAfterAction?: () => void }) {
   type DecisionKey = "ts" | "slug" | "stage" | "errorType" | "failedModel" | "action" | "reason";
   const controls = useTableControls<DoctorEntry, DecisionKey>({
     rows: entries,
@@ -53,8 +108,59 @@ function DecisionLogTable({ entries }: { entries: DoctorEntry[] }) {
     sortValue: (entry, key) => entry[key],
   });
 
+  const [confirmRow, setConfirmRow] = useState<{ key: string; entry: DoctorEntry } | null>(null);
+  const [rowRuns, setRowRuns] = useState<Record<string, RowRunState>>({});
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
+
+  // Per-row poll: job-then-poll (the immediate POST response is only "started",
+  // not the pipeline's actual decision) — recursive self-scheduling instead of
+  // an interval so concurrent per-row requeues never step on each other.
+  const pollRow = async (jobId: string, key: string): Promise<void> => {
+    if (unmountedRef.current) return;
+    const job = await fetchJob(jobId);
+    if (job && (job.status === "success" || job.status === "failed")) {
+      if (!unmountedRef.current) {
+        setRowRuns((prev) => ({ ...prev, [key]: { loading: false, jobId, status: job.status as "success" | "failed", message: describeRequeueJob(job) } }));
+      }
+      onAfterAction?.();
+      return;
+    }
+    if (unmountedRef.current) return;
+    setTimeout(() => { void pollRow(jobId, key); }, 2_000);
+  };
+
+  const startRequeue = async (key: string, slug: string): Promise<void> => {
+    setRowRuns((prev) => ({ ...prev, [key]: { loading: true } }));
+    try {
+      const res = await authFetch("/api/doctor/requeue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const resBody = await res.json() as { ok?: boolean; jobId?: string; message?: string; error?: string };
+      if (!res.ok || !resBody.jobId) throw new Error(resBody.error ?? `HTTP ${res.status}`);
+      setRowRuns((prev) => ({ ...prev, [key]: { loading: true, jobId: resBody.jobId, status: "running" } }));
+      setConfirmRow(null);
+      void pollRow(resBody.jobId, key);
+    } catch (e) {
+      setRowRuns((prev) => ({ ...prev, [key]: { loading: false, error: e instanceof Error ? e.message : String(e) } }));
+    }
+  };
+
   return (
     <div className="section-card-body table-wrap">
+      {confirmRow && (
+        <ConfirmModal
+          title="Requeue doctor for this story?"
+          message={`Re-runs the doctor for "${confirmRow.entry.slug}". This only takes effect if the story is currently stuck in the autopipeline queue — otherwise the pipeline refuses and nothing changes.`}
+          confirmLabel="Requeue"
+          loading={rowRuns[confirmRow.key]?.loading}
+          error={rowRuns[confirmRow.key]?.error ?? null}
+          onCancel={() => setConfirmRow(null)}
+          onConfirm={() => { void startRequeue(confirmRow.key, confirmRow.entry.slug); }}
+        />
+      )}
       <TableControls {...controls.controlsProps} searchPlaceholder="Search decision log..." />
       <table className="data-table">
         <thead><tr>
@@ -102,6 +208,19 @@ function DecisionLogTable({ entries }: { entries: DoctorEntry[] }) {
                           <div><span>cooldown</span><strong>{entry.cooldownMs ? `${Math.round(entry.cooldownMs / 1000)}s` : "—"}</strong></div>
                         </div>
                         {entry.reason && <pre className="audit-pre">{entry.reason}</pre>}
+                        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <button
+                            className="btn btn-sm btn-ghost"
+                            disabled={rowRuns[key]?.loading}
+                            title="Re-runs the doctor for this story only if it is still stuck in the autopipeline queue; refuses otherwise."
+                            onClick={(event) => { event.stopPropagation(); setConfirmRow({ key, entry }); }}
+                          >
+                            {rowRuns[key]?.loading ? "Requeuing…" : "Requeue / re-run doctor"}
+                          </button>
+                          <span className="dim" style={{ fontSize: 11 }}>Only acts if this story is still stuck.</span>
+                          {rowRuns[key]?.status === "success" && <span className="action-feedback ok">{rowRuns[key]?.message}</span>}
+                          {rowRuns[key]?.status === "failed" && <span className="action-feedback err">{rowRuns[key]?.message}</span>}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -155,6 +274,45 @@ export function DoctorPage() {
   const [filterError, setFilterError] = useState("");
   const [filterModel, setFilterModel] = useState("");
 
+  // Fix-all-of-class state (Deliverable 2). classFixTarget is the errorType
+  // pending confirmation; classFixRun tracks the in-flight/finished batch job.
+  const [classFixTarget, setClassFixTarget] = useState<string | null>(null);
+  const [classFixRun, setClassFixRun] = useState<RowRunState>({ loading: false });
+  const classFixUnmountedRef = useRef(false);
+  useEffect(() => () => { classFixUnmountedRef.current = true; }, []);
+
+  const pollClassFix = async (jobId: string): Promise<void> => {
+    if (classFixUnmountedRef.current) return;
+    const job = await fetchJob(jobId);
+    if (job && (job.status === "success" || job.status === "failed")) {
+      if (!classFixUnmountedRef.current) {
+        setClassFixRun({ loading: false, jobId, status: job.status as "success" | "failed", message: describeClassFixJob(job) });
+      }
+      refresh();
+      return;
+    }
+    if (classFixUnmountedRef.current) return;
+    setTimeout(() => { void pollClassFix(jobId); }, 2_000);
+  };
+
+  const runClassFix = async (errorType: string): Promise<void> => {
+    setClassFixRun({ loading: true });
+    try {
+      const res = await authFetch("/api/doctor/requeue-class", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ errorType }),
+      });
+      const resBody = await res.json() as { ok?: boolean; jobId?: string; message?: string; error?: string };
+      if (!res.ok || !resBody.jobId) throw new Error(resBody.error ?? `HTTP ${res.status}`);
+      setClassFixRun({ loading: false, jobId: resBody.jobId, status: "running", message: resBody.message });
+      setClassFixTarget(null);
+      void pollClassFix(resBody.jobId);
+    } catch (e) {
+      setClassFixRun({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
   if (loading && !data) return <DoctorLoadingState />;
   if (error && !data) return <DoctorLoadingState error={error} />;
   if (!data) return <DoctorLoadingState error="No doctor data is available yet." />;
@@ -173,6 +331,13 @@ export function DoctorPage() {
   const stages = [...new Set(d.entries.map((e) => e.stage).filter(Boolean))].sort();
   const errorTypes = [...new Set(d.entries.map((e) => e.errorType).filter(Boolean))].sort();
   const models = [...new Set(d.entries.map((e) => e.failedModel).filter(Boolean))].sort();
+
+  // Client-side estimate only (for the confirm dialog's candidate count) — the
+  // server re-derives the authoritative, currently-stuck candidate set at
+  // dispatch time and reports the real acted-vs-total count never-silently.
+  const classFixCandidateCount = filterError
+    ? new Set(d.entries.filter((e) => e.errorType === filterError).map((e) => e.slug).filter(Boolean)).size
+    : 0;
 
   return (
     <div className="dash-page">
@@ -291,18 +456,29 @@ export function DoctorPage() {
       </div>
 
       {/* Full log */}
+      {classFixTarget && (
+        <ConfirmModal
+          title="Fix all of class?"
+          message={`Re-dispatches up to ${DOCTOR_REQUEUE_CLASS_DISPLAY_MAX} of the ${classFixCandidateCount} distinct "${classFixTarget}" stories in the current decision log to the doctor. Only stories still stuck in the autopipeline actually requeue — others are refused, never silently skipped, and the outcome breakdown is reported after the run.`}
+          confirmLabel="Fix all of class"
+          loading={classFixRun.loading}
+          error={classFixRun.error ?? null}
+          onCancel={() => setClassFixTarget(null)}
+          onConfirm={() => { void runClassFix(classFixTarget); }}
+        />
+      )}
       <SectionCard
         title="decision log"
         defaultOpen={false}
         right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.entries.length} entries</span>}
       >
-        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)}
             style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "3px 8px", borderRadius: 3 }}>
             <option value="">all stages</option>
             {stages.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select value={filterError} onChange={(e) => setFilterError(e.target.value)}
+          <select value={filterError} onChange={(e) => { setFilterError(e.target.value); setClassFixRun({ loading: false }); }}
             style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "3px 8px", borderRadius: 3 }}>
             <option value="">all errors</option>
             {errorTypes.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -318,8 +494,20 @@ export function DoctorPage() {
               clear
             </button>
           )}
+          {filterError && (
+            <button
+              className="btn btn-sm btn-ghost"
+              disabled={classFixRun.loading}
+              title={`Re-dispatch up to ${DOCTOR_REQUEUE_CLASS_DISPLAY_MAX} stuck "${filterError}" stories to the doctor.`}
+              onClick={() => setClassFixTarget(filterError)}
+            >
+              Fix all of class ({classFixCandidateCount})
+            </button>
+          )}
+          {classFixRun.status === "success" && <span className="action-feedback ok">{classFixRun.message}</span>}
+          {classFixRun.status === "failed" && <span className="action-feedback err">{classFixRun.message}</span>}
         </div>
-        <DecisionLogTable entries={filtered} />
+        <DecisionLogTable entries={filtered} onAfterAction={refresh} />
       </SectionCard>
     </div>
   );

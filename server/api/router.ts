@@ -173,6 +173,7 @@ import {
   infraRunTimerHandler,
   doctorScanHandler,
   doctorRequeuHandler,
+  doctorRequeueClassHandler,
   authSessionHandler,
   authStatusHandler,
   checkToken,
@@ -1191,6 +1192,11 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return doctorRequeuHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/doctor/requeue-class") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return doctorRequeueClassHandler(req);
   }
   if (method === "POST" && pathname === "/api/newsbites/deploy") {
     const denied = requireMutation(req);

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
+import { getDoctorEntryErrorType, getFullLog } from "../adapters/doctor.ts";
 import {
   constantEqual,
   expectedLegacySessionValue,
@@ -321,13 +322,107 @@ export async function doctorScanHandler(req: Request): Promise<Response> {
   return json({ ok: true, jobId, message: "Doctor scan started" });
 }
 
-// POST /api/doctor/requeue — requeue a story at a specific stage via autopipeline
+// ── Doctor requeue: shared pipeline dispatch (SPEC 13 / ULTRAPLAN P3 A2) ────
+//
+// Fixed 2026-07-06: the old doctorRequeuHandler POSTed {command:"requeue",
+// slug} to the autopipeline. There is no "requeue" case in the pipeline's
+// handleCommand switch (newsbites-autopipeline.mjs ~2499-2690) — it fell
+// through to `default: return {ok:false, error:"Unknown command: requeue"}`.
+// Worse than "the job always finished failed": the pipeline's HTTP layer
+// (POST /command) always responds HTTP 200 even for an {ok:false,...} body
+// (it only ever sets a non-200 status if handleCommand itself throws, which
+// it doesn't — parse/dispatch errors are caught and returned as {ok:false}
+// at 200). The old code decided success with `res.ok` (HTTP status only), so
+// it was actually finishing the job "success" on a silently-broken requeue.
+// Fixed by (a) targeting the real, sanctioned "doctor-dispatch" command and
+// (b) parsing the JSON body's `ok` field to decide the job outcome instead of
+// trusting HTTP status alone.
+//
+// doctor-dispatch (POST {cmd:"doctor-dispatch",slug} to /command, same
+// handler as POST {slug} to /doctor/dispatch) finds the item in
+// state.completed with slug === msg.slug && status === "stuck" and, if
+// found, runs the pipeline's own dispatchDoctorForItem({source:"manual"}) —
+// the LLM doctor then decides retry/cooldown/skip/kill. If the story is not
+// currently stuck it returns {ok:false, error:'"<slug>" not found in stuck
+// stories'} and we surface that verbatim as a legitimate `failed` job, not a
+// crash. We use /command (not /doctor/dispatch) only because the rest of
+// this file's pipeline calls already go through /command — same handler,
+// picked for consistency, not because either is more "correct".
+//
+// We deliberately do NOT use "inject" (ULTRAPLAN's literal text): inject
+// requires {dossierDir, stage}, which the doctor decision log does not
+// carry (it only has slug/stage/errorType) — inject is a force-requeue power
+// path for "after partial manual work", not the honest re-run-the-doctor
+// action a decision-log row implies. doctor-dispatch is the correct match.
+async function dispatchDoctorRequeue(
+  slug: string,
+  timeoutMs = 15_000,
+): Promise<{ ok: boolean; message: string; raw: unknown }> {
+  const res = await fetch(`${PIPELINE_API}/command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cmd: "doctor-dispatch", slug }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text();
+  let parsed: unknown = null;
+  try { parsed = JSON.parse(text); } catch { /* non-JSON body: fall back to raw text */ }
+  const bodyRecord = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  const bodyOk = bodyRecord?.ok === true;
+  const message = bodyRecord
+    ? String(bodyRecord.error ?? bodyRecord.message ?? bodyRecord.action ?? text)
+    : (text || `HTTP ${res.status}`);
+  return { ok: res.ok && bodyOk, message, raw: parsed ?? text };
+}
+
+// Async worker for a single per-entry requeue job. Exported so tests can
+// await it directly (mirrors runNewsBitesDeployContentHealthScan above) —
+// the HTTP handler below fires it without awaiting so the response is
+// immediate, job-then-poll style.
+export async function runDoctorRequeueDispatch(jobId: string, slug: string): Promise<void> {
+  try {
+    const result = await dispatchDoctorRequeue(slug);
+    const output = JSON.stringify(result.raw);
+    updateJobOutput(jobId, output);
+    finishJob(jobId, result.ok ? "success" : "failed", {
+      output,
+      exitCode: result.ok ? 0 : 1,
+      error: result.ok ? undefined : result.message,
+    });
+    audit({
+      actionKind: "doctor.requeue.finished",
+      targetType: "story",
+      targetId: slug,
+      risk: "medium",
+      request: { slug },
+      result: result.message,
+      resultStatus: result.ok ? "success" : "failed",
+      error: result.ok ? undefined : result.message,
+      jobId,
+    });
+  } catch (e) {
+    const message = errorMessage(e);
+    finishJob(jobId, "failed", { error: message, exitCode: 1 });
+    audit({
+      actionKind: "doctor.requeue.finished",
+      targetType: "story",
+      targetId: slug,
+      risk: "medium",
+      request: { slug },
+      resultStatus: "failed",
+      error: message,
+      jobId,
+    });
+  }
+}
+
+// POST /api/doctor/requeue — re-run the doctor for one currently-stuck story.
 export async function doctorRequeuHandler(req: Request): Promise<Response> {
   const denied = requireMutation(req);
   if (denied) return denied;
-  let body: { slug?: string; nextStage?: string; reason?: string };
+  let body: { slug?: string; reason?: string };
   try { body = await req.json() as typeof body; } catch { return json({ error: "invalid json" }, 400); }
-  const { slug, nextStage, reason } = body;
+  const { slug, reason } = body;
   if (!slug) return json({ error: "slug required" }, 400);
 
   const jobId = randomUUID();
@@ -336,9 +431,12 @@ export async function doctorRequeuHandler(req: Request): Promise<Response> {
     kind: "doctor-requeue",
     targetType: "story",
     targetId: slug,
-    command: `requeue slug=${slug} nextStage=${nextStage ?? "auto"}`,
-    evidence: [{ label: "Autopipeline", kind: "api", ref: "/api/autopipeline" }],
-    request: { slug, nextStage, reason },
+    command: `doctor-dispatch slug=${slug}`,
+    evidence: [
+      { label: "Doctor detail", kind: "api", ref: "/api/doctor" },
+      { label: "Autopipeline doctor-dispatch", kind: "api", ref: "POST http://127.0.0.1:3200/command {cmd:doctor-dispatch}" },
+    ],
+    request: { slug, reason },
   });
   audit({
     actionKind: "doctor.requeue",
@@ -347,36 +445,181 @@ export async function doctorRequeuHandler(req: Request): Promise<Response> {
     targetId: slug,
     risk: "medium",
     reason,
-    request: { slug, nextStage },
+    request: { slug },
     resultStatus: "running",
     jobId,
     rollbackHint: `Pause the autopipeline queue or remove the story manually if the requeue causes issues.`,
   });
 
-  (async () => {
-    try {
-      const payload: Record<string, unknown> = { command: "requeue", slug };
-      if (nextStage) payload.nextStage = nextStage;
-      if (reason) payload.reason = reason;
-      const res = await fetch(`${PIPELINE_API}/command`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15_000),
-      });
-      const text = await res.text();
-      updateJobOutput(jobId, text);
-      finishJob(jobId, res.ok ? "success" : "failed", {
-        output: text,
-        exitCode: res.ok ? 0 : 1,
-        error: res.ok ? undefined : text,
-      });
-    } catch (e) {
-      finishJob(jobId, "failed", { error: errorMessage(e), exitCode: 1 });
-    }
-  })();
+  void runDoctorRequeueDispatch(jobId, slug);
 
   return json({ ok: true, jobId, message: `Requeue started for ${slug}` });
+}
+
+// ── Doctor requeue: fix-all-of-class (SPEC 13 / ULTRAPLAN P3 A2, Deliverable 2)
+
+// Exported so both the handler and tests can reason about the cap.
+export const DOCTOR_REQUEUE_CLASS_MAX = 10;
+
+// Distinct candidate slugs for an error class, most-recent first, derived
+// from the SAME computed errorType the doctor page displays and filters by
+// (getDoctorEntryErrorType — not the raw jsonl field, which getFullLog's own
+// `errorType` filter option checks and which can miss entries whose class
+// comes from the diagnosis/legacy `class` field fallback). Dedup by slug;
+// cap applied by the caller so the total-vs-acted count stays honest.
+function candidateSlugsForErrorType(errorType: string): { total: number; slugs: string[] } {
+  const entries = getFullLog();
+  const seen = new Set<string>();
+  const distinct: string[] = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (getDoctorEntryErrorType(entry) !== errorType) continue;
+    const slug = entry.slug;
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    distinct.push(slug);
+  }
+  return { total: distinct.length, slugs: distinct.slice(0, DOCTOR_REQUEUE_CLASS_MAX) };
+}
+
+function isRefusalMessage(message: string): boolean {
+  return /not found in stuck stories|not currently stuck|is not stuck/i.test(message);
+}
+
+export interface DoctorRequeueClassSummary {
+  errorType: string;
+  total: number;
+  acted: number;
+  dispatched: number;
+  refused: number;
+  failed: number;
+  perSlug: { slug: string; ok: boolean; message: string }[];
+}
+
+// Async worker for the batch job. Exported for direct-await testing, same
+// pattern as runDoctorRequeueDispatch. Per-slug failures are isolated — one
+// refusal/timeout never aborts the batch — and every slug gets its own
+// audit row correlated to the parent job via jobId.
+export async function runDoctorRequeueClassDispatch(
+  jobId: string,
+  errorType: string,
+  slugs: string[],
+  totalCandidates: number,
+): Promise<void> {
+  const perSlug: { slug: string; ok: boolean; message: string }[] = [];
+  try {
+    for (const slug of slugs) {
+      let outcome: { ok: boolean; message: string };
+      try {
+        const result = await dispatchDoctorRequeue(slug);
+        outcome = { ok: result.ok, message: result.message };
+      } catch (e) {
+        outcome = { ok: false, message: errorMessage(e) };
+      }
+      perSlug.push({ slug, ...outcome });
+      audit({
+        actionKind: "doctor.requeue-class.slug",
+        actionId: `doctor-requeue-class:${errorType}:${slug}`,
+        targetType: "story",
+        targetId: slug,
+        risk: "medium",
+        request: { slug, errorType },
+        result: outcome.message,
+        resultStatus: outcome.ok ? "success" : "failed",
+        error: outcome.ok ? undefined : outcome.message,
+        jobId,
+      });
+    }
+
+    const dispatched = perSlug.filter((p) => p.ok).length;
+    const refused = perSlug.filter((p) => !p.ok && isRefusalMessage(p.message)).length;
+    const failed = perSlug.length - dispatched - refused;
+    const summary: DoctorRequeueClassSummary = {
+      errorType, total: totalCandidates, acted: slugs.length, dispatched, refused, failed, perSlug,
+    };
+
+    const output = JSON.stringify(summary);
+    updateJobOutput(jobId, output);
+    finishJob(jobId, "success", { output, exitCode: 0 });
+    audit({
+      actionKind: "doctor.requeue-class.finished",
+      actionId: `doctor-requeue-class:${errorType}`,
+      targetType: "doctor",
+      targetId: errorType,
+      risk: "medium",
+      request: { errorType },
+      result: `acted ${slugs.length}/${totalCandidates}: dispatched ${dispatched}, refused ${refused}, failed ${failed}`,
+      resultStatus: "success",
+      resultJson: summary,
+      jobId,
+    });
+  } catch (e) {
+    const message = errorMessage(e);
+    finishJob(jobId, "failed", { error: message, exitCode: 1 });
+    audit({
+      actionKind: "doctor.requeue-class.finished",
+      actionId: `doctor-requeue-class:${errorType}`,
+      targetType: "doctor",
+      targetId: errorType,
+      risk: "medium",
+      request: { errorType },
+      resultStatus: "failed",
+      error: message,
+      jobId,
+    });
+  }
+}
+
+// POST /api/doctor/requeue-class — fix-all-of-class: re-dispatch every
+// currently-stuck story whose latest errorType matches, capped and audited.
+export async function doctorRequeueClassHandler(req: Request): Promise<Response> {
+  const denied = requireMutation(req);
+  if (denied) return denied;
+  let body: { errorType?: string; reason?: string };
+  try { body = await req.json() as typeof body; } catch { return json({ error: "invalid json" }, 400); }
+  const errorType = (body.errorType ?? "").trim();
+  const reason = body.reason;
+  if (!errorType) return json({ error: "errorType required" }, 400);
+
+  const { total, slugs } = candidateSlugsForErrorType(errorType);
+
+  const jobId = randomUUID();
+  createJob({
+    id: jobId,
+    kind: "doctor-requeue-class",
+    targetType: "doctor",
+    targetId: errorType,
+    command: `doctor-dispatch class=${errorType} candidates=${slugs.length}/${total}`,
+    evidence: [
+      { label: "Doctor log", kind: "file", ref: "/var/lib/mimule/doctor-log.jsonl" },
+      { label: "Doctor detail", kind: "api", ref: "/api/doctor" },
+    ],
+    request: { errorType, reason, candidateSlugs: slugs, totalCandidates: total },
+  });
+  audit({
+    actionKind: "doctor.requeue-class",
+    actionId: `start-job:doctor-requeue-class:${errorType}`,
+    targetType: "doctor",
+    targetId: errorType,
+    risk: "medium",
+    reason,
+    request: { errorType, candidateCount: slugs.length, totalCandidates: total },
+    resultStatus: "running",
+    jobId,
+    rollbackHint: "Pause the autopipeline queue or manually cool down the affected stories if the batch requeue causes issues.",
+  });
+
+  void runDoctorRequeueClassDispatch(jobId, errorType, slugs, total);
+
+  const message = slugs.length > 0
+    ? `Fix-all-of-class started for ${slugs.length} of ${total} "${errorType}" stor${total === 1 ? "y" : "ies"}`
+    : `No candidates found for error class "${errorType}"`;
+  return json({
+    ok: true,
+    jobId,
+    message,
+    summary: { errorType, total, acted: slugs.length, candidateSlugs: slugs },
+  });
 }
 
 // In-memory deploy job store

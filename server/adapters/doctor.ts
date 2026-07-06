@@ -1,6 +1,11 @@
 import { openSync, fstatSync, readSync, closeSync } from "node:fs";
 
-const DOCTOR_LOG_PATH = "/var/lib/mimule/doctor-log.jsonl";
+// Computed per-call (not a module-level const) so tests can override via
+// DASHBOARD_DOCTOR_LOG_PATH after this module has already been imported —
+// same override already used by server/db/sampler.ts for the same file.
+function doctorLogPath(): string {
+  return process.env.DASHBOARD_DOCTOR_LOG_PATH ?? "/var/lib/mimule/doctor-log.jsonl";
+}
 const TAIL_BYTES = 512 * 1024;       // 512 KB — home stats
 const FULL_TAIL_BYTES = 2 * 1024 * 1024; // 2 MB — detail page
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -133,7 +138,7 @@ export interface DoctorStats {
 }
 
 export function getDoctorStats(): DoctorStats {
-  const entries = tailJsonl(DOCTOR_LOG_PATH);
+  const entries = tailJsonl(doctorLogPath());
   const cutoff = Date.now() - WINDOW_MS;
   const recent = entries.filter((e) => new Date(e.ts).getTime() >= cutoff);
 
@@ -240,7 +245,7 @@ export interface FullLogOpts {
 }
 
 export function getFullLog(opts: FullLogOpts = {}): DoctorEntry[] {
-  const all = tailJsonl(DOCTOR_LOG_PATH, FULL_TAIL_BYTES);
+  const all = tailJsonl(doctorLogPath(), FULL_TAIL_BYTES);
 
   const seen = new Set<string>();
   const deduped: DoctorEntry[] = [];
