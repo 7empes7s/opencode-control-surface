@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
@@ -118,6 +119,26 @@ export function InfraPage() {
             if (ok) { setModal(null); refresh(); }
           }}
         />
+      )}
+
+      {/* Durable-job-backed restart/timer actions now return a jobId
+          (SPEC 14 / ULTRAPLAN P3 A3a) — surface it so the operator can see
+          the mutation is tracked and retryable on /jobs, never silent. */}
+      {(svcAction.jobId || timerAction.jobId) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
+          {svcAction.jobId && (
+            <div className="action-feedback ok" style={{ fontSize: 12 }}>
+              job <span style={{ fontFamily: "var(--mono)" }}>{svcAction.jobId}</span> started —{" "}
+              <Link href="/jobs" style={{ color: "var(--accent)" }}>view</Link>
+            </div>
+          )}
+          {timerAction.jobId && (
+            <div className="action-feedback ok" style={{ fontSize: 12 }}>
+              job <span style={{ fontFamily: "var(--mono)" }}>{timerAction.jobId}</span> started —{" "}
+              <Link href="/jobs" style={{ color: "var(--accent)" }}>view</Link>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Operations */}

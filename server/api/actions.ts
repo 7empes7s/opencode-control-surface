@@ -2,6 +2,7 @@ import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
+import { runShell } from "./shell.ts";
 import { createJob, finishJob, readJob, updateJobOutput, writeActionAudit } from "../db/writer.ts";
 import { getDoctorEntryErrorType, getFullLog } from "../adapters/doctor.ts";
 import {
@@ -773,98 +774,236 @@ export function newsBitesDeployStatusHandler(jobId: string): Response {
   return json(job);
 }
 
+// ── Infra service/container restart: durable job + before/after health
+// capture (SPEC 14 / ULTRAPLAN P3 A3a) ──────────────────────────────────
+//
+// Was: execSync(...) called synchronously inline in the HTTP handler,
+// blocking the response up to 30-60s, with no job row (invisible on
+// /jobs, not retryable — the "fire-and-forget" A3 targets). Now: the
+// handler only validates + allowlists + creates the job, returns
+// {ok, jobId} immediately, and an exported async worker (awaitable
+// directly in tests, mirroring doctorScanHandler/runDoctorRequeueDispatch)
+// does the actual restart through the runShell seam and captures
+// BEFORE/AFTER state. A restart is only judged `success` if BOTH the
+// restart command succeeded AND the after-state is healthy — a command
+// that exits 0 but leaves the unit unhealthy is a legitimate `failed`
+// with the observed state surfaced (the SPEC 13 res.ok lesson: judge on
+// captured state, not just the command's exit).
+//
+// cloudflared is already in ALLOWED_SERVICES, so its restart already goes
+// through this exact path — the before/after `systemctl is-active
+// cloudflared` capture below IS its post-restart health probe; no
+// separate cloudflared-specific code is needed to satisfy that half of
+// the A3 bullet.
+const INFRA_RESTART_SETTLE_MS = 1_500;
+const INFRA_RESTART_RETRY_DELAY_MS = 1_500;
+
+// Test seam for the two delays above. Production always uses the named
+// constants; hermetic tests dial them down to a few ms so the suite
+// doesn't burn real wall-clock seconds waiting out a settle window whose
+// only job is "give a stubbed restart a moment before re-reading state".
+let infraRestartSettleMs = INFRA_RESTART_SETTLE_MS;
+let infraRestartRetryDelayMs = INFRA_RESTART_RETRY_DELAY_MS;
+export function setInfraRestartTimingForTests(opts: { settleMs?: number; retryDelayMs?: number } | null): void {
+  infraRestartSettleMs = opts?.settleMs ?? INFRA_RESTART_SETTLE_MS;
+  infraRestartRetryDelayMs = opts?.retryDelayMs ?? INFRA_RESTART_RETRY_DELAY_MS;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type RestartTargetKind = "service" | "container";
+
+function captureRestartState(kind: RestartTargetKind, id: string): string {
+  const res = kind === "container"
+    ? runShell(`docker inspect --format '{{.State.Status}}' ${id}`, { timeout: 5_000 })
+    : runShell(`systemctl is-active ${id}`, { timeout: 5_000 });
+  const stdout = res.stdout.trim();
+  if (stdout) return stdout;
+  return res.stderr?.trim() || "unknown";
+}
+
+function isRestartHealthy(kind: RestartTargetKind, state: string): boolean {
+  return kind === "container" ? state === "running" : state === "active";
+}
+
+// Exported so tests can await the restart worker directly instead of
+// racing the fire-and-forget promise the HTTP handler kicks off.
+export async function runInfraServiceRestart(
+  jobId: string,
+  kind: RestartTargetKind,
+  id: string,
+  reason: string | undefined,
+): Promise<void> {
+  const actionKind = kind === "container" ? "infra.container-restart" : "infra.service-restart";
+  const before = captureRestartState(kind, id);
+  const command = kind === "container" ? `docker restart ${id}` : `systemctl restart ${id}`;
+  const restartResult = runShell(command, { timeout: kind === "container" ? 60_000 : 30_000 });
+
+  await sleep(infraRestartSettleMs);
+  let after = captureRestartState(kind, id);
+  if (!isRestartHealthy(kind, after)) {
+    await sleep(infraRestartRetryDelayMs);
+    after = captureRestartState(kind, id);
+  }
+
+  const healthy = isRestartHealthy(kind, after);
+  const success = restartResult.ok && healthy;
+  const evidence = { before, after, command };
+  const output = JSON.stringify(evidence);
+  const failureReason = !restartResult.ok
+    ? (restartResult.error ?? "restart command failed")
+    : `after-state not healthy: ${after}`;
+
+  updateJobOutput(jobId, output);
+  finishJob(jobId, success ? "success" : "failed", {
+    output,
+    exitCode: success ? 0 : 1,
+    error: success ? undefined : failureReason,
+  });
+  audit({
+    actionKind: `${actionKind}.finished`,
+    targetType: "service",
+    targetId: id,
+    risk: "high",
+    reason,
+    request: {},
+    result: success
+      ? `${id} restarted (before=${before}, after=${after})`
+      : `${id} restart did not reach a healthy state (before=${before}, after=${after})`,
+    resultStatus: success ? "success" : "failed",
+    resultJson: evidence,
+    evidence: [
+      { label: "Restart command", kind: "command", ref: command },
+      { label: "Before state", kind: "text", ref: before },
+      { label: "After state", kind: "text", ref: after },
+    ],
+    rollbackHint: `Inspect ${id} logs and restart the previous dependency if health does not recover.`,
+    error: success ? undefined : failureReason,
+    jobId,
+  });
+}
+
 // POST /api/infra/service-restart
 export async function infraServiceRestartHandler(req: Request): Promise<Response> {
   const denied = requireMutation(req);
   if (denied) return denied;
-  let body: { service: string };
-  try { body = await req.json() as { service: string }; }
+  let body: { service: string; reason?: string };
+  try { body = await req.json() as { service: string; reason?: string }; }
   catch { return json({ error: "invalid json" }, 400); }
 
   const { service } = body;
-  if (ALLOWED_SERVICES.includes(service)) {
-    try {
-      execSync(`systemctl restart ${service}`, { timeout: 30_000 });
-      audit({
-        actionKind: "infra.service-restart",
-        actionId: `start-job:service:${service}:restart`,
-        targetType: "service",
-        targetId: service,
-        risk: "high",
-        reason: reasonFromBody(body),
-        request: body,
-        result: `${service} restarted`,
-        resultStatus: "success",
-        evidence: [{ label: "Restart command", kind: "command", ref: `systemctl restart ${service}` }],
-        rollbackHint: `Inspect ${service} logs and restart the previous dependency if health does not recover.`,
-      });
-      return json({ ok: true, message: `${service} restarted` });
-    } catch (e) {
-      audit({
-        actionKind: "infra.service-restart",
-        actionId: `start-job:service:${service}:restart`,
-        targetType: "service",
-        targetId: service,
-        risk: "high",
-        reason: reasonFromBody(body),
-        request: body,
-        resultStatus: "failed",
-        error: errorMessage(e),
-      });
-      return json({ error: String(e) }, 500);
-    }
+  const kind: RestartTargetKind | null = ALLOWED_SERVICES.includes(service)
+    ? "service"
+    : ALLOWED_CONTAINERS.includes(service)
+    ? "container"
+    : null;
+
+  // Allowlist refusal stays audited and returns 400 with no job created —
+  // consistent, never-silent, and unchanged from the old behavior.
+  if (!kind) {
+    audit({
+      actionKind: "infra.service-restart",
+      targetType: "service",
+      targetId: service,
+      risk: "high",
+      reason: reasonFromBody(body),
+      request: body,
+      resultStatus: "failed",
+      error: `not in allowlist: ${service}`,
+    });
+    return json({ error: `not in allowlist: ${service}` }, 400);
   }
-  if (ALLOWED_CONTAINERS.includes(service)) {
-    try {
-      execSync(`docker restart ${service}`, { timeout: 60_000 });
-      audit({
-        actionKind: "infra.container-restart",
-        actionId: `start-job:service:${service}:restart`,
-        targetType: "service",
-        targetId: service,
-        risk: "high",
-        reason: reasonFromBody(body),
-        request: body,
-        result: `${service} restarted`,
-        resultStatus: "success",
-        evidence: [{ label: "Restart command", kind: "command", ref: `docker restart ${service}` }],
-        rollbackHint: `Inspect ${service} container logs if health does not recover.`,
-      });
-      return json({ ok: true, message: `${service} restarted` });
-    } catch (e) {
-      audit({
-        actionKind: "infra.container-restart",
-        actionId: `start-job:service:${service}:restart`,
-        targetType: "service",
-        targetId: service,
-        risk: "high",
-        reason: reasonFromBody(body),
-        request: body,
-        resultStatus: "failed",
-        error: errorMessage(e),
-      });
-      return json({ error: String(e) }, 500);
-    }
-  }
+
+  const actionKind = kind === "container" ? "infra.container-restart" : "infra.service-restart";
+  const jobId = randomUUID();
+  createJob({
+    id: jobId,
+    kind: "infra-service-restart",
+    targetType: "service",
+    targetId: service,
+    command: kind === "container" ? `docker restart ${service}` : `systemctl restart ${service}`,
+    request: body,
+  });
   audit({
-    actionKind: "infra.service-restart",
+    actionKind,
+    actionId: `start-job:service:${service}:restart`,
     targetType: "service",
     targetId: service,
     risk: "high",
     reason: reasonFromBody(body),
     request: body,
-    resultStatus: "failed",
-    error: `not in allowlist: ${service}`,
+    resultStatus: "running",
+    jobId,
   });
-  return json({ error: `not in allowlist: ${service}` }, 400);
+
+  // Fire-and-forget the worker itself is fine — the *job* is durable and
+  // retryable; the HTTP response no longer blocks on the restart.
+  void runInfraServiceRestart(jobId, kind, service, reasonFromBody(body));
+
+  return json({ ok: true, jobId, message: `${service} restart started` });
+}
+
+// ── Infra timer run: durable job + --no-block fix (SPEC 14 / ULTRAPLAN
+// P3 A3a) ────────────────────────────────────────────────────────────────
+//
+// Latent bug fixed here: the old code ran `systemctl start
+// ${timer}.service` (no --no-block) at a 5s timeout. `systemctl start`
+// without --no-block blocks until the unit's start job completes, so any
+// oneshot timer whose work takes longer than ~5s (backups, scans, model
+// health checks) hit ETIMEDOUT and was reported `failed` even though it
+// was enqueued fine and kept running. The execute.ts timer path (line
+// ~256) and model-health path (~279) already learned this and pass
+// --no-block; this handler gets the same fix.
+// "Enqueue succeeded" (exit 0 from a --no-block start) is a different,
+// weaker claim than "the oneshot finished" — we only assert the former
+// and record the observed post-enqueue unit state as evidence, honestly.
+export async function runInfraTimerRun(jobId: string, timer: string, reason: string | undefined): Promise<void> {
+  const command = `systemctl start --no-block ${timer}.service`;
+  const startResult = runShell(command, { timeout: 5_000 });
+  const stateResult = runShell(`systemctl is-active ${timer}.service`, { timeout: 5_000 });
+  const state = stateResult.stdout.trim() || (stateResult.stderr?.trim() || "unknown");
+
+  const success = startResult.ok;
+  const evidence = { command, state };
+  const output = JSON.stringify(evidence);
+  const failureReason = startResult.error ?? "enqueue failed";
+
+  updateJobOutput(jobId, output);
+  finishJob(jobId, success ? "success" : "failed", {
+    output,
+    exitCode: success ? 0 : 1,
+    error: success ? undefined : failureReason,
+  });
+  audit({
+    actionKind: "infra.run-timer.finished",
+    targetType: "timer",
+    targetId: timer,
+    risk: "medium",
+    reason,
+    request: {},
+    result: success
+      ? `${timer} enqueued via --no-block; observed post-enqueue state: ${state}`
+      : `${timer} enqueue failed`,
+    resultStatus: success ? "success" : "failed",
+    resultJson: evidence,
+    evidence: [
+      { label: "Timer command", kind: "command", ref: command },
+      { label: "Post-enqueue state", kind: "text", ref: state },
+    ],
+    rollbackHint: "Inspect the service journal and wait for the next timer cycle if the manual run fails.",
+    error: success ? undefined : failureReason,
+    jobId,
+  });
 }
 
 // POST /api/infra/run-timer
 export async function infraRunTimerHandler(req: Request): Promise<Response> {
   const denied = requireMutation(req);
   if (denied) return denied;
-  let body: { timer: string };
-  try { body = await req.json() as { timer: string }; }
+  let body: { timer: string; reason?: string };
+  try { body = await req.json() as { timer: string; reason?: string }; }
   catch { return json({ error: "invalid json" }, 400); }
 
   const { timer } = body;
@@ -881,34 +1020,29 @@ export async function infraRunTimerHandler(req: Request): Promise<Response> {
     });
     return json({ error: `not in allowlist: ${timer}` }, 400);
   }
-  try {
-    execSync(`systemctl start ${timer}.service`, { timeout: 5_000 });
-    audit({
-      actionKind: "infra.run-timer",
-      actionId: `start-job:timer:${timer}:run-now`,
-      targetType: "timer",
-      targetId: timer,
-      risk: "medium",
-      reason: reasonFromBody(body),
-      request: body,
-      result: `${timer} started`,
-      resultStatus: "success",
-      evidence: [{ label: "Timer command", kind: "command", ref: `systemctl start ${timer}.service` }],
-      rollbackHint: "Inspect the service journal and wait for the next timer cycle if the manual run fails.",
-    });
-    return json({ ok: true, message: `${timer} started` });
-  } catch (e) {
-    audit({
-      actionKind: "infra.run-timer",
-      actionId: `start-job:timer:${timer}:run-now`,
-      targetType: "timer",
-      targetId: timer,
-      risk: "medium",
-      reason: reasonFromBody(body),
-      request: body,
-      resultStatus: "failed",
-      error: errorMessage(e),
-    });
-    return json({ error: String(e) }, 500);
-  }
+
+  const jobId = randomUUID();
+  createJob({
+    id: jobId,
+    kind: "infra-run-timer",
+    targetType: "timer",
+    targetId: timer,
+    command: `systemctl start --no-block ${timer}.service`,
+    request: body,
+  });
+  audit({
+    actionKind: "infra.run-timer",
+    actionId: `start-job:timer:${timer}:run-now`,
+    targetType: "timer",
+    targetId: timer,
+    risk: "medium",
+    reason: reasonFromBody(body),
+    request: body,
+    resultStatus: "running",
+    jobId,
+  });
+
+  void runInfraTimerRun(jobId, timer, reasonFromBody(body));
+
+  return json({ ok: true, jobId, message: `${timer} run started` });
 }
