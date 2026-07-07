@@ -178,7 +178,8 @@ export function mapHetznerFindings(stats: HetznerStats, now: number): InsightInp
       plainSummary: `The root filesystem is ${stats.diskUsedPct}% full (${stats.diskUsedGb}/${stats.diskTotalGb} GB). Prune old backups, Docker images, and build caches before it fills up and wedges services.`,
       confidence: 0.9,
       evidenceRefs: [evidence("df -h /", "command", "df -BG /")],
-      actionDescriptorId: null,
+      // Bounded Docker reclaim (never -a) — SPEC 15 / ULTRAPLAN P3 A3b.
+      actionDescriptorId: "reclaim:disk:docker-prune",
       manualPageHref: "/infra",
       createdAt: now,
     });
@@ -367,7 +368,8 @@ export function mapBackupFreshnessFindings(freshness: BackupFreshness | null, no
       evidence("Backup root", "file", freshness.root),
       evidence("Newest backup", "file", freshness.newestPath ?? `${freshness.root}/<none>`),
     ],
-    actionDescriptorId: null,
+    // Reuses the SPEC 14 timer-run worker for mimule-backup — SPEC 15 / ULTRAPLAN P3 A3b.
+    actionDescriptorId: "run:backup:now",
     manualPageHref: "/infra",
     createdAt: now,
   }];

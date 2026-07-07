@@ -1,8 +1,9 @@
 import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeActionAudit } from "../db/writer.ts";
-import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS } from "./actions.ts";
+import { createJob, writeActionAudit } from "../db/writer.ts";
+import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
@@ -62,6 +63,12 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   if (kind === "start-job") {
     return { confirm: true, reasonRequired: true };
   }
+  // reclaim: medium-risk job-backed disk mutation — confirm + reason required,
+  // mirroring the SPEC 14 run-timer/restart precedent for job-backed actions.
+  if (kind === "reclaim") return { confirm: true, reasonRequired: true };
+  // run: low-risk job-backed dispatch (currently only run:backup:now) — no
+  // confirm/reason required, mirroring the low-risk "assign" convention.
+  if (kind === "run") return { confirm: false, reasonRequired: false };
   if (kind === "mutate-policy") return { confirm: true, reasonRequired: true };
   if (kind === "acknowledge") return { confirm: false, reasonRequired: false };
   if (kind === "mitigate") return { confirm: true, reasonRequired: true };
@@ -76,6 +83,8 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
 function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
+  if (kind === "reclaim") return "medium";
+  if (kind === "run") return "low";
   if (kind === "mutate-policy") {
     if (targetType === "autoapply") return "medium";
     if (targetType === "budget") return "medium";
@@ -314,6 +323,50 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       action: "start-job",
       message: "Gateway route override cleared.",
     };
+  }
+
+  // reclaim:disk:docker-prune — SPEC 15 / ULTRAPLAN P3 A3b. Job-backed,
+  // bounded Docker reclaim (never -a). Creates a durable job and fires the
+  // async worker (server/api/actions.ts runDiskReclaim), returning
+  // immediately; the worker writes the .finished audit row + job output —
+  // same two-row pattern as the SPEC 14 infra workers.
+  if (kind === "reclaim" && targetType === "disk") {
+    if (targetId !== "docker-prune") {
+      return { ok: false, error: "unknown reclaim target: " + targetId, code: "NOT_FOUND" };
+    }
+    const jobId = randomUUID();
+    createJob({
+      id: jobId,
+      kind: "reclaim-disk",
+      targetType: "disk",
+      targetId: "docker-prune",
+      command: "docker builder prune -f && docker image prune -f",
+      request: body,
+    });
+    void runDiskReclaim(jobId, body.reason);
+    return { ok: true, action: "reclaim", jobId, message: "Disk reclaim started (docker builder + image prune)" };
+  }
+
+  // run:backup:now — SPEC 15 / ULTRAPLAN P3 A3b. Fixed to the already-
+  // allowlisted mimule-backup timer; REUSES the SPEC 14 runInfraTimerRun
+  // worker rather than duplicating any systemctl logic. A non-allowlisted
+  // timer path is impossible here because the timer name is hardcoded, not
+  // taken from the request.
+  if (kind === "run" && targetType === "backup") {
+    if (targetId !== "now") {
+      return { ok: false, error: "unknown run:backup target: " + targetId, code: "NOT_FOUND" };
+    }
+    const jobId = randomUUID();
+    createJob({
+      id: jobId,
+      kind: "run-backup",
+      targetType: "timer",
+      targetId: "mimule-backup",
+      command: "systemctl start --no-block mimule-backup.service",
+      request: body,
+    });
+    void runInfraTimerRun(jobId, "mimule-backup", body.reason);
+    return { ok: true, action: "run", jobId, message: "Backup run started (mimule-backup, enqueued via --no-block)" };
   }
 
   if (kind === "mutate-policy" && targetType === "model") {

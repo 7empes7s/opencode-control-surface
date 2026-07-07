@@ -87,7 +87,9 @@ export interface ActionDescriptor {
     | "external-link"
     | "copy-command"
     | "export"
-    | "preview";
+    | "preview"
+    | "reclaim"
+    | "run";
   targetType: string;
   targetId: string;
   risk: "low" | "medium" | "high" | "destructive";

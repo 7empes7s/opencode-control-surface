@@ -455,6 +455,54 @@ function addGatewayActions(actions: ActionDescriptor[]): void {
   }));
 }
 
+// Two fixed, singleton remediation actions (SPEC 15 / ULTRAPLAN P3 A3b) — not
+// per-entity like the loops above, always offered. They back the disk-
+// pressure and backup-stale ops detectors (server/insights/scanners/ops.ts),
+// which reference these ids literally. Left at review tier deliberately:
+// neither is in SAFE_AUTO_ACTIONS, so autoapplyPolicy.defaultTierForAction
+// resolves them to "review" (operator-initiated Apply), not "auto".
+function addDiskReclaimAndBackupActions(actions: ActionDescriptor[]): void {
+  actions.push(descriptor({
+    label: "Reclaim disk space",
+    kind: "reclaim",
+    targetType: "disk",
+    targetId: "docker-prune",
+    risk: "medium",
+    confirm: true,
+    reasonRequired: true,
+    evidenceRefs: [
+      commandEvidence("Builder cache prune", "docker builder prune -f"),
+      commandEvidence("Dangling image prune", "docker image prune -f"),
+      commandEvidence("Disk usage", "df -BG /"),
+    ],
+    impactPreview: "Reclaim disk: prune unused Docker build cache + dangling images (never -a). Never touches volumes or images in use by a running container.",
+    rollbackHint: "Pruned build cache and dangling images cannot be restored; rebuild or re-pull an image if one turns out to have still been needed.",
+    expectedDurationMs: 240_000,
+    jobKind: "reclaim-disk",
+    sourceRoute: "/infra",
+    requiresOnline: true,
+  }));
+
+  actions.push(descriptor({
+    label: "Run backup now",
+    kind: "run",
+    targetType: "backup",
+    targetId: "now",
+    risk: "low",
+    confirm: false,
+    reasonRequired: false,
+    evidenceRefs: [
+      commandEvidence("Backup timer", "systemctl start --no-block mimule-backup.service"),
+    ],
+    impactPreview: "Trigger the mimule-backup service immediately. This enqueues the run via --no-block and records the enqueue — it does not wait for the backup to finish.",
+    rollbackHint: "No rollback needed — this only enqueues one extra backup run.",
+    expectedDurationMs: 5_000,
+    jobKind: "run-backup",
+    sourceRoute: "/infra",
+    requiresOnline: true,
+  }));
+}
+
 export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   const actions: ActionDescriptor[] = [];
   addGatewayActions(actions);
@@ -466,6 +514,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addIncidentEscalationActions(actions, input.reasonerIncidents);
   addDoctorActions(actions, input.doctorEntries);
   addVastAndGpuActions(actions, input);
+  addDiskReclaimAndBackupActions(actions);
   return actions;
 }
 

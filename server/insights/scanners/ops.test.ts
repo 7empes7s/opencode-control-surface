@@ -9,6 +9,7 @@ import type { ModelHealth } from "../../adapters/models.ts";
 import type { DoctorStats } from "../../adapters/doctor.ts";
 import type { PipelineState } from "../../adapters/pipeline.ts";
 import type { ApprovalRequest } from "../../governance/approvals.ts";
+import { riskTierFor } from "../autoapplyPolicy.ts";
 import {
   mapServiceFindings,
   mapHetznerFindings,
@@ -137,6 +138,18 @@ describe("ops scanner: pure mapping", () => {
     expect(mapHetznerFindings(hetzner({ diskUsedPct: 70 }), NOW)).toHaveLength(0);
   });
 
+  // SPEC 15 / ULTRAPLAN P3 A3b Deliverable 3 — the disk-pressure insight now
+  // carries the bounded-reclaim action, and it resolves to a non-"none"
+  // riskTier so the InsightsPage Apply button renders (review, not auto —
+  // auto-tier promotion is a deliberate gated follow-up, not done here).
+  test("disk-pressure insight carries the reclaim action at review tier (Apply renders, not auto)", () => {
+    const out = mapHetznerFindings(hetzner({ diskUsedPct: 90 }), NOW);
+    const disk = out.find((f) => f.sourceKey === "ops:disk-pressure")!;
+    expect(disk).toBeDefined();
+    expect(disk.actionDescriptorId).toBe("reclaim:disk:docker-prune");
+    expect(riskTierFor(disk)).toBe("review");
+  });
+
   test("memory over 90% used emits a finding", () => {
     const out = mapHetznerFindings(hetzner({ memTotalKb: 100, memUsedKb: 95, memAvailableKb: 5 }), NOW);
     expect(out.some((f) => f.sourceKey === "ops:mem-pressure")).toBe(true);
@@ -208,6 +221,31 @@ describe("ops scanner: pure mapping", () => {
       bucket: "missing",
     }, NOW)[0];
     expect(missing.severity).toBe("high");
+  });
+
+  // SPEC 15 / ULTRAPLAN P3 A3b Deliverable 3 — the backup-stale/missing
+  // insight now carries the run:backup:now action (reuses the SPEC 14
+  // timer-run worker), resolving to review tier so Apply renders.
+  test("backup-stale insight carries run:backup:now at review tier (Apply renders, not auto)", () => {
+    const [stale] = mapBackupFreshnessFindings({
+      root: "/opt/backups",
+      newestPath: "/opt/backups/2026-06-28",
+      newestMtimeMs: NOW - 30 * 60 * 60 * 1000,
+      ageMs: 30 * 60 * 60 * 1000,
+      bucket: "stale",
+    }, NOW);
+    expect(stale.actionDescriptorId).toBe("run:backup:now");
+    expect(riskTierFor(stale)).toBe("review");
+
+    const [missingFinding] = mapBackupFreshnessFindings({
+      root: "/opt/backups",
+      newestPath: null,
+      newestMtimeMs: null,
+      ageMs: null,
+      bucket: "missing",
+    }, NOW);
+    expect(missingFinding.actionDescriptorId).toBe("run:backup:now");
+    expect(riskTierFor(missingFinding)).toBe("review");
   });
 
   test("large doctor log emits a rotate action", () => {

@@ -1046,3 +1046,107 @@ export async function infraRunTimerHandler(req: Request): Promise<Response> {
 
   return json({ ok: true, jobId, message: `${timer} run started` });
 }
+
+// ── Disk reclaim: bounded, audited Docker prune (SPEC 15 / ULTRAPLAN P3 A3b) ─
+//
+// "Bounded" is the whole point: docker builder prune -f (build cache only)
+// and docker image prune -f (dangling/untagged images only) — NEVER
+// `-a`/`--all`, which would also delete tagged-but-unused images an operator
+// may still want. Neither command touches volumes or images in use by a
+// running container. Both commands run through
+// the runShell seam so tests can assert the exact strings and never touch a
+// real Docker daemon. Per the SPEC 13 lesson, success is judged on whether
+// both prune commands themselves succeeded — a prune that reclaims 0 bytes
+// (nothing to reclaim) is still a legitimate success, not a failure.
+const DISK_RECLAIM_COMMAND_TIMEOUT_MS = 120_000;
+const DISK_RECLAIM_DF_TIMEOUT_MS = 5_000;
+const DISK_RECLAIM_DF_COMMAND = "df -BG /";
+const DISK_RECLAIM_BUILDER_COMMAND = "docker builder prune -f";
+const DISK_RECLAIM_IMAGE_COMMAND = "docker image prune -f";
+
+type DfSnapshot = { usedGb: number; usedPct: number; raw: string };
+
+// Parses the data row of `df -BG /` (whole-GB granularity — precise enough to
+// report reclaimed space to an operator without a second byte-level parse
+// path. Typical output:
+//   Filesystem     1G-blocks  Used Available Use% Mounted on
+//   /dev/sda1           150G  107G       38G  74% /
+function parseDfGb(stdout: string): DfSnapshot | null {
+  const lines = stdout.trim().split("\n").filter((line) => line.trim().length > 0);
+  const dataLine = lines[lines.length - 1];
+  if (!dataLine) return null;
+  const parts = dataLine.trim().split(/\s+/);
+  if (parts.length < 5) return null;
+  const usedGb = parseInt(parts[2], 10);
+  const usedPct = parseInt(parts[4], 10);
+  if (!Number.isFinite(usedGb) || !Number.isFinite(usedPct)) return null;
+  return { usedGb, usedPct, raw: dataLine.trim() };
+}
+
+// Exported so tests can await the reclaim worker directly, same pattern as
+// runInfraServiceRestart/runInfraTimerRun above.
+export async function runDiskReclaim(jobId: string, reason: string | undefined): Promise<void> {
+  const beforeCapture = runShell(DISK_RECLAIM_DF_COMMAND, { timeout: DISK_RECLAIM_DF_TIMEOUT_MS });
+  const before = parseDfGb(beforeCapture.stdout);
+
+  // Sequential and in this exact order — runShell is synchronous, so this IS
+  // the ordering guarantee, not just a convention: builder cache first, then
+  // dangling images. Both always run regardless of the first's outcome so
+  // the operator gets maximum evidence; overall success requires both ok.
+  const builderResult = runShell(DISK_RECLAIM_BUILDER_COMMAND, { timeout: DISK_RECLAIM_COMMAND_TIMEOUT_MS });
+  const imageResult = runShell(DISK_RECLAIM_IMAGE_COMMAND, { timeout: DISK_RECLAIM_COMMAND_TIMEOUT_MS });
+
+  const afterCapture = runShell(DISK_RECLAIM_DF_COMMAND, { timeout: DISK_RECLAIM_DF_TIMEOUT_MS });
+  const after = parseDfGb(afterCapture.stdout);
+
+  const success = builderResult.ok && imageResult.ok;
+  const beforeUsedGb = before?.usedGb ?? null;
+  const afterUsedGb = after?.usedGb ?? null;
+  const reclaimedGb = beforeUsedGb !== null && afterUsedGb !== null ? beforeUsedGb - afterUsedGb : null;
+
+  const evidence = {
+    beforePct: before?.usedPct ?? null,
+    afterPct: after?.usedPct ?? null,
+    beforeUsedGb,
+    afterUsedGb,
+    reclaimedGb,
+    builderPruneOutput: builderResult.stdout,
+    imagePruneOutput: imageResult.stdout,
+    commands: [DISK_RECLAIM_DF_COMMAND, DISK_RECLAIM_BUILDER_COMMAND, DISK_RECLAIM_IMAGE_COMMAND, DISK_RECLAIM_DF_COMMAND],
+  };
+  const output = JSON.stringify(evidence);
+  const failureReason = !builderResult.ok
+    ? (builderResult.stderr || builderResult.error || "docker builder prune failed")
+    : !imageResult.ok
+    ? (imageResult.stderr || imageResult.error || "docker image prune failed")
+    : undefined;
+
+  updateJobOutput(jobId, output);
+  finishJob(jobId, success ? "success" : "failed", {
+    output,
+    exitCode: success ? 0 : 1,
+    error: success ? undefined : failureReason,
+  });
+  audit({
+    actionKind: "reclaim.disk-docker-prune.finished",
+    targetType: "disk",
+    targetId: "docker-prune",
+    risk: "medium",
+    reason,
+    request: {},
+    result: success
+      ? `docker prune reclaimed ${reclaimedGb ?? "unknown"}GB (before=${before?.usedPct ?? "?"}%, after=${after?.usedPct ?? "?"}%)`
+      : `docker prune failed: ${failureReason}`,
+    resultStatus: success ? "success" : "failed",
+    resultJson: evidence,
+    evidence: [
+      { label: "Builder cache prune", kind: "command", ref: DISK_RECLAIM_BUILDER_COMMAND },
+      { label: "Dangling image prune", kind: "command", ref: DISK_RECLAIM_IMAGE_COMMAND },
+      { label: "Before df -BG /", kind: "text", ref: before?.raw ?? "unknown" },
+      { label: "After df -BG /", kind: "text", ref: after?.raw ?? "unknown" },
+    ],
+    rollbackHint: "Pruned build cache and dangling images cannot be restored; rebuild or re-pull an image if one turns out to have still been needed.",
+    error: success ? undefined : failureReason,
+    jobId,
+  });
+}
