@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createJob, writeActionAudit } from "../db/writer.ts";
-import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun } from "./actions.ts";
+import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun, runSingleModelProbe } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
@@ -57,7 +57,7 @@ function parseActionId(actionId: string): ParsedActionId | null {
 }
 
 function getEnforcement(kind: string, targetType: string): { confirm: boolean; reasonRequired: boolean } {
-  if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh") {
+  if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "clear-cooldown") {
     return { confirm: false, reasonRequired: false };
   }
   if (kind === "start-job") {
@@ -83,6 +83,8 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
 function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
+  if (kind === "probe") return "low";
+  if (kind === "clear-cooldown") return "low";
   if (kind === "reclaim") return "medium";
   if (kind === "run") return "low";
   if (kind === "mutate-policy") {
@@ -102,6 +104,9 @@ function rollbackHintForActionId(actionId: string): string | undefined {
   if (kind === "mutate-policy" && targetType === "model") {
     if (suffix === "block") return `mutate-policy:model:${targetId}:unblock`;
     if (suffix === "unblock") return `mutate-policy:model:${targetId}:block`;
+  }
+  if (kind === "clear-cooldown" && targetType === "model") {
+    return `mutate-policy:model:${targetId}:block`;
   }
   if (kind === "start-job" && targetType === "gateway" && targetId === "route-healthiest") {
     return "start-job:gateway:clear-route-override";
@@ -323,6 +328,32 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       action: "start-job",
       message: "Gateway route override cleared.",
     };
+  }
+
+  if (kind === "probe" && targetType === "model") {
+    if (!targetId) return { ok: false, error: "model target required", code: "BAD_REQUEST" };
+    const jobId = randomUUID();
+    createJob({
+      id: jobId,
+      kind: "model-single-probe",
+      targetType: "model",
+      targetId,
+      command: `POST /v1/chat/completions model=${targetId} fallbacks=[]`,
+      request: body,
+    });
+    void runSingleModelProbe(jobId, targetId, body.reason);
+    return { ok: true, action: "probe", jobId, message: `${targetId} probe started` };
+  }
+
+  if (kind === "clear-cooldown" && targetType === "model") {
+    if (!targetId) return { ok: false, error: "model target required", code: "BAD_REQUEST" };
+    const cooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH || "/var/lib/mimule/model-cooldowns.json";
+    try {
+      clearModelCooldown(targetId, cooldownsPath);
+      return { ok: true, action: "clear-cooldown", message: `${targetId} cooldown cleared` };
+    } catch {
+      return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
+    }
   }
 
   // reclaim:disk:docker-prune — SPEC 15 / ULTRAPLAN P3 A3b. Job-backed,

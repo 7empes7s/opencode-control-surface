@@ -16,6 +16,7 @@ type CatalogInputs = {
   timers?: InfraDetail["timers"];
   queue?: QueueItem[];
   models?: ModelsDetail["models"];
+  modelCooldowns?: ModelsDetail["cooldowns"];
   articles?: NewsBitesDetail["articles"];
   incidents?: Array<{ ts: number; type: string; slug: string; stage: string; errorType: string }>;
   reasonerIncidents?: EscalatableIncident[];
@@ -210,7 +211,11 @@ function addQueueActions(actions: ActionDescriptor[], queue: QueueItem[] = []): 
   }
 }
 
-function addModelActions(actions: ActionDescriptor[], models: ModelsDetail["models"] = []): void {
+function addModelActions(
+  actions: ActionDescriptor[],
+  models: ModelsDetail["models"] = [],
+  cooldowns: ModelsDetail["cooldowns"] = [],
+): void {
   actions.push(descriptor({
     label: "Run quick check",
     kind: "start-job",
@@ -255,6 +260,48 @@ function addModelActions(actions: ActionDescriptor[], models: ModelsDetail["mode
         sourceRoute: "/models",
       }));
     }
+
+    actions.push(descriptor({
+      id: actionId("probe", "model", model.logicalName),
+      label: "Probe model",
+      kind: "probe",
+      targetType: "model",
+      targetId: model.logicalName,
+      risk: "low",
+      confirm: false,
+      reasonRequired: false,
+      evidenceRefs: [
+        fileEvidence("Model health", "/var/lib/mimule/model-health.json"),
+        apiEvidence("Models detail", "/api/models"),
+      ],
+      impactPreview: `Reprobe ${model.logicalName} through LiteLLM with fallbacks disabled and update only that model's health row.`,
+      rollbackHint: "Run the full model-health check or restore model-health.json from backup if the single probe produced bad evidence.",
+      expectedDurationMs: 30_000,
+      jobKind: "model-single-probe",
+      sourceRoute: "/models",
+      requiresOnline: true,
+    }));
+  }
+
+  for (const cooldown of cooldowns.slice(0, 150)) {
+    actions.push(descriptor({
+      id: actionId("clear-cooldown", "model", cooldown.model),
+      label: "Clear cooldown",
+      kind: "clear-cooldown",
+      targetType: "model",
+      targetId: cooldown.model,
+      risk: "low",
+      confirm: false,
+      reasonRequired: false,
+      evidenceRefs: [
+        fileEvidence("Model cooldowns", "/var/lib/mimule/model-cooldowns.json"),
+        apiEvidence("Models detail", "/api/models"),
+      ],
+      impactPreview: `Clear the active cooldown for ${cooldown.model}.`,
+      rollbackHint: `If clearing the cooldown was wrong, block ${cooldown.model} or wait for the next health check to reapply cooldown policy.`,
+      jobKind: "model-cooldown-clear",
+      sourceRoute: "/models",
+    }));
   }
 }
 
@@ -509,7 +556,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addServiceActions(actions, input.services);
   addTimerActions(actions, input.timers);
   addQueueActions(actions, input.queue);
-  addModelActions(actions, input.models);
+  addModelActions(actions, input.models, input.modelCooldowns);
   addArticleActions(actions, input.articles);
   addIncidentEscalationActions(actions, input.reasonerIncidents);
   addDoctorActions(actions, input.doctorEntries);
@@ -602,6 +649,7 @@ export async function actionCatalogHandler(url: URL): Promise<Response> {
     timers,
     queue: pipeline?.queue,
     models: models?.models,
+    modelCooldowns: models?.cooldowns,
     articles,
     incidents,
     reasonerIncidents,

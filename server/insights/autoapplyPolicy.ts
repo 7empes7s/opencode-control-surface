@@ -11,7 +11,9 @@ export const SAFE_AUTO_ACTIONS: ReadonlySet<string> = new Set<string>([
   "start-job:infra:doctor-log-rotate",
 ]);
 
-export const COOLDOWN_CLEAR_POLICY_KEY = "mutate-policy:model:*:cooldown-clear";
+export const MODEL_PROBE_POLICY_KEY = "probe:model:*";
+
+export const COOLDOWN_CLEAR_POLICY_KEY = "clear-cooldown:model:*";
 
 // Promoted 2026-07-05 (ULTRAPLAN P2.4) — see docs/AUTOAPPLY_PROMOTION_REVIEW.md.
 // Retrying a timed-out builder pass is non-destructive: reasonerApplyPlaybookHandler
@@ -47,6 +49,10 @@ export const AUTO_ROLLBACK_AFFORDANCES: Readonly<Record<string, AutoApplyRollbac
     kind: "rollback",
     rollbackHint: "Restore /var/lib/mimule/doctor-log.jsonl from the timestamped .jsonl.gz archive recorded in the action result (gunzip it back in place).",
     recordedIds: "archive path in the audited action result message",
+  },
+  [MODEL_PROBE_POLICY_KEY]: {
+    kind: "read-only",
+    note: "Diagnostic single-model probe: re-observes one model with fallbacks disabled and refreshes only that model's health row. It changes no policy or routing rule by itself.",
   },
   [COOLDOWN_CLEAR_POLICY_KEY]: {
     kind: "rollback",
@@ -154,16 +160,21 @@ export function policyKeyForAction(actionId: string): string {
     const [, playbookId] = actionId.split(":");
     return `reasoner-remediate:${playbookId ?? ""}`;
   }
-  if (actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear")) {
+  if (actionId.startsWith("clear-cooldown:model:") || (actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear"))) {
     return COOLDOWN_CLEAR_POLICY_KEY;
   }
+  if (actionId.startsWith("probe:model:")) return MODEL_PROBE_POLICY_KEY;
   return actionId;
 }
 
 export function defaultTierForAction(actionId: string | null | undefined): RiskTier {
   if (!actionId) return "none";
   if (SAFE_AUTO_ACTIONS.has(actionId)) return "auto";
-  if (actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear")) return "auto";
+  // probe:model is a read-only diagnostic, but auto-promotion still requires the
+  // gate (docs/AUTOAPPLY_PROMOTION_REVIEW.md entry + operator OK), which it has NOT
+  // passed yet. Ship at review tier; flip to "auto" only when that gate clears.
+  if (actionId.startsWith("probe:model:")) return "review";
+  if (actionId.startsWith("clear-cooldown:model:") || (actionId.startsWith("mutate-policy:model:") && actionId.endsWith(":cooldown-clear"))) return "auto";
   // Promoted family (mirrors the cooldown-clear precedent): every
   // reasoner-remediate:pass-timeout:<workflowId>:<passId>[:<incidentId>] action
   // normalizes to PASS_TIMEOUT_RETRY_POLICY_KEY. Other playbooks stay review.

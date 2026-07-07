@@ -6,6 +6,22 @@ const MODEL_COOLDOWNS_PATH = "/var/lib/mimule/model-cooldowns.json";
 const MODEL_QUALITY_PATH = "/var/lib/mimule/model-quality.json";
 const MODEL_DISCOVERY_LOG_PATH = "/var/lib/mimule/model-discovery-log.jsonl";
 
+function modelHealthPath(): string {
+  return process.env.DASHBOARD_MODEL_HEALTH_PATH || MODEL_HEALTH_PATH;
+}
+
+function modelCooldownsPath(): string {
+  return process.env.DASHBOARD_MODEL_COOLDOWNS_PATH || MODEL_COOLDOWNS_PATH;
+}
+
+function modelQualityPath(): string {
+  return process.env.DASHBOARD_MODEL_QUALITY_PATH || MODEL_QUALITY_PATH;
+}
+
+function modelDiscoveryLogPath(): string {
+  return process.env.DASHBOARD_MODEL_DISCOVERY_LOG_PATH || MODEL_DISCOVERY_LOG_PATH;
+}
+
 function readJson<T>(path: string): T | null {
   try { return readJsonFileAtomic<T | null>(path, { fallback: null }); }
   catch { return null; }
@@ -43,8 +59,8 @@ export interface ModelHealth {
 }
 
 export function getModelHealth(): ModelHealth {
-  const health = readJson<Record<string, unknown>>(MODEL_HEALTH_PATH);
-  const cooldowns = readJson<Record<string, { expiresAt?: number }>>(MODEL_COOLDOWNS_PATH) ?? {};
+  const health = readJson<Record<string, unknown>>(modelHealthPath());
+  const cooldowns = readJson<Record<string, { expiresAt?: number }>>(modelCooldownsPath()) ?? {};
   const now = Date.now();
 
   const cooldownEntries = Object.values(cooldowns);
@@ -181,9 +197,9 @@ function detectOpenCode(name: string): boolean {
 }
 
 export function getModelsDetail(): ModelsDetailData {
-  const health = readJson<Record<string, unknown>>(MODEL_HEALTH_PATH);
-  const cooldownsRaw = readJson<Record<string, { expiresAt?: number; startedAt?: number; reason?: string }>>(MODEL_COOLDOWNS_PATH) ?? {};
-  const qualityRaw = readJson<{ models?: Record<string, { status?: string; recentFailures?: number[]; consecutiveGarbage?: number }> }>(MODEL_QUALITY_PATH);
+  const health = readJson<Record<string, unknown>>(modelHealthPath());
+  const cooldownsRaw = readJson<Record<string, { expiresAt?: number; startedAt?: number; reason?: string }>>(modelCooldownsPath()) ?? {};
+  const qualityRaw = readJson<{ models?: Record<string, { status?: string; recentFailures?: number[]; consecutiveGarbage?: number }> }>(modelQualityPath());
 
   const now = Date.now();
   const qualityModels = qualityRaw?.models ?? {};
@@ -249,7 +265,7 @@ export function getModelsDetail(): ModelsDetailData {
 
   // Discovery log
   const discoveryLog: DiscoveryLogEntry[] = [];
-  for (const line of tailJsonlLines(MODEL_DISCOVERY_LOG_PATH, 100)) {
+  for (const line of tailJsonlLines(modelDiscoveryLogPath(), 100)) {
     try { discoveryLog.push(JSON.parse(line) as DiscoveryLogEntry); } catch {}
   }
 

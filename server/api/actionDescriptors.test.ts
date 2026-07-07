@@ -53,7 +53,7 @@ test("catalog omits synthetic incident lifecycle descriptors", () => {
   expect(incidentActions).toEqual([]);
 });
 
-test("catalog includes model policy descriptors with audit-ready metadata", () => {
+test("catalog includes model action descriptors with audit-ready metadata", () => {
   const actions = buildActionCatalog({
     models: [
       {
@@ -77,12 +77,24 @@ test("catalog includes model policy descriptors with audit-ready metadata", () =
         resolvedModel: "llama-3.3-70b-versatile",
       },
     ],
+    modelCooldowns: [
+      { model: "editorial-heavy", startedAt: 1000, expiresAt: 2000, reason: "rate limit" },
+    ],
   });
 
   const block = actions.find((action) => action.id === "mutate-policy:model:editorial-heavy:block");
+  const probe = actions.find((action) => action.id === "probe:model:editorial-heavy");
+  const cooldown = actions.find((action) => action.id === "clear-cooldown:model:editorial-heavy");
 
   expect(block?.kind).toBe("mutate-policy");
   expect(block?.confirm).toBe(true);
   expect(block?.reasonRequired).toBe(true);
   expect(block?.rollbackHint).toContain("inverse");
+  expect(probe?.kind).toBe("probe");
+  expect(probe?.risk).toBe("low");
+  expect(probe?.confirm).toBe(false);
+  expect(probe?.jobKind).toBe("model-single-probe");
+  expect(cooldown?.kind).toBe("clear-cooldown");
+  expect(cooldown?.risk).toBe("low");
+  expect(cooldown?.confirm).toBe(false);
 });

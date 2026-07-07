@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { createJob, readJob } from "../db/writer.ts";
-import { runNewsBitesDeployContentHealthScan } from "./actions.ts";
+import { runNewsBitesDeployContentHealthScan, runSingleModelProbe, setSingleModelProbeFetchForTests } from "./actions.ts";
 
 let tempDir: string;
 let previousDashboardDb: string | undefined;
@@ -13,6 +13,8 @@ let previousArticlesPath: string | undefined;
 let previousPublicPath: string | undefined;
 let previousAllowedVerticals: string | undefined;
 let previousDigestMinWords: string | undefined;
+let previousModelHealthPath: string | undefined;
+let previousLiteLLMKey: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -23,13 +25,18 @@ beforeEach(() => {
   previousPublicPath = process.env.DASHBOARD_CONTENT_PUBLIC_PATH;
   previousAllowedVerticals = process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS;
   previousDigestMinWords = process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS;
+  previousModelHealthPath = process.env.DASHBOARD_MODEL_HEALTH_PATH;
+  previousLiteLLMKey = process.env.LITELLM_MASTER_KEY;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  process.env.DASHBOARD_MODEL_HEALTH_PATH = join(tempDir, "model-health.json");
+  process.env.LITELLM_MASTER_KEY = "test-key";
   initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
 });
 
 afterEach(() => {
   closeDashboardDb();
+  setSingleModelProbeFetchForTests(null);
   if (previousDashboardDb === undefined) delete process.env.DASHBOARD_DB;
   else process.env.DASHBOARD_DB = previousDashboardDb;
   if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
@@ -42,6 +49,10 @@ afterEach(() => {
   else process.env.DASHBOARD_CONTENT_ALLOWED_VERTICALS = previousAllowedVerticals;
   if (previousDigestMinWords === undefined) delete process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS;
   else process.env.DASHBOARD_CONTENT_DIGEST_MIN_WORDS = previousDigestMinWords;
+  if (previousModelHealthPath === undefined) delete process.env.DASHBOARD_MODEL_HEALTH_PATH;
+  else process.env.DASHBOARD_MODEL_HEALTH_PATH = previousModelHealthPath;
+  if (previousLiteLLMKey === undefined) delete process.env.LITELLM_MASTER_KEY;
+  else process.env.LITELLM_MASTER_KEY = previousLiteLLMKey;
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -97,5 +108,56 @@ test("successful NewsBites deploy triggers a content health scan with job and au
     action_kind: "content-health.post-deploy-scan",
     result_status: "success",
     result: "generated 1 finding",
+  });
+});
+
+test("single-model probe updates only the requested model health row", async () => {
+  writeFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, JSON.stringify({
+    checkedAt: 1,
+    models: [
+      { logicalName: "editorial-heavy", available: false, latency: null, error: "stale", checkedAt: 1, jsonOk: false },
+      { logicalName: "fast-fallback", available: true, latency: 10, error: null, checkedAt: 1, jsonOk: true },
+    ],
+  }));
+
+  setSingleModelProbeFetchForTests(async (_url, init) => {
+    expect(init?.body ? JSON.parse(String(init.body)).fallbacks : null).toEqual([]);
+    return new Response(JSON.stringify({
+      model: "editorial-heavy",
+      choices: [{ message: { content: "{\"status\":\"ok\"}" } }],
+    }), { status: 200 });
+  });
+
+  createJob({
+    id: "probe-job-1",
+    kind: "model-single-probe",
+    targetType: "model",
+    targetId: "editorial-heavy",
+    command: "probe",
+    request: {},
+  });
+
+  await runSingleModelProbe("probe-job-1", "editorial-heavy", "test");
+
+  const health = JSON.parse(readFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, "utf8")) as {
+    lastSingleProbeAt: number;
+    models: Array<{ logicalName: string; available: boolean; latency: number; error: string | null; checkedAt: number; jsonOk: boolean }>;
+  };
+  const probed = health.models.find((model) => model.logicalName === "editorial-heavy");
+  const untouched = health.models.find((model) => model.logicalName === "fast-fallback");
+  const job = readJob("probe-job-1");
+  const audit = getDashboardDb()!.query("SELECT action_id, result_status, job_id FROM action_audit WHERE action_id = ?")
+    .get("probe:model:editorial-heavy") as { action_id: string; result_status: string; job_id: string } | null;
+
+  expect(health.lastSingleProbeAt).toBeGreaterThan(1);
+  expect(probed?.available).toBe(true);
+  expect(probed?.error).toBeNull();
+  expect(probed?.jsonOk).toBe(true);
+  expect(untouched?.checkedAt).toBe(1);
+  expect(job?.status).toBe("success");
+  expect(audit).toEqual({
+    action_id: "probe:model:editorial-heavy",
+    result_status: "success",
+    job_id: "probe-job-1",
   });
 });

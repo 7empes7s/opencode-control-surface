@@ -86,8 +86,10 @@ export interface ActionDescriptor {
     | "escalate"
     | "external-link"
     | "copy-command"
+    | "clear-cooldown"
     | "export"
     | "preview"
+    | "probe"
     | "reclaim"
     | "run";
   targetType: string;

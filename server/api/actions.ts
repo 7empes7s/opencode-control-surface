@@ -1,5 +1,6 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
 import { runShell } from "./shell.ts";
@@ -13,6 +14,10 @@ import {
 import { requireMutation } from "../governance/rbac.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
+const MODEL_HEALTH_PATH = "/var/lib/mimule/model-health.json";
+const LITELLM_ENV_PATH = "/etc/litellm/litellm.env";
+const SINGLE_MODEL_PROBE_TIMEOUT_MS = 30_000;
+const SINGLE_MODEL_PROBE_PROMPT = 'Reply with exactly this JSON object on one line, nothing else: {"status":"ok"}';
 
 export const ALLOWED_SERVICES = [
   "newsbites", "newsbites-autopipeline", "litellm", "opencode-server",
@@ -48,6 +53,62 @@ function reasonFromBody(body: unknown): string | undefined {
   return body && typeof body === "object" && "reason" in body
     ? String((body as { reason?: unknown }).reason ?? "") || undefined
     : undefined;
+}
+
+function modelHealthPath(): string {
+  return process.env.DASHBOARD_MODEL_HEALTH_PATH || MODEL_HEALTH_PATH;
+}
+
+function loadEnvValue(filePath: string, name: string): string | null {
+  try {
+    for (const line of readFileSync(filePath, "utf8").split("\n")) {
+      const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+      if (match?.[1] === name) return match[2].trim().replace(/^['"]|['"]$/g, "");
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function litellmKey(): string | null {
+  return process.env.LITELLM_MASTER_KEY || loadEnvValue(LITELLM_ENV_PATH, "LITELLM_MASTER_KEY");
+}
+
+function extractAssistantContent(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { choices?: Array<{ message?: { content?: unknown }; text?: unknown }> };
+    const content = parsed.choices?.[0]?.message?.content ?? parsed.choices?.[0]?.text ?? "";
+    return typeof content === "object" && content !== null ? JSON.stringify(content) : String(content);
+  } catch {
+    return "";
+  }
+}
+
+function isParseableJsonResponse(content: string): boolean {
+  const text = content.trim();
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object";
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return false;
+    try {
+      const parsed = JSON.parse(match[0]);
+      return parsed !== null && typeof parsed === "object";
+    } catch {
+      return false;
+    }
+  }
+}
+
+type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+let singleModelProbeFetch: FetchLike = fetch;
+
+export function setSingleModelProbeFetchForTests(fn: FetchLike | null): void {
+  singleModelProbeFetch = fn ?? fetch;
 }
 
 // Fail-closed: rejects when OPERATOR_TOKEN is not set (prevents dev-bootstrap
@@ -173,6 +234,36 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
     }
   }
 
+  if (action === "probe-model") {
+    if (!model) return json({ error: "model required" }, 400);
+    const jobId = randomUUID();
+    createJob({
+      id: jobId,
+      kind: "model-single-probe",
+      targetType: "model",
+      targetId: model,
+      command: `POST /v1/chat/completions model=${model} fallbacks=[]`,
+      evidence: [{ label: "Model health", kind: "file", ref: modelHealthPath() }],
+      request: body,
+    });
+    void runSingleModelProbe(jobId, model, reasonFromBody(body));
+    audit({
+      actionKind: "models.single-probe",
+      actionId: `probe:model:${model}`,
+      targetType: "model",
+      targetId: model,
+      risk: "low",
+      reason: reasonFromBody(body),
+      request: body,
+      result: `${model} probe started`,
+      resultStatus: "success",
+      evidence: [{ label: "Model health", kind: "file", ref: modelHealthPath() }],
+      rollbackHint: "Run the full model-health check if a single probe writes bad evidence.",
+      jobId,
+    });
+    return json({ ok: true, jobId, message: `${model} probe started` });
+  }
+
   if (action === "block" || action === "unblock" || action === "probation-clear") {
     if (!model) return json({ error: "model required" }, 400);
     try {
@@ -252,6 +343,172 @@ export async function modelsActionHandler(req: Request): Promise<Response> {
     error: `unknown action: ${action}`,
   });
   return json({ error: `unknown action: ${action}` }, 400);
+}
+
+type ModelHealthFile = {
+  checkedAt?: number;
+  checkedAtISO?: string;
+  lastSingleProbeAt?: number;
+  lastSingleProbeAtISO?: string;
+  models?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
+
+async function probeLogicalModel(logicalName: string): Promise<{
+  available: boolean;
+  latency: number;
+  error?: string;
+  resolvedModel?: string | null;
+  jsonOk?: boolean;
+  sampleContent?: string;
+}> {
+  const key = litellmKey();
+  if (!key) return { available: false, latency: 0, error: "missing LITELLM_MASTER_KEY" };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SINGLE_MODEL_PROBE_TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const res = await singleModelProbeFetch("http://127.0.0.1:4000/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${key}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: logicalName,
+        messages: [{ role: "user", content: SINGLE_MODEL_PROBE_PROMPT }],
+        temperature: 0,
+        max_tokens: 40,
+        store: false,
+        fallbacks: [],
+      }),
+    });
+    clearTimeout(timer);
+    const latency = Date.now() - started;
+    const text = await res.text().catch(() => "");
+    if (!res.ok) return { available: false, latency, error: `HTTP ${res.status}: ${text.slice(0, 160)}` };
+    const content = extractAssistantContent(text);
+    let resolvedModel: string | null = null;
+    try {
+      const parsed = JSON.parse(text) as { model?: unknown };
+      resolvedModel = typeof parsed.model === "string" ? parsed.model : null;
+    } catch {
+      // ignore
+    }
+    return {
+      available: true,
+      latency,
+      resolvedModel,
+      jsonOk: isParseableJsonResponse(content),
+      sampleContent: content.slice(0, 80),
+    };
+  } catch (error) {
+    clearTimeout(timer);
+    const name = error instanceof Error ? error.name : "";
+    return {
+      available: false,
+      latency: Date.now() - started,
+      error: name === "AbortError" ? "timeout" : errorMessage(error),
+    };
+  }
+}
+
+export async function runSingleModelProbe(jobId: string, logicalName: string, reason: string | undefined): Promise<void> {
+  const path = modelHealthPath();
+  const now = Date.now();
+  let health: ModelHealthFile;
+  try {
+    health = JSON.parse(readFileSync(path, "utf8")) as ModelHealthFile;
+  } catch (error) {
+    const message = `model health file unreadable: ${errorMessage(error)}`;
+    finishJob(jobId, "failed", { output: message, exitCode: 1, error: message });
+    audit({
+      actionKind: "models.single-probe.finished",
+      actionId: `probe:model:${logicalName}`,
+      targetType: "model",
+      targetId: logicalName,
+      risk: "low",
+      reason,
+      request: { logicalName, path },
+      resultStatus: "failed",
+      result: message,
+      error: message,
+      jobId,
+    });
+    return;
+  }
+
+  const models = Array.isArray(health.models) ? health.models : [];
+  const index = models.findIndex((model) => model.logicalName === logicalName);
+  if (index < 0) {
+    const message = `model not found in health file: ${logicalName}`;
+    finishJob(jobId, "failed", { output: message, exitCode: 1, error: message });
+    audit({
+      actionKind: "models.single-probe.finished",
+      actionId: `probe:model:${logicalName}`,
+      targetType: "model",
+      targetId: logicalName,
+      risk: "low",
+      reason,
+      request: { logicalName, path },
+      resultStatus: "failed",
+      result: message,
+      error: message,
+      evidence: [{ label: "Model health", kind: "file", ref: path }],
+      jobId,
+    });
+    return;
+  }
+
+  const previous = models[index];
+  const probe = await probeLogicalModel(logicalName);
+  models[index] = {
+    ...previous,
+    available: probe.available,
+    latency: probe.latency,
+    error: probe.available ? null : probe.error ?? "probe failed",
+    checkedAt: now,
+    lastTestedAt: now,
+    jsonOk: probe.jsonOk ?? previous.jsonOk ?? false,
+    resolvedModel: probe.resolvedModel ?? previous.resolvedModel ?? null,
+    unavailableSince: probe.available ? null : previous.unavailableSince ?? now,
+  };
+  health.models = models;
+  health.checkedAt = now;
+  health.checkedAtISO = new Date(now).toISOString();
+  health.lastSingleProbeAt = now;
+  health.lastSingleProbeAtISO = health.checkedAtISO;
+  const dir = path.slice(0, path.lastIndexOf("/"));
+  if (dir) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, `${JSON.stringify(health, null, 2)}\n`, "utf8");
+
+  const output = JSON.stringify({ logicalName, ...probe, healthPath: path });
+  updateJobOutput(jobId, output);
+  finishJob(jobId, probe.available ? "success" : "failed", {
+    output,
+    exitCode: probe.available ? 0 : 1,
+    error: probe.available ? undefined : probe.error ?? "probe failed",
+  });
+  audit({
+    actionKind: "models.single-probe.finished",
+    actionId: `probe:model:${logicalName}`,
+    targetType: "model",
+    targetId: logicalName,
+    risk: "low",
+    reason,
+    request: { logicalName },
+    resultStatus: probe.available ? "success" : "failed",
+    result: probe.available
+      ? `${logicalName} probe succeeded (${probe.latency}ms)`
+      : `${logicalName} probe failed: ${probe.error ?? "unknown"}`,
+    resultJson: { logicalName, ...probe },
+    evidence: [{ label: "Model health", kind: "file", ref: path }],
+    rollbackHint: "Restore the previous model-health.json from backup if this probe produced bad evidence; otherwise run the full model-health check.",
+    error: probe.available ? undefined : probe.error ?? "probe failed",
+    jobId,
+  });
 }
 
 // POST /api/doctor/scan — durable job wrapper

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
@@ -9,14 +9,17 @@ describe("executeActionHandler", () => {
   let tempDir: string;
   let previousDashboardDb: string | undefined;
   let previousDashboardDbPath: string | undefined;
+  let previousCooldownsPath: string | undefined;
 
   beforeEach(() => {
     closeDashboardDb();
     tempDir = mkdtempSync(join(tmpdir(), "execute-api-"));
     previousDashboardDb = process.env.DASHBOARD_DB;
     previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
+    previousCooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+    process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = join(tempDir, "model-cooldowns.json");
     initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   });
 
@@ -26,6 +29,8 @@ describe("executeActionHandler", () => {
     else process.env.DASHBOARD_DB = previousDashboardDb;
     if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
     else process.env.DASHBOARD_DB_PATH = previousDashboardDbPath;
+    if (previousCooldownsPath === undefined) delete process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
+    else process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = previousCooldownsPath;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -122,6 +127,33 @@ describe("executeActionHandler", () => {
     expect(result.ok).toBe(true);
     expect(result.action).toBe("copy-command");
     expect(result.text).toContain("docker inspect");
+  });
+
+  it("clears model cooldown through the canonical low-risk A4 action id", async () => {
+    writeFileSync(process.env.DASHBOARD_MODEL_COOLDOWNS_PATH!, JSON.stringify({
+      "editorial-heavy": { expiresAt: 2000, reason: "rate-limit" },
+      "other-model": { expiresAt: 3000, reason: "keep" },
+    }));
+
+    const { status, result } = await makeRequest({
+      actionId: "clear-cooldown:model:editorial-heavy",
+      reason: "test clear",
+    });
+
+    const cooldowns = JSON.parse(readFileSync(process.env.DASHBOARD_MODEL_COOLDOWNS_PATH!, "utf8")) as Record<string, unknown>;
+    const audit = getDashboardDb()!.query("SELECT action_id, risk, result_status FROM action_audit WHERE action_id = ?")
+      .get("clear-cooldown:model:editorial-heavy") as { action_id: string; risk: string; result_status: string } | null;
+
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe("clear-cooldown");
+    expect(cooldowns["editorial-heavy"]).toBeUndefined();
+    expect(cooldowns["other-model"]).toBeTruthy();
+    expect(audit).toEqual({
+      action_id: "clear-cooldown:model:editorial-heavy",
+      risk: "low",
+      result_status: "success",
+    });
   });
 
   it("10. external-link for article returns article URL", async () => {
