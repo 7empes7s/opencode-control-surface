@@ -156,6 +156,61 @@ describe("executeActionHandler", () => {
     });
   });
 
+  it("rotates a gateway key through the governed medium-risk action path", async () => {
+    const now = Date.now();
+    getDashboardDb()!.query(`
+      INSERT INTO gateway_keys
+        (id, agent_id, name, key_hash, model_allowlist, daily_cap_usd, status, created_at, last_used_at, tenant_id, rotated_from_key_id, rotation_revoke_at)
+      VALUES ('gk-exec-rotate', 'agent-a', 'exec key', 'exec-key-hash', 'model-a', 4.5, 'active', ?, NULL, 'mimule', NULL, NULL)
+    `).run(now);
+
+    const confirmGate = await makeRequest({
+      actionId: "rotate:gateway-key:gk-exec-rotate",
+      reason: "test rotation",
+    });
+    expect(confirmGate.status).toBe(400);
+    expect(confirmGate.result.code).toBe("CONFIRM_REQUIRED");
+
+    const reasonGate = await makeRequest({
+      actionId: "rotate:gateway-key:gk-exec-rotate",
+      confirmed: true,
+    });
+    expect(reasonGate.status).toBe(400);
+    expect(reasonGate.result.code).toBe("REASON_REQUIRED");
+
+    const { status, result } = await makeRequest({
+      actionId: "rotate:gateway-key:gk-exec-rotate",
+      confirmed: true,
+      reason: "test rotation",
+      params: { graceSeconds: 120 },
+    });
+
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe("rotate");
+    expect(result.result.key).toStartWith("gwk_");
+    expect(result.result.record.rotatedFromKeyId).toBe("gk-exec-rotate");
+    expect(result.result.record.agentId).toBe("agent-a");
+    expect(result.result.record.name).toBe("exec key");
+    expect(result.result.record.modelAllowlist).toEqual(["model-a"]);
+    expect(result.result.record.dailyCapUsd).toBe(4.5);
+    expect(result.result.rotationRevokeAt).toBeGreaterThanOrEqual(now + 120_000);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_id, risk, reason, result_status
+      FROM action_audit
+      WHERE action_id = ? AND result_status = 'success'
+      ORDER BY id DESC
+      LIMIT 1
+    `).get("rotate:gateway-key:gk-exec-rotate") as { action_id: string; risk: string; reason: string; result_status: string } | null;
+    expect(audit).toEqual({
+      action_id: "rotate:gateway-key:gk-exec-rotate",
+      risk: "medium",
+      reason: "test rotation",
+      result_status: "success",
+    });
+  });
+
   it("10. external-link for article returns article URL", async () => {
     const { status, result } = await makeRequest({
       actionId: "external-link:article:some-slug",

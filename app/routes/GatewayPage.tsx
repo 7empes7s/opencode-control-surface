@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Download, RefreshCw, Route, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
+import { ChevronRight, Copy, Download, RefreshCw, Route, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
@@ -68,6 +68,20 @@ type LedgerRow = {
   trace_id: string | null;
 };
 
+type GatewayKeyRecord = {
+  id: string;
+  agentId: string;
+  name: string;
+  modelAllowlist: string[];
+  dailyCapUsd: number | null;
+  status: "active" | "revoked";
+  createdAt: number;
+  lastUsedAt: number | null;
+  tenantId: string | null;
+  rotatedFromKeyId: string | null;
+  rotationRevokeAt: number | null;
+};
+
 type GatewayShowback = {
   window: string;
   byModel: Array<{ model: string; calls: number; costUsd: number }>;
@@ -85,6 +99,7 @@ type GatewayShowback = {
 };
 
 type ActionFeedback = { type: "success" | "error"; message: string } | null;
+type OneTimeGatewayKey = { key: string; record: GatewayKeyRecord; rotationRevokeAt: number | null } | null;
 
 function circuitColor(state: CircuitState): string {
   if (state === "closed") return "green";
@@ -112,6 +127,10 @@ function fmtCost(usd: number | null): string {
   return `$${usd.toFixed(6)}`;
 }
 
+function fmtDailyCap(usd: number | null): string {
+  return usd == null ? "uncapped" : `$${usd.toFixed(2)}/day`;
+}
+
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
 }
@@ -130,6 +149,7 @@ export function GatewayPage() {
   const [sinceHours, setSinceHours] = useState(24);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
+  const [oneTimeKey, setOneTimeKey] = useState<OneTimeGatewayKey>(null);
   const [selectedCall, setSelectedCall] = useState<LedgerRow | null>(null);
   const since = Date.now() - sinceHours * 3_600_000;
 
@@ -137,11 +157,13 @@ export function GatewayPage() {
   const { data: statsData, loading: statsLoading, error: statsError, refresh: refreshStats } = useApi<GatewayStats>(`/api/gateway/stats?since=${since}`, 30_000);
   const { data: ledgerData, loading: ledgerLoading, error: ledgerError, refresh: refreshLedger } = useApi<{ rows: LedgerRow[]; lastUpdatedAt: string }>("/api/gateway/ledger?limit=100", 30_000);
   const { data: showbackData } = useAuthenticatedApi<GatewayShowback>("/api/gateway/showback", 60_000);
+  const { data: keysData, loading: keysLoading, error: keysError, refresh: refreshKeys } = useAuthenticatedApi<{ keys: GatewayKeyRecord[] }>("/api/gateway/keys", 30_000);
   const gatewayActions = useAuthenticatedApi<never>("", 0);
 
   const status = statusData;
   const stats = statsData;
   const rows = ledgerData?.rows ?? [];
+  const gatewayKeys = keysData?.keys ?? [];
   const callsCtrl = useTableControls<LedgerRow, "ts" | "logical_model" | "resolved_model" | "tokens" | "latency_ms" | "cost_estimate_usd" | "success" | "tier">({
     rows,
     pageSize: 25,
@@ -171,16 +193,17 @@ export function GatewayPage() {
       }
     },
   });
-  const loading = statusLoading || statsLoading || ledgerLoading;
+  const loading = statusLoading || statsLoading || ledgerLoading || keysLoading;
   const initialLoading = loading && !status && !stats && !ledgerData;
   const refreshing = loading && !initialLoading;
-  const error = statusError || statsError || ledgerError;
+  const error = statusError || statsError || ledgerError || keysError;
   const recommendation = status?.recommendations?.[0] ?? null;
   const updatedAt = lastUpdated(status, stats, ledgerData);
 
   const refresh = () => { refreshStatus(); refreshStats(); refreshLedger(); };
+  const refreshAll = () => { refresh(); refreshKeys(); };
   const refreshAfterAction = () => {
-    refresh();
+    refreshAll();
   };
 
   async function runAction(actionId: string, path: string, body: Record<string, unknown> = {}) {
@@ -201,6 +224,51 @@ export function GatewayPage() {
     } finally {
       setPendingAction(null);
     }
+  }
+
+  async function rotateGatewayKey(key: GatewayKeyRecord) {
+    const confirmed = window.confirm(`Rotate gateway key "${key.name}"? The old key remains valid during the grace period.`);
+    if (!confirmed) return;
+    const reason = window.prompt("Reason for rotating this gateway key");
+    if (!reason?.trim()) {
+      setFeedback({ type: "error", message: "A reason is required to rotate a gateway key." });
+      return;
+    }
+
+    setPendingAction(`rotate:${key.id}`);
+    setFeedback(null);
+    setOneTimeKey(null);
+    try {
+      const res = await gatewayActions.request(`/api/gateway/keys/${encodeURIComponent(key.id)}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true, reason: reason.trim() }),
+      });
+      const parsed = await res.json().catch(() => ({})) as {
+        data?: { key?: string; record?: GatewayKeyRecord; rotationRevokeAt?: number | null };
+        error?: string;
+      };
+      if (!res.ok || !parsed.data?.key || !parsed.data.record) {
+        throw new Error(parsed.error ?? `HTTP ${res.status}`);
+      }
+      setOneTimeKey({
+        key: parsed.data.key,
+        record: parsed.data.record,
+        rotationRevokeAt: parsed.data.rotationRevokeAt ?? null,
+      });
+      setFeedback({ type: "success", message: `Gateway key rotated. Copy the replacement key now; it will not be shown again.` });
+      refreshAfterAction();
+    } catch (err) {
+      setFeedback({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function copyOneTimeKey() {
+    if (!oneTimeKey) return;
+    await navigator.clipboard.writeText(oneTimeKey.key);
+    setFeedback({ type: "success", message: "Replacement key copied." });
   }
 
   function exportCsv() {
@@ -269,7 +337,7 @@ export function GatewayPage() {
         <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
           {status ? `v${status.version} · ${status.modelCount} models` : "waiting for gateway status"}
         </span>
-        <button onClick={refresh} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", color: "var(--text-dim)" }}>
+        <button onClick={refreshAll} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", color: "var(--text-dim)" }}>
           <RefreshCw size={12} /> refresh
         </button>
       </div>
@@ -426,7 +494,7 @@ export function GatewayPage() {
           <div style={{ color: "var(--text-dim)", marginTop: 4 }}>
             Check the gateway API and operator session, then retry. Existing data remains visible when available.
           </div>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={refresh} style={{ marginTop: 8 }}>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={refreshAll} style={{ marginTop: 8 }}>
             <RefreshCw size={13} /> Retry
           </button>
         </div>
@@ -473,6 +541,24 @@ export function GatewayPage() {
         </div>
       )}
 
+      {oneTimeKey && (
+        <div style={{ border: "1px solid color-mix(in oklch, var(--green) 45%, var(--border))", borderRadius: 8, padding: 12, marginBottom: 14, fontSize: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <strong>Replacement key for {oneTimeKey.record.name}</strong>
+            {oneTimeKey.rotationRevokeAt && <span className="pill amber">old key grace until {new Date(oneTimeKey.rotationRevokeAt).toLocaleString()}</span>}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={copyOneTimeKey}>
+              <Copy size={13} /> Copy
+            </button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setOneTimeKey(null)}>
+              Dismiss
+            </button>
+          </div>
+          <code style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, overflowWrap: "anywhere", background: "var(--bg-card-start)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+            {oneTimeKey.key}
+          </code>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
         <button disabled={pendingAction !== null} onClick={() => runAction("probe", "/api/gateway/probe")} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card-start)", color: "var(--text)", cursor: pendingAction ? "wait" : "pointer" }}>
           <Zap size={13} /> run probe
@@ -484,6 +570,77 @@ export function GatewayPage() {
           <Download size={13} /> export CSV
         </button>
       </div>
+
+      <SectionCard title="Gateway Keys" style={{ marginBottom: 20 }}>
+        <div className="section-card-body" style={{ padding: "12px 16px" }}>
+          {gatewayKeys.length === 0 ? (
+            <p style={{ fontSize: 12, color: "var(--text-dim)", margin: 0 }}>No gateway keys issued.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Scope</th>
+                    <th>Created</th>
+                    <th>Last used</th>
+                    <th className="cell-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gatewayKeys.map((key) => {
+                    const canRotate = key.status === "active" && key.rotationRevokeAt == null;
+                    return (
+                      <tr key={key.id}>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{key.name}</div>
+                          <div className="mono dim" style={{ fontSize: 11, overflowWrap: "anywhere" }}>{key.id}</div>
+                        </td>
+                        <td className="mono cell-ellipsis" title={key.agentId}>{key.agentId}</td>
+                        <td>
+                          <span className={`pill ${key.status === "active" ? "green" : "red"}`}>{key.status}</span>
+                          {key.rotationRevokeAt != null && (
+                            <span className="pill amber" title={new Date(key.rotationRevokeAt).toLocaleString()} style={{ marginLeft: 6 }}>
+                              grace until {new Date(key.rotationRevokeAt).toLocaleString()}
+                            </span>
+                          )}
+                          {key.rotatedFromKeyId && (
+                            <span className="pill" title={key.rotatedFromKeyId} style={{ marginLeft: 6 }}>replacement</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className="pill">{fmtDailyCap(key.dailyCapUsd)}</span>
+                          {key.modelAllowlist.length > 0 ? (
+                            key.modelAllowlist.slice(0, 3).map((model) => <span key={model} className="pill" title={model} style={{ marginLeft: 6 }}>{model}</span>)
+                          ) : (
+                            <span className="pill" style={{ marginLeft: 6 }}>all models</span>
+                          )}
+                        </td>
+                        <td className="mono dim">{fmtTs(key.createdAt)}</td>
+                        <td className="mono dim">{key.lastUsedAt == null ? "—" : fmtTs(key.lastUsedAt)}</td>
+                        <td className="cell-right">
+                          {canRotate && (
+                            <button
+                              type="button"
+                              disabled={pendingAction !== null}
+                              onClick={() => rotateGatewayKey(key)}
+                              style={{ fontSize: 10, padding: "3px 7px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-dim)", cursor: pendingAction ? "wait" : "pointer" }}
+                            >
+                              Rotate
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </SectionCard>
 
       {/* Stats strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>

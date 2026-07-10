@@ -4,6 +4,7 @@ import {
   createGatewayKey,
   listGatewayKeys,
   revokeGatewayKey,
+  rotateGatewayKey,
   type CreatedGatewayKey,
 } from "../gateway/keys.ts";
 import { writeActionAudit } from "../db/writer.ts";
@@ -36,6 +37,11 @@ async function readJsonBody(req: Request): Promise<Record<string, unknown>> {
 function reasonFromBody(body: Record<string, unknown>): string | undefined {
   const reason = body.reason;
   return typeof reason === "string" && reason.trim() ? reason.trim() : undefined;
+}
+
+function clampGraceSeconds(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : 86_400;
+  return Math.max(60, Math.min(30 * 86_400, Math.floor(raw)));
 }
 
 function auditKeys(input: Parameters<typeof writeActionAudit>[0]): void {
@@ -116,4 +122,49 @@ export async function revokeGatewayKeyHandler(req: Request, keyId: string): Prom
     result: `revoked gateway key ${keyId}`,
   });
   return json(ok({ ok: true, keyId }));
+}
+
+// POST /api/gateway/keys/:id/rotate
+export async function rotateGatewayKeyHandler(req: Request, keyId: string): Promise<Response> {
+  if (!keyId) return apiError("key id is required");
+  const body = await readJsonBody(req);
+  const reason = reasonFromBody(body);
+  if (body.confirmed !== true) {
+    return apiError("confirmation required", 400);
+  }
+  if (!reason) {
+    return apiError("reason required", 400);
+  }
+
+  const existing = listGatewayKeys().find((key) => key.id === keyId);
+  if (!existing) {
+    return apiError(`Gateway key ${keyId} was not found.`, 404);
+  }
+  if (existing.status !== "active" || existing.rotationRevokeAt != null) {
+    return apiError(`Gateway key ${keyId} is not rotatable.`, 409);
+  }
+
+  const graceSeconds = clampGraceSeconds(body.graceSeconds);
+  const rotated = rotateGatewayKey(keyId, { graceSeconds });
+  if (!rotated) {
+    return apiError(`Gateway key ${keyId} is not rotatable.`, 409);
+  }
+  const oldKey = listGatewayKeys().find((key) => key.id === keyId);
+  const rotationRevokeAt = oldKey?.rotationRevokeAt ?? null;
+
+  auditKeys({
+    actionKind: "gateway.key-rotated",
+    actionId: `gateway.key-rotated:${keyId}`,
+    targetId: keyId,
+    reason,
+    request: { keyId, graceSeconds },
+    resultStatus: "success",
+    result: `rotated gateway key ${keyId} to ${rotated.record.id}`,
+  });
+
+  return json(ok({
+    key: rotated.key,
+    record: rotated.record,
+    rotationRevokeAt,
+  }));
 }

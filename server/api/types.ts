@@ -91,7 +91,8 @@ export interface ActionDescriptor {
     | "preview"
     | "probe"
     | "reclaim"
-    | "run";
+    | "run"
+    | "rotate";
   targetType: string;
   targetId: string;
   risk: "low" | "medium" | "high" | "destructive";

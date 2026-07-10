@@ -6,6 +6,7 @@ import { createJob, writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun, runSingleModelProbe } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
+import { listGatewayKeys, rotateGatewayKey } from "../gateway/keys.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
@@ -57,6 +58,7 @@ function parseActionId(actionId: string): ParsedActionId | null {
 }
 
 function getEnforcement(kind: string, targetType: string): { confirm: boolean; reasonRequired: boolean } {
+  if (kind === "rotate" && targetType === "gateway-key") return { confirm: true, reasonRequired: true };
   if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "clear-cooldown") {
     return { confirm: false, reasonRequired: false };
   }
@@ -81,6 +83,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
 }
 
 function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
+  if (kind === "rotate" && targetType === "gateway-key") return "medium";
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
   if (kind === "probe") return "low";
@@ -133,6 +136,11 @@ type EscalationIncidentRow = {
 
 function safeEscalationId(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+}
+
+function clampGatewayKeyRotationGraceSeconds(value: unknown): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : 86_400;
+  return Math.max(60, Math.min(30 * 86_400, Math.floor(raw)));
 }
 
 function escalationSuggestedActions(json: string | null): string[] {
@@ -354,6 +362,29 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     } catch {
       return { ok: false, error: "execution failed", code: "EXEC_ERROR" };
     }
+  }
+
+  if (kind === "rotate" && targetType === "gateway-key") {
+    if (!targetId) return { ok: false, error: "gateway key target required", code: "BAD_REQUEST" };
+    const existing = listGatewayKeys().find((key) => key.id === targetId);
+    if (!existing) return { ok: false, error: "gateway key not found", code: "NOT_FOUND" };
+    if (existing.status !== "active" || existing.rotationRevokeAt != null) {
+      return { ok: false, error: "gateway key is not rotatable", code: "BAD_REQUEST" };
+    }
+    const graceSeconds = clampGatewayKeyRotationGraceSeconds(body.params?.graceSeconds);
+    const rotated = rotateGatewayKey(targetId, { graceSeconds });
+    if (!rotated) return { ok: false, error: "gateway key is not rotatable", code: "BAD_REQUEST" };
+    const oldKey = listGatewayKeys().find((key) => key.id === targetId);
+    return {
+      ok: true,
+      action: "rotate",
+      message: `gateway key ${targetId} rotated to ${rotated.record.id}`,
+      result: {
+        key: rotated.key,
+        record: rotated.record,
+        rotationRevokeAt: oldKey?.rotationRevokeAt ?? null,
+      },
+    };
   }
 
   // reclaim:disk:docker-prune — SPEC 15 / ULTRAPLAN P3 A3b. Job-backed,

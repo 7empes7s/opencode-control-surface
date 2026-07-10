@@ -5,6 +5,7 @@ import { getAllArticles } from "../adapters/newsbites.ts";
 import { getPipelineState, type QueueItem } from "../adapters/pipeline.ts";
 import { getServiceStatuses, getTimers } from "../adapters/system.ts";
 import { getVastAccount, getVastInstance } from "../adapters/vast.ts";
+import { listGatewayKeys } from "../gateway/keys.ts";
 import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS } from "./actions.ts";
 import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
@@ -305,6 +306,28 @@ function addModelActions(
   }
 }
 
+function addGatewayKeyActions(actions: ActionDescriptor[]): void {
+  for (const key of listGatewayKeys().slice(0, 150)) {
+    if (key.status !== "active" || key.rotationRevokeAt != null) continue;
+    actions.push(descriptor({
+      id: actionId("rotate", "gateway-key", key.id),
+      label: `Rotate ${key.name}`,
+      kind: "rotate",
+      targetType: "gateway-key",
+      targetId: key.id,
+      risk: "medium",
+      confirm: true,
+      reasonRequired: true,
+      evidenceRefs: [
+        apiEvidence("Gateway keys", "/api/gateway/keys"),
+      ],
+      impactPreview: `Issue a replacement gateway key for ${key.name}; the old key remains valid until the rotation grace period expires.`,
+      rollbackHint: "Revoke the replacement key before the old key's grace period expires if the rotation was accidental.",
+      sourceRoute: "/gateway",
+    }));
+  }
+}
+
 function addArticleActions(actions: ActionDescriptor[], articles: NewsBitesDetail["articles"] = []): void {
   for (const article of articles.slice(0, 150)) {
     const articlePath = `/opt/newsbites/content/articles/${article.slug}.md`;
@@ -557,6 +580,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addTimerActions(actions, input.timers);
   addQueueActions(actions, input.queue);
   addModelActions(actions, input.models, input.modelCooldowns);
+  addGatewayKeyActions(actions);
   addArticleActions(actions, input.articles);
   addIncidentEscalationActions(actions, input.reasonerIncidents);
   addDoctorActions(actions, input.doctorEntries);

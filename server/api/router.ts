@@ -196,6 +196,7 @@ import {
   listGatewayKeysHandler,
   createGatewayKeyHandler,
   revokeGatewayKeyHandler,
+  rotateGatewayKeyHandler,
 } from "./gatewayKeys.ts";
 import {
   reasonerJobsHandler,
@@ -1076,6 +1077,12 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return revokeGatewayKeyHandler(req, decodeURIComponent(gatewayKeyRevokeMatch[1]));
+  }
+  const gatewayKeyRotateMatch = pathname.match(/^\/api\/gateway\/keys\/([^/]+)\/rotate$/);
+  if (method === "POST" && gatewayKeyRotateMatch) {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return rotateGatewayKeyHandler(req, decodeURIComponent(gatewayKeyRotateMatch[1]));
   }
 
   // Cost Alias

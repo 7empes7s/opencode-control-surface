@@ -1211,6 +1211,8 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
 
   // Gateway
   ensureColumn(db, "gateway_calls", "tenant_id", "TEXT");
+  ensureColumn(db, "gateway_keys", "rotated_from_key_id", "TEXT");
+  ensureColumn(db, "gateway_keys", "rotation_revoke_at", "INTEGER");
 
   // Insights
   ensureColumn(db, "insights", "tenant_id", "TEXT");

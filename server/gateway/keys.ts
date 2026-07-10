@@ -7,6 +7,7 @@ import { getAgent } from "../agents/registry.ts";
 export const GATEWAY_KEY_PREFIX = "gwk_";
 const GATEWAY_KEY_RANDOM_BYTES = 20;
 const LAST_USED_THROTTLE_MS = 60_000;
+const DEFAULT_ROTATION_GRACE_SECONDS = 86_400;
 
 export type GatewayKeyStatus = "active" | "revoked";
 
@@ -20,6 +21,8 @@ export type GatewayKeyRecord = {
   createdAt: number;
   lastUsedAt: number | null;
   tenantId: string | null;
+  rotatedFromKeyId: string | null;
+  rotationRevokeAt: number | null;
 };
 
 type GatewayKeyRow = {
@@ -33,6 +36,8 @@ type GatewayKeyRow = {
   created_at: number;
   last_used_at: number | null;
   tenant_id: string | null;
+  rotated_from_key_id: string | null;
+  rotation_revoke_at: number | null;
 };
 
 function newKeyId(): string {
@@ -65,6 +70,8 @@ function rowToRecord(row: GatewayKeyRow): GatewayKeyRecord {
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     tenantId: row.tenant_id,
+    rotatedFromKeyId: row.rotated_from_key_id,
+    rotationRevokeAt: row.rotation_revoke_at,
   };
 }
 
@@ -119,8 +126,8 @@ export function createGatewayKey(
 
   db.query(`
     INSERT INTO gateway_keys
-      (id, agent_id, name, key_hash, model_allowlist, daily_cap_usd, status, created_at, last_used_at, tenant_id)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)
+      (id, agent_id, name, key_hash, model_allowlist, daily_cap_usd, status, created_at, last_used_at, tenant_id, rotated_from_key_id, rotation_revoke_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, NULL)
   `).run(id, agentId, name.trim(), keyHash, allowlist, dailyCapUsd, now, tenantId);
 
   const row = db.query(`SELECT * FROM gateway_keys WHERE id = ?`).get(id) as GatewayKeyRow;
@@ -133,6 +140,73 @@ export type VerifiedGatewayKey = {
   modelAllowlist: string[];
   dailyCapUsd: number | null;
 };
+
+export function rotateGatewayKey(
+  id: string,
+  opts: { graceSeconds?: number } = {},
+): CreatedGatewayKey | null {
+  if (!isDashboardDbEnabled()) return null;
+  const db = getDashboardDb();
+  if (!db) return null;
+  if (!id) return null;
+
+  const tenant = whereTenant();
+  const oldRow = db.query(`
+    SELECT * FROM gateway_keys
+    WHERE id = ? ${tenant.clause}
+  `).get(id, ...tenant.params) as GatewayKeyRow | null;
+
+  if (!oldRow || oldRow.status !== "active" || oldRow.rotation_revoke_at != null) {
+    return null;
+  }
+
+  const now = Date.now();
+  const graceSeconds = typeof opts.graceSeconds === "number" && Number.isFinite(opts.graceSeconds)
+    ? opts.graceSeconds
+    : DEFAULT_ROTATION_GRACE_SECONDS;
+  const rotationRevokeAt = now + graceSeconds * 1000;
+  const replacementId = newKeyId();
+  const plaintext = generatePlaintext();
+  const keyHash = hashKey(plaintext);
+
+  const rotate = db.transaction(() => {
+    db.query(`
+      INSERT INTO gateway_keys
+        (id, agent_id, name, key_hash, model_allowlist, daily_cap_usd, status, created_at, last_used_at, tenant_id, rotated_from_key_id, rotation_revoke_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, NULL)
+    `).run(
+      replacementId,
+      oldRow.agent_id,
+      oldRow.name,
+      keyHash,
+      oldRow.model_allowlist,
+      oldRow.daily_cap_usd,
+      now,
+      oldRow.tenant_id,
+      oldRow.id,
+    );
+
+    const result = db.query(`
+      UPDATE gateway_keys
+      SET rotation_revoke_at = ?
+      WHERE id = ? ${tenant.clause}
+        AND status = 'active'
+        AND rotation_revoke_at IS NULL
+    `).run(rotationRevokeAt, oldRow.id, ...tenant.params);
+    if (result.changes !== 1) {
+      throw new Error("gateway key is no longer rotatable");
+    }
+  });
+
+  try {
+    rotate();
+  } catch {
+    return null;
+  }
+
+  const row = db.query(`SELECT * FROM gateway_keys WHERE id = ?`).get(replacementId) as GatewayKeyRow;
+  return { key: plaintext, record: rowToRecord(row) };
+}
 
 export function verifyGatewayKey(plaintext: string): VerifiedGatewayKey | null {
   if (!isDashboardDbEnabled()) return null;
@@ -149,6 +223,19 @@ export function verifyGatewayKey(plaintext: string): VerifiedGatewayKey | null {
   if (!row) return null;
 
   const now = Date.now();
+  if (row.rotation_revoke_at != null && row.rotation_revoke_at <= now) {
+    try {
+      db.query(`
+        UPDATE gateway_keys
+        SET status = 'revoked'
+        WHERE id = ? AND status = 'active'
+      `).run(row.id);
+    } catch {
+      /* best-effort: expired rotation write failure should not break verification */
+    }
+    return null;
+  }
+
   if (row.last_used_at == null || now - row.last_used_at >= LAST_USED_THROTTLE_MS) {
     try {
       db.query(`UPDATE gateway_keys SET last_used_at = ? WHERE id = ?`).run(now, row.id);
