@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tenantStore } from "../tenancy/middleware.ts";
@@ -17,8 +17,11 @@ import {
   clearGatewayRouteOverrideForGatewayAdmin,
   getGatewayRouteOverrideForGatewayAdmin,
   getGatewayRoutePlanForGatewayAdmin,
+  resetGatewayRouteOverrideStateForTests,
   setCircuitStateForGatewayAdmin,
+  setGatewayRouteOverrideForGatewayAdmin,
 } from "../gateway/router.ts";
+import { _resetGatewayConfigCacheForTests } from "../gateway/config.ts";
 import { closeDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { readActionAudit } from "../db/writer.ts";
 
@@ -30,6 +33,7 @@ let tempDir: string;
 let prevDb: string | undefined;
 let prevDbPath: string | undefined;
 let prevOperatorToken: string | undefined;
+let prevGatewayConfig: string | undefined;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -37,8 +41,25 @@ beforeEach(() => {
   prevDb = process.env.DASHBOARD_DB;
   prevDbPath = process.env.DASHBOARD_DB_PATH;
   prevOperatorToken = process.env.OPERATOR_TOKEN;
+  prevGatewayConfig = process.env.GATEWAY_CONFIG;
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  process.env.GATEWAY_CONFIG = join(tempDir, "gateway.yaml");
+  writeFileSync(process.env.GATEWAY_CONFIG, `
+version: 1
+litellm_url: http://127.0.0.1:4000
+models:
+  editorial-heavy:
+    backend: litellm
+    model: editorial-heavy
+    tier: local
+  editorial-fast:
+    backend: litellm
+    model: editorial-fast
+    tier: local
+`);
+  _resetGatewayConfigCacheForTests();
+  resetGatewayRouteOverrideStateForTests();
   initDashboardDb({ path: join(tempDir, "dashboard.sqlite") });
   clearGatewayRouteOverrideForGatewayAdmin();
   setCircuitStateForGatewayAdmin("model-open", "closed");
@@ -49,6 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearGatewayRouteOverrideForGatewayAdmin();
+  resetGatewayRouteOverrideStateForTests();
   setCircuitStateForGatewayAdmin("model-open", "closed");
   setCircuitStateForGatewayAdmin("model-action", "closed");
   setCircuitStateForGatewayAdmin("opencode/nemotron-3-ultra-free", "closed");
@@ -60,6 +82,9 @@ afterEach(() => {
   else process.env.DASHBOARD_DB_PATH = prevDbPath;
   if (prevOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
   else process.env.OPERATOR_TOKEN = prevOperatorToken;
+  if (prevGatewayConfig === undefined) delete process.env.GATEWAY_CONFIG;
+  else process.env.GATEWAY_CONFIG = prevGatewayConfig;
+  _resetGatewayConfigCacheForTests();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -139,11 +164,13 @@ describe("gateway admin API", () => {
   test("status includes last-updated and healthy recommendation metadata", async () => {
     const res = gatewayStatusHandler();
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: { lastUpdatedAt: string; degraded: boolean; recommendations: unknown[]; routeOverride: unknown | null } };
+    const body = await res.json() as { data: { lastUpdatedAt: string; degraded: boolean; recommendations: unknown[]; routeOverride: unknown | null; modelCount: number; models: string[] } };
     expect(Date.parse(body.data.lastUpdatedAt)).toBeGreaterThan(0);
     expect(typeof body.data.degraded).toBe("boolean");
     expect(Array.isArray(body.data.recommendations)).toBe(true);
     expect(body.data.routeOverride).toBeNull();
+    expect(body.data.models.length).toBe(body.data.modelCount);
+    expect(body.data.models.length).toBeGreaterThan(0);
   });
 
   test("status reports open circuit, high error rate, and high latency recommendations", async () => {
@@ -197,18 +224,24 @@ describe("gateway admin API", () => {
 
   test("probe action returns structured failure", async () => {
     process.env.OPERATOR_TOKEN = "test-token";
-    const req = new Request("http://localhost/api/gateway/probe", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-operator-token": "test-token" },
-      body: JSON.stringify({ model: "missing-probe-model", reason: "test probe" }),
-    });
-    const res = await handleApi(req, new URL(req.url));
-    expect(res.status).toBe(502);
-    const body = await res.json() as { data: { ok: boolean; model: string; error: string; latencyMs: number } };
-    expect(body.data.ok).toBe(false);
-    expect(body.data.model).toBe("missing-probe-model");
-    expect(body.data.error.length).toBeGreaterThan(0);
-    expect(body.data.latencyMs).toBeGreaterThanOrEqual(0);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.reject(new Error("synthetic probe failure"))) as unknown as typeof fetch;
+    try {
+      const req = new Request("http://localhost/api/gateway/probe", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
+        body: JSON.stringify({ model: "missing-probe-model", reason: "test probe" }),
+      });
+      const res = await handleApi(req, new URL(req.url));
+      expect(res.status).toBe(502);
+      const body = await res.json() as { data: { ok: boolean; model: string; error: string; latencyMs: number } };
+      expect(body.data.ok).toBe(false);
+      expect(body.data.model).toBe("missing-probe-model");
+      expect(body.data.error).toContain("synthetic probe failure");
+      expect(body.data.latencyMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("authenticated route-healthiest action sets an audited route override used by future chains", async () => {
@@ -235,6 +268,84 @@ describe("gateway admin API", () => {
 
     const audit = readActionAudit({ targetType: "gateway" });
     expect(audit.some((row) => row.actionKind === "gateway.route-healthiest" && row.targetId === body.data.selected.logicalName && row.resultStatus === "success")).toBe(true);
+  });
+
+  test("route override pin validates confirmation, reason, and configured model before auditing success", async () => {
+    process.env.OPERATOR_TOKEN = "test-token";
+    const request = (body: Record<string, unknown>) => {
+      const req = new Request("http://localhost/api/gateway/route-override", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-operator-token": "test-token",
+          "x-tenant-id": "mimule",
+          "x-actor": "pin-test-operator",
+        },
+        body: JSON.stringify(body),
+      });
+      return handleApi(req, new URL(req.url));
+    };
+
+    const unconfirmed = await request({ model: "editorial-heavy", reason: "test pin" });
+    expect(unconfirmed.status).toBe(400);
+
+    const noReason = await request({ model: "editorial-heavy", confirmed: true });
+    expect(noReason.status).toBe(400);
+
+    const unknown = await request({ model: "definitely-unknown-model", confirmed: true, reason: "test pin" });
+    expect(unknown.status).toBe(404);
+    const unknownBody = await unknown.json() as { error: string };
+    expect(unknownBody.error).toContain("not found");
+
+    const startedAt = Date.now();
+    const success = await request({ model: "editorial-heavy", confirmed: true, reason: "prefer local tonight" });
+    expect(success.status).toBe(200);
+    const successBody = await success.json() as {
+      data: { ok: boolean; routeOverride: { targetModel: string; setBy: string; expiresAt: string }; message: string };
+    };
+    expect(successBody.data.ok).toBe(true);
+    expect(successBody.data.routeOverride.targetModel).toBe("editorial-heavy");
+    expect(successBody.data.routeOverride.setBy).toBe("pin-test-operator");
+    expect(Date.parse(successBody.data.routeOverride.expiresAt) - startedAt).toBeGreaterThanOrEqual(14_400_000);
+    expect(successBody.data.message).toContain("Pinned gateway routing to editorial-heavy until");
+
+    const audit = readActionAudit({ targetType: "gateway", actionKind: "gateway.route-override-set" });
+    expect(audit.some((row) => row.targetId === "editorial-heavy" && row.risk === "low" && row.resultStatus === "success")).toBe(true);
+  });
+
+  test("route override DELETE returns 404 when empty and clears an active override with an audit", async () => {
+    process.env.OPERATOR_TOKEN = "test-token";
+    const request = (reason?: string) => {
+      const req = new Request("http://localhost/api/gateway/route-override", {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+          "x-operator-token": "test-token",
+          "x-tenant-id": "mimule",
+          "x-actor": "clear-test-operator",
+        },
+        body: JSON.stringify({ reason }),
+      });
+      return handleApi(req, new URL(req.url));
+    };
+
+    expect((await request()).status).toBe(404);
+
+    setGatewayRouteOverrideForGatewayAdmin({
+      targetModel: "editorial-heavy",
+      resolvedModel: "editorial-heavy",
+      tier: "local",
+      reason: "temporary pin",
+    });
+    const cleared = await request("resume normal routing");
+    expect(cleared.status).toBe(200);
+    const body = await cleared.json() as { data: { ok: boolean; message: string } };
+    expect(body.data.ok).toBe(true);
+    expect(body.data.message).toContain("editorial-heavy");
+    expect(getGatewayRouteOverrideForGatewayAdmin()).toBeNull();
+
+    const audit = readActionAudit({ targetType: "gateway", actionKind: "gateway.route-override-cleared" });
+    expect(audit.some((row) => row.targetId === "editorial-heavy" && row.risk === "low" && row.resultStatus === "success")).toBe(true);
   });
 
   test("healthiest routing prefers healthy free cloud routes before paid fallback", () => {

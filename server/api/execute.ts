@@ -6,6 +6,7 @@ import { createJob, writeActionAudit } from "../db/writer.ts";
 import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun, runSingleModelProbe } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
+import { loadGatewayConfig, resolveModel } from "../gateway/config.ts";
 import { listGatewayKeys, rotateGatewayKey } from "../gateway/keys.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
@@ -59,6 +60,7 @@ function parseActionId(actionId: string): ParsedActionId | null {
 
 function getEnforcement(kind: string, targetType: string): { confirm: boolean; reasonRequired: boolean } {
   if (kind === "rotate" && targetType === "gateway-key") return { confirm: true, reasonRequired: true };
+  if (kind === "pin" && targetType === "gateway-route") return { confirm: true, reasonRequired: true };
   if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "clear-cooldown") {
     return { confirm: false, reasonRequired: false };
   }
@@ -84,6 +86,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
 
 function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "rotate" && targetType === "gateway-key") return "medium";
+  if (kind === "pin") return "low";
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
   if (kind === "probe") return "low";
@@ -326,6 +329,31 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
       ok: true,
       action: "start-job",
       message: `Routing gateway traffic to ${selected.logicalName} until ${routeOverride.expiresAt}.`,
+    };
+  }
+
+  if (kind === "pin" && targetType === "gateway-route") {
+    const cfg = loadGatewayConfig();
+    if (!targetId || !Object.prototype.hasOwnProperty.call(cfg.models, targetId)) {
+      return { ok: false, error: `gateway model "${targetId || "(missing)"}" not found`, code: "NOT_FOUND" };
+    }
+    const resolved = resolveModel(targetId)!;
+    const ctx = getCurrentTenantContext();
+    const ttlMs = typeof body.params?.ttlMs === "number" && Number.isFinite(body.params.ttlMs)
+      ? body.params.ttlMs
+      : 14_400_000;
+    const routeOverride = setGatewayRouteOverrideForGatewayAdmin({
+      targetModel: targetId,
+      resolvedModel: resolved.model,
+      tier: resolved.tier,
+      reason: body.reason,
+      setBy: ctx.actor ?? "operator",
+      ttlMs,
+    });
+    return {
+      ok: true,
+      action: "pin",
+      message: `Pinned gateway routing to ${targetId} until ${routeOverride.expiresAt}`,
     };
   }
 

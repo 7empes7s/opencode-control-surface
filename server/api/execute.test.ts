@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { _resetGatewayConfigCacheForTests } from "../gateway/config.ts";
+import { getGatewayRouteOverrideForGatewayAdmin, getGatewayRoutePlanForGatewayAdmin, resetGatewayRouteOverrideStateForTests } from "../gateway/router.ts";
 import { executeActionHandler } from "./execute.ts";
 
 describe("executeActionHandler", () => {
@@ -10,6 +12,7 @@ describe("executeActionHandler", () => {
   let previousDashboardDb: string | undefined;
   let previousDashboardDbPath: string | undefined;
   let previousCooldownsPath: string | undefined;
+  let previousGatewayConfig: string | undefined;
 
   beforeEach(() => {
     closeDashboardDb();
@@ -17,13 +20,31 @@ describe("executeActionHandler", () => {
     previousDashboardDb = process.env.DASHBOARD_DB;
     previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
     previousCooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
+    previousGatewayConfig = process.env.GATEWAY_CONFIG;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
     process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = join(tempDir, "model-cooldowns.json");
+    process.env.GATEWAY_CONFIG = join(tempDir, "gateway.yaml");
+    writeFileSync(process.env.GATEWAY_CONFIG, `
+version: 1
+litellm_url: http://127.0.0.1:4000
+models:
+  editorial-heavy:
+    backend: litellm
+    model: editorial-heavy-resolved
+    tier: local
+  editorial-fast:
+    backend: litellm
+    model: editorial-fast-resolved
+    tier: cloud-free
+`);
+    _resetGatewayConfigCacheForTests();
+    resetGatewayRouteOverrideStateForTests();
     initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   });
 
   afterEach(() => {
+    resetGatewayRouteOverrideStateForTests();
     closeDashboardDb();
     if (previousDashboardDb === undefined) delete process.env.DASHBOARD_DB;
     else process.env.DASHBOARD_DB = previousDashboardDb;
@@ -31,6 +52,9 @@ describe("executeActionHandler", () => {
     else process.env.DASHBOARD_DB_PATH = previousDashboardDbPath;
     if (previousCooldownsPath === undefined) delete process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
     else process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = previousCooldownsPath;
+    if (previousGatewayConfig === undefined) delete process.env.GATEWAY_CONFIG;
+    else process.env.GATEWAY_CONFIG = previousGatewayConfig;
+    _resetGatewayConfigCacheForTests();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -207,6 +231,58 @@ describe("executeActionHandler", () => {
       action_id: "rotate:gateway-key:gk-exec-rotate",
       risk: "medium",
       reason: "test rotation",
+      result_status: "success",
+    });
+  });
+
+  it("pins a configured gateway model through the governed low-risk action path", async () => {
+    const confirmGate = await makeRequest({
+      actionId: "pin:gateway-route:editorial-heavy",
+      reason: "keep local tonight",
+    });
+    expect(confirmGate.status).toBe(400);
+    expect(confirmGate.result.code).toBe("CONFIRM_REQUIRED");
+
+    const reasonGate = await makeRequest({
+      actionId: "pin:gateway-route:editorial-heavy",
+      confirmed: true,
+    });
+    expect(reasonGate.status).toBe(400);
+    expect(reasonGate.result.code).toBe("REASON_REQUIRED");
+
+    const unknown = await makeRequest({
+      actionId: "pin:gateway-route:unknown-model",
+      confirmed: true,
+      reason: "test unknown model",
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.result.code).toBe("NOT_FOUND");
+
+    const startedAt = Date.now();
+    const { status, result } = await makeRequest({
+      actionId: "pin:gateway-route:editorial-heavy",
+      confirmed: true,
+      reason: "keep local tonight",
+    });
+
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe("pin");
+    expect(result.message).toContain("Pinned gateway routing to editorial-heavy until");
+    expect(getGatewayRoutePlanForGatewayAdmin("editorial-fast")[0]).toBe("editorial-heavy");
+    expect(Date.parse(getGatewayRouteOverrideForGatewayAdmin()!.expiresAt) - startedAt).toBeGreaterThanOrEqual(14_400_000);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_id, risk, reason, result_status
+      FROM action_audit
+      WHERE action_id = ? AND result_status = 'success'
+      ORDER BY id DESC
+      LIMIT 1
+    `).get("pin:gateway-route:editorial-heavy") as { action_id: string; risk: string; reason: string; result_status: string } | null;
+    expect(audit).toEqual({
+      action_id: "pin:gateway-route:editorial-heavy",
+      risk: "low",
+      reason: "keep local tonight",
       result_status: "success",
     });
   });

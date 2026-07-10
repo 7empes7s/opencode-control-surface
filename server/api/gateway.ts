@@ -1,6 +1,7 @@
 import { ok } from "./types.ts";
 import { checkToken } from "./actions.ts";
 import {
+  clearGatewayRouteOverrideForGatewayAdmin,
   gatewayComplete,
   gatewayModels,
   getGatewayRouteOverrideForGatewayAdmin,
@@ -9,7 +10,7 @@ import {
   setCircuitStateForGatewayAdmin,
 } from "../gateway/router.ts";
 import { ledgerStats, readLedger } from "../gateway/ledger.ts";
-import { loadGatewayConfig, type ModelTier } from "../gateway/config.ts";
+import { loadGatewayConfig, resolveModel, type ModelTier } from "../gateway/config.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { getDashboardDb } from "../db/dashboard.ts";
@@ -357,6 +358,7 @@ export function gatewayStatusHandler(): Response {
     version: cfg.version,
     litellmUrl: cfg.litellmUrl,
     modelCount: Object.keys(cfg.models).length,
+    models: Object.keys(cfg.models),
     circuits,
     routeOverride: getGatewayRouteOverrideForGatewayAdmin(),
     costHeadline,
@@ -570,6 +572,87 @@ export async function gatewayRouteHealthiestHandler(req: Request): Promise<Respo
     routeOverride,
     message: `Routing gateway traffic to ${selected.logicalName} until ${routeOverride.expiresAt}.`,
     lastUpdatedAt: new Date().toISOString(),
+  }));
+}
+
+export async function gatewaySetRouteOverrideHandler(req: Request): Promise<Response> {
+  const body = await readJsonBody(req);
+  if (body.confirmed !== true) {
+    return apiError("confirmation required to pin a gateway route", 400);
+  }
+
+  const reason = reasonFromBody(body);
+  if (!reason) {
+    return apiError("reason required to pin a gateway route", 400);
+  }
+
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  const cfg = loadGatewayConfig();
+  if (!model || !Object.prototype.hasOwnProperty.call(cfg.models, model)) {
+    return apiError(`gateway model "${model || "(missing)"}" was not found in the configured model roster`, 404);
+  }
+
+  const resolved = resolveModel(model)!;
+  const ttlMs = typeof body.ttlMs === "number" && Number.isFinite(body.ttlMs)
+    ? body.ttlMs
+    : 14_400_000;
+  const ctx = getCurrentTenantContext();
+  const routeOverride = setGatewayRouteOverrideForGatewayAdmin({
+    targetModel: model,
+    resolvedModel: resolved.model,
+    tier: resolved.tier,
+    reason,
+    setBy: ctx.actor ?? "operator",
+    ttlMs,
+  });
+
+  const actionKind = "gateway.route-override-set";
+  auditGateway({
+    actionKind,
+    actionId: `${actionKind}:${model}`,
+    targetId: model,
+    risk: "low",
+    reason,
+    request: body,
+    resultStatus: "success",
+    result: `pinned gateway routing to ${model}`,
+    resultJson: { routeOverride, timestamp: new Date().toISOString() },
+    rollbackHint: `The route override expires at ${routeOverride.expiresAt}, or DELETE /api/gateway/route-override to clear it early.`,
+  });
+
+  return json(ok({
+    ok: true,
+    routeOverride,
+    message: `Pinned gateway routing to ${model} until ${routeOverride.expiresAt}.`,
+  }));
+}
+
+export async function gatewayClearRouteOverrideHandler(req: Request): Promise<Response> {
+  const routeOverride = getGatewayRouteOverrideForGatewayAdmin();
+  if (!routeOverride) {
+    return apiError("no active gateway route override to clear", 404);
+  }
+
+  const body = await readJsonBody(req);
+  const reason = reasonFromBody(body);
+  clearGatewayRouteOverrideForGatewayAdmin();
+
+  const actionKind = "gateway.route-override-cleared";
+  auditGateway({
+    actionKind,
+    actionId: `${actionKind}:${routeOverride.targetModel}`,
+    targetId: routeOverride.targetModel,
+    risk: "low",
+    reason,
+    request: body,
+    resultStatus: "success",
+    result: `cleared gateway route override for ${routeOverride.targetModel}`,
+    resultJson: { routeOverride, timestamp: new Date().toISOString() },
+  });
+
+  return json(ok({
+    ok: true,
+    message: `Gateway route override for ${routeOverride.targetModel} cleared.`,
   }));
 }
 

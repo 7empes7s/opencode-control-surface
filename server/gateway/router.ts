@@ -4,6 +4,7 @@ import { writeLedgerEntry } from "./ledger.ts";
 import type { CompletionRequest, CompletionResponse, ModelInfo } from "./adapters/base.ts";
 import { checkBudget } from "../governance/budgets.ts";
 import { writeActionAudit } from "../db/writer.ts";
+import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 
 // ── Circuit breaker state (in-process, reset on restart) ──────────────────────
 
@@ -28,6 +29,89 @@ type GatewayRouteOverride = {
 };
 
 let routeOverride: GatewayRouteOverride | null = null;
+let routeOverrideLoaded = false;
+
+type GatewayRouteOverrideRow = {
+  target_model: string;
+  resolved_model: string;
+  tier: ModelTier;
+  reason: string | null;
+  set_at: string;
+  set_by: string;
+  expires_at: string;
+};
+
+function ensureRouteOverrideLoaded(): void {
+  if (routeOverrideLoaded) return;
+  routeOverrideLoaded = true;
+  if (!isDashboardDbEnabled()) return;
+
+  try {
+    const db = getDashboardDb();
+    if (!db) return;
+    const row = db.query(`
+      SELECT target_model, resolved_model, tier, reason, set_at, set_by, expires_at
+      FROM gateway_route_override
+      WHERE id = 1
+    `).get() as GatewayRouteOverrideRow | null;
+    if (!row) return;
+    routeOverride = {
+      targetModel: row.target_model,
+      resolvedModel: row.resolved_model,
+      tier: row.tier,
+      reason: row.reason ?? undefined,
+      setAt: row.set_at,
+      setBy: row.set_by,
+      expiresAt: row.expires_at,
+    };
+  } catch (error) {
+    console.warn("[gateway] route override load failed", error);
+  }
+}
+
+function persistRouteOverride(override: GatewayRouteOverride): void {
+  if (!isDashboardDbEnabled()) return;
+
+  try {
+    const db = getDashboardDb();
+    if (!db) return;
+    db.query(`
+      INSERT INTO gateway_route_override
+        (id, target_model, resolved_model, tier, reason, set_at, set_by, expires_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        target_model = excluded.target_model,
+        resolved_model = excluded.resolved_model,
+        tier = excluded.tier,
+        reason = excluded.reason,
+        set_at = excluded.set_at,
+        set_by = excluded.set_by,
+        expires_at = excluded.expires_at
+    `).run(
+      override.targetModel,
+      override.resolvedModel,
+      override.tier,
+      override.reason ?? null,
+      override.setAt,
+      override.setBy,
+      override.expiresAt,
+    );
+  } catch (error) {
+    console.warn("[gateway] route override save failed", error);
+  }
+}
+
+function deletePersistedRouteOverride(): void {
+  if (!isDashboardDbEnabled()) return;
+
+  try {
+    const db = getDashboardDb();
+    if (!db) return;
+    db.query("DELETE FROM gateway_route_override WHERE id = 1").run();
+  } catch (error) {
+    console.warn("[gateway] route override delete failed", error);
+  }
+}
 
 function getCircuit(model: string): CircuitEntry {
   if (!circuits.has(model)) circuits.set(model, { state: "closed", failures: 0, openedAt: null });
@@ -91,9 +175,24 @@ export function setCircuitStateForGatewayAdmin(model: string, state: CircuitStat
 }
 
 function activeRouteOverride(): GatewayRouteOverride | null {
+  ensureRouteOverrideLoaded();
   if (!routeOverride) return null;
   if (Date.parse(routeOverride.expiresAt) <= Date.now()) {
+    const expired = routeOverride;
     routeOverride = null;
+    deletePersistedRouteOverride();
+    try {
+      writeActionAudit({
+        actor: "gateway",
+        actionKind: "gateway.route-override-expired",
+        targetType: "gateway-route",
+        targetId: expired.targetModel,
+        risk: "low",
+        resultStatus: "success",
+      });
+    } catch (error) {
+      console.warn("[gateway] route override expiry audit failed", error);
+    }
     return null;
   }
   return { ...routeOverride };
@@ -135,7 +234,7 @@ export function setGatewayRouteOverrideForGatewayAdmin(input: {
   ttlMs?: number;
 }): GatewayRouteOverride {
   const now = Date.now();
-  const ttlMs = Math.max(60_000, Math.min(input.ttlMs ?? 15 * 60_000, 60 * 60_000));
+  const ttlMs = Math.max(60_000, Math.min(input.ttlMs ?? 15 * 60_000, 7 * 86_400_000));
   const resolvedModel = input.resolvedModel ?? resolveModel(input.targetModel)?.model ?? input.targetModel;
   routeOverride = {
     targetModel: input.targetModel,
@@ -146,6 +245,8 @@ export function setGatewayRouteOverrideForGatewayAdmin(input: {
     setBy: input.setBy ?? "operator",
     expiresAt: new Date(now + ttlMs).toISOString(),
   };
+  routeOverrideLoaded = true;
+  persistRouteOverride(routeOverride);
   return { ...routeOverride };
 }
 
@@ -155,6 +256,13 @@ export function getGatewayRouteOverrideForGatewayAdmin(): GatewayRouteOverride |
 
 export function clearGatewayRouteOverrideForGatewayAdmin(): void {
   routeOverride = null;
+  routeOverrideLoaded = true;
+  deletePersistedRouteOverride();
+}
+
+export function resetGatewayRouteOverrideStateForTests(): void {
+  routeOverride = null;
+  routeOverrideLoaded = false;
 }
 
 // ── Adapter cache ──────────────────────────────────────────────────────────────

@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { _resetGatewayConfigCacheForTests, loadGatewayConfig } from "../gateway/config.ts";
+import {
+  clearGatewayRouteOverrideForGatewayAdmin,
+  resetGatewayRouteOverrideStateForTests,
+  setGatewayRouteOverrideForGatewayAdmin,
+} from "../gateway/router.ts";
 import { actionId, buildActionCatalog } from "./actionDescriptors.ts";
 
 test("action ids are stable and safe for lookup", () => {
@@ -101,6 +107,76 @@ test("catalog includes model action descriptors with audit-ready metadata", () =
   expect(cooldown?.kind).toBe("clear-cooldown");
   expect(cooldown?.risk).toBe("low");
   expect(cooldown?.confirm).toBe(false);
+});
+
+test("catalog emits a pin for every configured gateway model and clear only while an override is active", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "gateway-route-descriptors-"));
+  const prevDb = process.env.DASHBOARD_DB;
+  const prevDbPath = process.env.DASHBOARD_DB_PATH;
+  const prevGatewayConfig = process.env.GATEWAY_CONFIG;
+  const gatewayConfigPath = join(tempDir, "gateway.yaml");
+  writeFileSync(gatewayConfigPath, `
+version: 1
+litellm_url: http://127.0.0.1:4000
+models:
+  editorial-heavy:
+    backend: litellm
+    model: editorial-heavy-resolved
+    tier: local
+  editorial-fast:
+    backend: litellm
+    model: editorial-fast-resolved
+    tier: cloud-free
+`);
+  closeDashboardDb();
+  resetGatewayRouteOverrideStateForTests();
+  process.env.DASHBOARD_DB = "1";
+  process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  process.env.GATEWAY_CONFIG = gatewayConfigPath;
+  _resetGatewayConfigCacheForTests();
+  initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
+  try {
+    const configuredModels = Object.keys(loadGatewayConfig().models).sort();
+    const withoutOverride = buildActionCatalog({});
+    const pinActions = withoutOverride.filter((action) => action.kind === "pin" && action.targetType === "gateway-route");
+
+    expect(pinActions.map((action) => action.targetId).sort()).toEqual(configuredModels);
+    expect(pinActions.map((action) => action.id).sort()).toEqual(configuredModels.map((model) => `pin:gateway-route:${model}`));
+    for (const action of pinActions) {
+      expect(action.risk).toBe("low");
+      expect(action.confirm).toBe(true);
+      expect(action.reasonRequired).toBe(true);
+      expect(action.impactPreview).toContain("4-hour TTL");
+      expect(action.impactPreview).toContain("auto-revert");
+    }
+    expect(withoutOverride.some((action) => action.id === "start-job:gateway:clear-route-override")).toBe(false);
+
+    setGatewayRouteOverrideForGatewayAdmin({
+      targetModel: "editorial-heavy",
+      resolvedModel: "editorial-heavy-resolved",
+      tier: "local",
+      ttlMs: 14_400_000,
+    });
+    const withOverride = buildActionCatalog({});
+    const clearAction = withOverride.find((action) => action.id === "start-job:gateway:clear-route-override");
+    expect(clearAction?.risk).toBe("low");
+    expect(clearAction?.confirm).toBe(true);
+    expect(clearAction?.reasonRequired).toBe(true);
+
+    clearGatewayRouteOverrideForGatewayAdmin();
+    expect(buildActionCatalog({}).some((action) => action.id === "start-job:gateway:clear-route-override")).toBe(false);
+  } finally {
+    resetGatewayRouteOverrideStateForTests();
+    closeDashboardDb();
+    if (prevDb === undefined) delete process.env.DASHBOARD_DB;
+    else process.env.DASHBOARD_DB = prevDb;
+    if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
+    else process.env.DASHBOARD_DB_PATH = prevDbPath;
+    if (prevGatewayConfig === undefined) delete process.env.GATEWAY_CONFIG;
+    else process.env.GATEWAY_CONFIG = prevGatewayConfig;
+    _resetGatewayConfigCacheForTests();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("catalog emits rotate descriptors only for active gateway keys without pending grace", () => {

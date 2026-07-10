@@ -6,6 +6,8 @@ import { getPipelineState, type QueueItem } from "../adapters/pipeline.ts";
 import { getServiceStatuses, getTimers } from "../adapters/system.ts";
 import { getVastAccount, getVastInstance } from "../adapters/vast.ts";
 import { listGatewayKeys } from "../gateway/keys.ts";
+import { loadGatewayConfig } from "../gateway/config.ts";
+import { getGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS } from "./actions.ts";
 import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
@@ -523,6 +525,38 @@ function addGatewayActions(actions: ActionDescriptor[]): void {
     sourceRoute: "/gateway",
     requiresOnline: true,
   }));
+
+  for (const logicalName of Object.keys(loadGatewayConfig().models)) {
+    actions.push(descriptor({
+      id: `pin:gateway-route:${logicalName}`,
+      label: `Pin ${logicalName}`,
+      kind: "pin",
+      targetType: "gateway-route",
+      targetId: logicalName,
+      risk: "low",
+      confirm: true,
+      reasonRequired: true,
+      impactPreview: `Pin all gateway routing to ${logicalName} for the default 4-hour TTL, then auto-revert.`,
+      rollbackHint: "Clear the route override from the Gateway page or wait for expiry",
+      sourceRoute: "/gateway",
+      requiresOnline: true,
+    }));
+  }
+
+  if (getGatewayRouteOverrideForGatewayAdmin()) {
+    actions.push(descriptor({
+      label: "Clear route override",
+      kind: "start-job",
+      targetType: "gateway",
+      targetId: "clear-route-override",
+      risk: "low",
+      confirm: true,
+      reasonRequired: true,
+      impactPreview: "Clear the active gateway route override and resume normal routing policy.",
+      sourceRoute: "/gateway",
+      requiresOnline: true,
+    }));
+  }
 }
 
 // Two fixed, singleton remediation actions (SPEC 15 / ULTRAPLAN P3 A3b) — not

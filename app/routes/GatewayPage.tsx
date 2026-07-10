@@ -13,6 +13,7 @@ type GatewayStatus = {
   version: number;
   litellmUrl: string;
   modelCount: number;
+  models: string[];
   circuits: Record<string, { state: CircuitState; failures: number; openedAt: number | null }>;
   routeOverride: {
     targetModel: string;
@@ -151,6 +152,8 @@ export function GatewayPage() {
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
   const [oneTimeKey, setOneTimeKey] = useState<OneTimeGatewayKey>(null);
   const [selectedCall, setSelectedCall] = useState<LedgerRow | null>(null);
+  const [pinModel, setPinModel] = useState("");
+  const [pinTtlHours, setPinTtlHours] = useState("4");
   const since = Date.now() - sinceHours * 3_600_000;
 
   const { data: statusData, loading: statusLoading, error: statusError, refresh: refreshStatus } = useApi<GatewayStatus>("/api/gateway/status", 15_000);
@@ -226,6 +229,59 @@ export function GatewayPage() {
     }
   }
 
+  async function pinGatewayModel(model: string) {
+    const ttlHours = Number(pinTtlHours);
+    if (!model) {
+      setFeedback({ type: "error", message: "Choose a gateway model to pin." });
+      return;
+    }
+    if (!Number.isFinite(ttlHours) || ttlHours < 1 / 60 || ttlHours > 168) {
+      setFeedback({ type: "error", message: "TTL must be between 1 minute and 168 hours." });
+      return;
+    }
+
+    const confirmed = window.confirm(`Pin all gateway routing to "${model}" for ${ttlHours} hour${ttlHours === 1 ? "" : "s"}?`);
+    if (!confirmed) return;
+    const reason = window.prompt("Reason for pinning this gateway model");
+    if (!reason?.trim()) {
+      setFeedback({ type: "error", message: "A reason is required to pin a gateway model." });
+      return;
+    }
+
+    await runAction("pin-route", "/api/gateway/route-override", {
+      model,
+      ttlMs: ttlHours * 3_600_000,
+      reason: reason.trim(),
+      confirmed: true,
+    });
+  }
+
+  async function clearGatewayRouteOverride() {
+    const targetModel = status?.routeOverride?.targetModel;
+    if (!targetModel) return;
+    const confirmed = window.confirm(`Clear the gateway route override for "${targetModel}"?`);
+    if (!confirmed) return;
+    const reason = window.prompt("Reason for clearing this route override (optional)");
+
+    setPendingAction("clear-route-override");
+    setFeedback(null);
+    try {
+      const res = await gatewayActions.request("/api/gateway/route-override", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason?.trim() || undefined }),
+      });
+      const parsed = await res.json().catch(() => ({})) as { data?: { message?: string; error?: string }; error?: string };
+      if (!res.ok) throw new Error(parsed.error ?? parsed.data?.error ?? `HTTP ${res.status}`);
+      setFeedback({ type: "success", message: parsed.data?.message ?? "Gateway route override cleared." });
+      refreshAfterAction();
+    } catch (err) {
+      setFeedback({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   async function rotateGatewayKey(key: GatewayKeyRecord) {
     const confirmed = window.confirm(`Rotate gateway key "${key.name}"? The old key remains valid during the grace period.`);
     if (!confirmed) return;
@@ -287,6 +343,12 @@ export function GatewayPage() {
   }
 
   const circuitEntries = Object.entries(status?.circuits ?? {});
+  const pinModelOptions = Array.from(new Set([
+    ...(status?.models ?? []),
+    ...(status?.routeOverride ? [status.routeOverride.targetModel] : []),
+    ...circuitEntries.map(([model]) => model),
+  ])).sort();
+  const selectedPinModel = pinModel || pinModelOptions[0] || "";
   const statsCards = [
     { label: "Total calls", val: stats ? String(stats.totalCalls) : "—" },
     { label: "Success rate", val: stats ? pct(stats.successRate) : "—" },
@@ -475,6 +537,7 @@ export function GatewayPage() {
             >
               routing via {status.routeOverride.targetModel}
             </span>
+            <span>set by {status.routeOverride.setBy}</span>
             {status.routeOverride.reason && (
               // The operator's typed reason (required by the apply gate this
               // override came from) was previously only visible in a hover
@@ -482,6 +545,14 @@ export function GatewayPage() {
               // Surfaced as plain text so it's visible without hovering.
               <span>&ldquo;{status.routeOverride.reason}&rdquo;</span>
             )}
+            <button
+              type="button"
+              disabled={pendingAction !== null}
+              onClick={clearGatewayRouteOverride}
+              style={{ fontSize: 10, padding: "3px 7px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-dim)", cursor: pendingAction ? "wait" : "pointer" }}
+            >
+              Clear override
+            </button>
           </>
         )}
         {updatedAt ? <span>Last updated {new Date(updatedAt).toLocaleString()}</span> : <span>Last updated after first response</span>}
@@ -565,6 +636,37 @@ export function GatewayPage() {
         </button>
         <button disabled={pendingAction !== null} onClick={() => runAction("route-healthiest", "/api/gateway/route-healthiest")} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card-start)", color: "var(--text)", cursor: pendingAction ? "wait" : "pointer" }}>
           <Route size={13} /> route to healthiest
+        </button>
+        <select
+          aria-label="Gateway model to pin"
+          value={selectedPinModel}
+          onChange={(event) => setPinModel(event.target.value)}
+          disabled={pendingAction !== null || pinModelOptions.length === 0}
+          style={{ minWidth: 180, fontSize: 11, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card-start)", color: "var(--text)" }}
+        >
+          {pinModelOptions.length === 0 && <option value="">No observed models</option>}
+          {pinModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-dim)" }}>
+          TTL hours
+          <input
+            aria-label="Route override TTL in hours"
+            type="number"
+            min={1 / 60}
+            max={168}
+            step="any"
+            value={pinTtlHours}
+            onChange={(event) => setPinTtlHours(event.target.value)}
+            style={{ width: 76, fontSize: 11, padding: "7px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card-start)", color: "var(--text)" }}
+          />
+        </label>
+        <button
+          type="button"
+          disabled={pendingAction !== null || !selectedPinModel}
+          onClick={() => pinGatewayModel(selectedPinModel)}
+          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card-start)", color: "var(--text)", cursor: pendingAction || !selectedPinModel ? "not-allowed" : "pointer" }}
+        >
+          <Route size={13} /> Pin model
         </button>
         <button disabled={rows.length === 0} onClick={exportCsv} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: rows.length === 0 ? "var(--text-dim)" : "var(--text)", cursor: rows.length === 0 ? "not-allowed" : "pointer" }}>
           <Download size={13} /> export CSV
