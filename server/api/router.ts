@@ -189,8 +189,6 @@ import {
   gatewayCircuitActionHandler,
   gatewayProbeHandler,
   gatewayRouteHealthiestHandler,
-  gatewayRouteOverrideHandler,
-  gatewayClearRouteOverrideHandler,
   v1ChatCompletionsHandler,
   v1ModelsHandler,
 } from "./gateway.ts";
@@ -1064,16 +1062,6 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return gatewayRouteHealthiestHandler(req);
-  }
-  if (method === "POST" && pathname === "/api/gateway/route-override") {
-    const denied = requireMutation(req);
-    if (denied) return denied;
-    return gatewayRouteOverrideHandler(req);
-  }
-  if (method === "POST" && pathname === "/api/gateway/route-override/clear") {
-    const denied = requireMutation(req);
-    if (denied) return denied;
-    return gatewayClearRouteOverrideHandler(req);
   }
   if (method === "GET" && pathname === "/api/gateway/keys") {
     return listGatewayKeysHandler(req);
