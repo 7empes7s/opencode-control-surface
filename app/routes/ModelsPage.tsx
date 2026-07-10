@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, GitBranch, ShieldCheck } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, GitBranch, ShieldCheck } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { authFetch } from "../lib/authFetch";
@@ -8,7 +8,7 @@ import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
-import type { ModelsDetail } from "../../server/api/types";
+import type { ChainDiff, ModelChainSyncDetail, ModelsDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -234,6 +234,124 @@ function ModelLifecyclePanel({
         {data.unavailableCapabilities.map((text) => <div key={text}>{text}</div>)}
       </div>
     </div>
+  );
+}
+
+function ChainModelChip({
+  model,
+  index,
+  status,
+}: {
+  model: string;
+  index?: number;
+  status?: "added" | "removed";
+}) {
+  const className = [
+    "chain-model",
+    index === 0 ? "first" : "",
+    status ? `chain-model-${status}` : "",
+  ].filter(Boolean).join(" ");
+  return <span className={className}>{index != null ? `${index + 1}. ` : ""}{model}</span>;
+}
+
+function ChainDiffRow({ chain }: { chain: ChainDiff }) {
+  const removed = new Set(chain.removed);
+  const added = new Set(chain.added);
+  return (
+    <div className="chain-sync-row">
+      <div className="chain-sync-row-head">
+        <div>
+          <div className="chain-sync-role">{chain.role}</div>
+          <div className="chain-sync-logical mono">{chain.logicalName}</div>
+        </div>
+        <div className="chain-sync-badges">
+          {chain.inSync ? <Pill color="green">in sync</Pill> : null}
+          {chain.added.length > 0 ? <Pill color="green">+{chain.added.length}</Pill> : null}
+          {chain.removed.length > 0 ? <Pill color="red">-{chain.removed.length}</Pill> : null}
+          {chain.reordered ? <Pill color="amber">reordered</Pill> : null}
+          {!chain.current ? <Pill color="amber">new</Pill> : null}
+        </div>
+      </div>
+      <div className="chain-sync-cols">
+        <div className="chain-sync-col">
+          <div className="chain-sync-label">current</div>
+          <div className="chain-models">
+            {chain.current ? chain.current.map((model, index) => (
+              <ChainModelChip key={`${model}-${index}`} model={model} index={index} status={removed.has(model) ? "removed" : undefined} />
+            )) : <span className="loading-dim">absent from LiteLLM config</span>}
+          </div>
+        </div>
+        <div className="chain-sync-col">
+          <div className="chain-sync-label">proposed</div>
+          <div className="chain-models">
+            {chain.proposed.map((model, index) => (
+              <ChainModelChip key={`${model}-${index}`} model={model} index={index} status={added.has(model) ? "added" : undefined} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FallbackChainSyncSection() {
+  const { data, loading, error, refresh } = useApi<ModelChainSyncDetail>("/api/models/chain-sync", 30_000);
+  const [copied, setCopied] = useState<"block" | "command" | null>(null);
+
+  async function copyText(kind: "block" | "command", text: string) {
+    await navigator.clipboard.writeText(text);
+    setCopied(kind);
+    window.setTimeout(() => setCopied((current) => current === kind ? null : current), 1800);
+  }
+
+  const changedCount = data?.chains.filter((chain) => !chain.inSync).length ?? 0;
+
+  return (
+    <SectionCard
+      title="fallback chain sync"
+      defaultOpen={true}
+      right={data ? (
+        <div className="chain-sync-summary">
+          <Pill color={data.anyChanges ? "amber" : "green"}>
+            {data.anyChanges ? `${changedCount} chain${changedCount === 1 ? "" : "s"} differ` : "All chains in sync"}
+          </Pill>
+          <span className={data.stale ? "chain-sync-age stale" : "chain-sync-age"}>health checked {fmtAge(data.healthAgeSec)}</span>
+        </div>
+      ) : null}
+    >
+      <div className="section-card-body chain-sync-body">
+        {loading && !data ? <div className="loading-dim">loading chain sync preview...</div> : null}
+        {error && !data ? (
+          <div className="chain-sync-error">
+            <span>Chain sync preview did not load: {error}</span>
+            <button className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button>
+          </div>
+        ) : null}
+        {data ? (
+          <>
+            {data.configReadError ? (
+              <div className="chain-sync-warning">couldn't read /etc/litellm/config.yaml — showing proposed only</div>
+            ) : null}
+            <div className="chain-sync-list">
+              {data.chains.map((chain) => <ChainDiffRow key={chain.role} chain={chain} />)}
+              {data.chains.length === 0 ? <div className="loading-dim">no editorial fallback chains in health file</div> : null}
+            </div>
+            <div className="chain-sync-copy">
+              <div className="chain-sync-instruction">1) paste the block into <span className="mono">router_settings.fallbacks</span> in /etc/litellm/config.yaml, 2) run the apply command (backs up + reloads)</div>
+              <div className="chain-sync-actions">
+                <button className="btn btn-sm btn-ghost" onClick={() => copyText("block", data.correctedYamlBlock)}>
+                  <Copy size={14} /> Copy corrected block
+                </button>
+                <button className="btn btn-sm btn-ghost" onClick={() => copyText("command", data.applyCommand)}>
+                  <Copy size={14} /> Copy apply command
+                </button>
+                {copied ? <span className="action-feedback ok">copied {copied === "block" ? "block" : "command"}</span> : null}
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -499,6 +617,8 @@ export function ModelsPage() {
           </table>
         </div>
       </SectionCard>
+
+      <FallbackChainSyncSection />
 
       {/* Fallback chains */}
       <SectionCard title="fallback chains" defaultOpen={false}>

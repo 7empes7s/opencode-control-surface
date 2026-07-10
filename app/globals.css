@@ -4750,6 +4750,117 @@ body {
   color: var(--text-dim);
 }
 .chain-model.first { color: var(--accent); border-color: var(--accent-dim); background: color-mix(in oklch, var(--accent) 8%, transparent); }
+.chain-model-added {
+  color: var(--green);
+  border-color: color-mix(in oklch, var(--green) 45%, var(--border));
+  background: color-mix(in oklch, var(--green) 10%, transparent);
+}
+.chain-model-removed {
+  color: var(--red);
+  border-color: color-mix(in oklch, var(--red) 45%, var(--border));
+  background: color-mix(in oklch, var(--red) 8%, transparent);
+  text-decoration: line-through;
+}
+.chain-sync-body {
+  display: grid;
+  gap: 12px;
+}
+.chain-sync-summary,
+.chain-sync-badges,
+.chain-sync-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chain-sync-age {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.chain-sync-age.stale,
+.chain-sync-warning {
+  color: var(--amber-warn);
+}
+.chain-sync-warning,
+.chain-sync-error,
+.chain-sync-instruction {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.chain-sync-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--red);
+}
+.chain-sync-list {
+  display: grid;
+  gap: 10px;
+}
+.chain-sync-row {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in oklch, white 3%, transparent);
+}
+.chain-sync-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.chain-sync-role {
+  color: var(--text-bright);
+  font-size: 12px;
+  font-weight: 700;
+}
+.chain-sync-logical {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.chain-sync-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.chain-sync-col {
+  min-width: 0;
+}
+.chain-sync-label {
+  margin-bottom: 5px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.chain-sync-copy {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.chain-sync-instruction {
+  color: var(--text-dim);
+}
+.chain-sync-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 600px) {
+  .chain-sync-row-head,
+  .chain-sync-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .chain-sync-cols {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* ── Ratings page ──────────────────────────────────────────────────────── */
 

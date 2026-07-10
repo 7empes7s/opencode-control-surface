@@ -333,6 +333,28 @@ export interface ModelsDetail {
   discoveryLog: { ts: string; newModelsAdded: string[]; totalModelCount: number }[];
 }
 
+export interface ChainDiff {
+  role: string;
+  logicalName: string;
+  current: string[] | null;
+  proposed: string[];
+  inSync: boolean;
+  added: string[];
+  removed: string[];
+  reordered: boolean;
+}
+
+export interface ModelChainSyncDetail {
+  generatedAt: number;
+  healthAgeSec: number;
+  stale: boolean;
+  configReadError: boolean;
+  anyChanges: boolean;
+  chains: ChainDiff[];
+  correctedYamlBlock: string;
+  applyCommand: string;
+}
+
 export interface NewsBitesDetail {
   articles: {
     slug: string;

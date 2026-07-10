@@ -24,6 +24,7 @@ import { getDossierArtifacts, injectDossierNotes } from "./dossier.ts";
 import { dataExplorerTableHandler, dataExplorerTablesHandler } from "./dataExplorer.ts";
 import {
   modelsHandler,
+  modelChainSyncHandler,
   modelLifecycleHandler,
   modelPromotionRequestHandler,
   getRoutingLogs,
@@ -188,6 +189,8 @@ import {
   gatewayCircuitActionHandler,
   gatewayProbeHandler,
   gatewayRouteHealthiestHandler,
+  gatewayRouteOverrideHandler,
+  gatewayClearRouteOverrideHandler,
   v1ChatCompletionsHandler,
   v1ModelsHandler,
 } from "./gateway.ts";
@@ -679,6 +682,7 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/autopipeline") return autopipelineHandler();
   if (method === "GET" && pathname === "/api/doctor") return doctorHandler(url);
   if (method === "GET" && pathname === "/api/models") return modelsHandler();
+  if (method === "GET" && pathname === "/api/models/chain-sync") return modelChainSyncHandler();
   const modelLifecycleEarlyMatch = pathname.match(/^\/api\/models\/([^/]+)\/lifecycle$/);
   if (method === "GET" && modelLifecycleEarlyMatch) return modelLifecycleHandler(modelLifecycleEarlyMatch[1]);
   if (method === "GET" && pathname === "/api/agent-team") return agentTeamHandler();
@@ -1060,6 +1064,16 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return gatewayRouteHealthiestHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/gateway/route-override") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return gatewayRouteOverrideHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/gateway/route-override/clear") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return gatewayClearRouteOverrideHandler(req);
   }
   if (method === "GET" && pathname === "/api/gateway/keys") {
     return listGatewayKeysHandler(req);

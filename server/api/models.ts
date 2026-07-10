@@ -6,6 +6,8 @@ import { getCurrentTenantContext } from '../tenancy/middleware.ts';
 import { getModelQualityEntry, readModelQuality, type ModelQualityStatus } from './modelQuality.ts';
 import { getUserIdForRequest } from '../governance/rbac.ts';
 import { readJsonFileAtomic } from "../lib/atomicJson.ts";
+import { getModelChainSyncPayload } from "../adapters/modelChainSync.ts";
+import { ok } from "./types.ts";
 
 export const PROMOTION_EVAL_SCORE_THRESHOLD = 0.75;
 const PROMOTION_APPROVAL_WORKFLOW_PREFIX = "model-promotion";
@@ -403,6 +405,10 @@ export function modelsHandler(): Response {
       },
     });
   }
+}
+
+export function modelChainSyncHandler(): Response {
+  return Response.json(ok(getModelChainSyncPayload()));
 }
 
 export function modelLifecycleHandler(logicalNameParam: string): Response {
