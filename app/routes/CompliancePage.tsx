@@ -180,6 +180,13 @@ function AuditExportPanel() {
   const [verifying, setVerifying] = useState(false);
   const [chainResult, setChainResult] = useState<boolean | null>(null);
   const [dateRange, setDateRange] = useState({ from: "", to: "" });
+  const [evidenceDateRange, setEvidenceDateRange] = useState(() => {
+    const now = Date.now();
+    return {
+      from: new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      to: new Date(now).toISOString().slice(0, 10),
+    };
+  });
 
   const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
 
@@ -272,6 +279,18 @@ function AuditExportPanel() {
               >
                 <Download size={14} /> Evidence Bundle
               </button>
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => {
+                  if (!isAuthenticated) return;
+                  const from = new Date(`${evidenceDateRange.from}T00:00:00.000Z`).getTime();
+                  const to = new Date(`${evidenceDateRange.to}T23:59:59.999Z`).getTime();
+                  window.open(`/api/compliance/evidence-pack.zip?from=${from}&to=${to}`, "_blank");
+                }}
+                disabled={!isAuthenticated || !evidenceDateRange.from || !evidenceDateRange.to}
+              >
+                <Download size={14} /> Export signed evidence pack (zip)
+              </button>
             <button
               className="btn btn-sm btn-ghost"
               onClick={verifyChain}
@@ -284,6 +303,26 @@ function AuditExportPanel() {
                 {chainResult ? "Chain integrity verified" : "Chain integrity FAILED"}
               </span>
             )}
+          </div>
+          <div className="compliance-form-grid">
+            <div>
+              <label className="text-xs text-[var(--text-muted)] block mb-1">Evidence pack from</label>
+              <input
+                type="date"
+                className="filter-input"
+                value={evidenceDateRange.from}
+                onChange={(e) => setEvidenceDateRange((range) => ({ ...range, from: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] block mb-1">Evidence pack to</label>
+              <input
+                type="date"
+                className="filter-input"
+                value={evidenceDateRange.to}
+                onChange={(e) => setEvidenceDateRange((range) => ({ ...range, to: e.target.value }))}
+              />
+            </div>
           </div>
         </div>
       </div>

@@ -12,7 +12,8 @@
 //                absent/unconfigured (i.e. presented as if real)
 //   ERROR-5xx  — HTTP status >= 500
 //   CRASH      — connection refused/reset, timeout, or unparseable body on a
-//                non-5xx status (indicates a stack trace / raw crash leaked)
+//                route that declares JSON (indicates a stack trace / raw crash
+//                leaked)
 //
 // Usage: bun run probe.mjs <routerTsPath> <baseUrl> <token> <reportMdPath>
 
@@ -108,6 +109,14 @@ async function probeOne(route) {
 
     if (status >= 500) {
       return { route, status, verdict: "ERROR-5xx", elapsedMs, detail: text.slice(0, 200) };
+    }
+
+    if (status < 400 && (contentType.includes("application/zip") || contentType.includes("application/octet-stream"))) {
+      const leaks = findLeaks(text);
+      if (leaks.length) {
+        return { route, status, verdict: "LEAK", elapsedMs, detail: JSON.stringify(leaks.slice(0, 3)) };
+      }
+      return { route, status, verdict: "HONEST", elapsedMs, detail: `content-type=${contentType} len=${Buffer.byteLength(text)}` };
     }
 
     if (route === "/" ) {

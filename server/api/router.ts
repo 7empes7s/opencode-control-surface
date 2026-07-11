@@ -308,6 +308,7 @@ import { complianceDpaHandler,
   complianceSoc2MappingHandler,
   complianceSummaryHandler,
   complianceEvidenceBundleHandler,
+  complianceEvidenceZipHandler,
 } from "./compliance.ts";
 import {
   generateEvidencePack,
@@ -1737,11 +1738,30 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "PATCH" && discoveryAssetMatch) return discoveryUpdateAssetHandler(req, decodeURIComponent(discoveryAssetMatch[1]));
 
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/compliance/dpa") return complianceDpaHandler(req);
-  if (method === "GET" && pathname === "/api/compliance/subprocessors") return complianceSubprocessorsHandler();
-  if (method === "GET" && pathname === "/api/compliance/soc2-mapping") return complianceSoc2MappingHandler();
-  if (method === "GET" && pathname === "/api/compliance/summary") return complianceSummaryHandler(req);
-  if (method === "GET" && pathname === "/api/compliance/evidence-bundle") return complianceEvidenceBundleHandler(req);
+  if (method === "GET" && pathname === "/api/compliance/dpa") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceDpaHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/subprocessors") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceSubprocessorsHandler();
+  }
+  if (method === "GET" && pathname === "/api/compliance/soc2-mapping") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceSoc2MappingHandler();
+  }
+  if (method === "GET" && pathname === "/api/compliance/summary") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceSummaryHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/evidence-bundle") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceEvidenceBundleHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/evidence-pack.zip") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceEvidenceZipHandler(req);
+  }
   if (method === "POST" && pathname === "/api/compliance/evidence-pack") {
     const denied = requireMutation(req);
     if (denied) return denied;

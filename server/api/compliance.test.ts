@@ -1,10 +1,25 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { generateDpa, listSubprocessors, getSoc2Mapping } from "../compliance/generator.ts";
-import { initDashboardDb, closeDashboardDb } from "../db/dashboard.ts";
+import { initDashboardDb, closeDashboardDb, getDashboardDb } from "../db/dashboard.ts";
 import { complianceDpaHandler, complianceSubprocessorsHandler, complianceSoc2MappingHandler, complianceSummaryHandler } from "./compliance.ts";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleApi } from "./router.ts";
 
 const TEST_DB = "/tmp/test-compliance-control-surface.db";
+const TEST_OPERATOR_TOKEN = "compliance-test-token";
+let previousOperatorToken: string | undefined;
+
+beforeEach(() => {
+  previousOperatorToken = process.env.OPERATOR_TOKEN;
+  process.env.OPERATOR_TOKEN = TEST_OPERATOR_TOKEN;
+});
+
+afterEach(() => {
+  if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = previousOperatorToken;
+});
 
 function setupTestDb() {
   rmSync(TEST_DB, { force: true });
@@ -75,5 +90,80 @@ describe("complianceDpaHandler", () => {
     expect(json.data.document).not.toContain("{{CUSTOMER_NAME}}");
     closeDashboardDb();
     rmSync(TEST_DB, { force: true });
+  });
+});
+
+describe("signed compliance evidence ZIP route", () => {
+  it("rejects unauthenticated requests to all compliance GET routes", async () => {
+    const routes = [
+      "/api/compliance/dpa",
+      "/api/compliance/subprocessors",
+      "/api/compliance/soc2-mapping",
+      "/api/compliance/summary",
+      "/api/compliance/evidence-bundle",
+      "/api/compliance/evidence-pack.zip",
+    ];
+
+    for (const route of routes) {
+      const req = new Request(`http://localhost${route}`);
+      const response = await handleApi(req, new URL(req.url));
+      expect(response.status).toBe(401);
+    }
+  });
+
+  it("returns 400 for garbage period parameters", async () => {
+    const req = new Request("http://localhost/api/compliance/evidence-pack.zip?from=garbage&to=2000", {
+      headers: { "x-operator-token": TEST_OPERATOR_TOKEN },
+    });
+    const response = await handleApi(req, new URL(req.url));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("returns a non-empty application/zip body and audits the requested period", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "compliance-route-"));
+    const previousDb = process.env.DASHBOARD_DB;
+    const previousPath = process.env.DASHBOARD_DB_PATH;
+    closeDashboardDb();
+    process.env.DASHBOARD_DB = "1";
+    process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+    initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
+
+    try {
+      const req = new Request("http://localhost/api/compliance/evidence-pack.zip?from=10000&to=20000", {
+        headers: { "x-operator-token": TEST_OPERATOR_TOKEN },
+      });
+      const response = await handleApi(req, new URL(req.url));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("application/zip");
+      expect(response.headers.get("Content-Disposition")).toMatch(
+        /^attachment; filename="evidence-pack-mimule-\d{4}-\d{2}-\d{2}\.zip"$/,
+      );
+      const body = Buffer.from(await response.arrayBuffer());
+      expect(body.length).toBeGreaterThan(0);
+
+      const audit = getDashboardDb()!.query(`
+        SELECT action_kind, risk, request_json
+        FROM action_audit
+        WHERE action_kind = 'compliance.evidence-pack'
+        ORDER BY id DESC LIMIT 1
+      `).get() as { action_kind: string; risk: string; request_json: string } | null;
+      expect(audit).not.toBeNull();
+      expect(audit!.risk).toBe("low");
+      expect(JSON.parse(audit!.request_json)).toEqual({ period: { from: 10_000, to: 20_000 } });
+
+      const keyRow = getDashboardDb()!.query(
+        `SELECT value_json FROM operator_state WHERE key = 'evidence_signing_key'`,
+      ).get() as { value_json: string };
+      const keyHex = (JSON.parse(keyRow.value_json) as { keyHex: string }).keyHex;
+      expect(body.toString("utf8")).not.toContain(keyHex);
+    } finally {
+      closeDashboardDb();
+      if (previousDb === undefined) delete process.env.DASHBOARD_DB;
+      else process.env.DASHBOARD_DB = previousDb;
+      if (previousPath === undefined) delete process.env.DASHBOARD_DB_PATH;
+      else process.env.DASHBOARD_DB_PATH = previousPath;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
