@@ -90,6 +90,7 @@ const NAV_ICONS: Record<string, typeof LayoutGrid> = {
   "/codex": Code2,
   "/claude": Sparkles,
   "/gemini": Sparkles,
+  "/terminal": Terminal,
   "/finance-intel": TrendingUp,
   "/scout": Radar,
   "/channels": Bell,
@@ -111,7 +112,7 @@ const NAV: NavItem[] = NAV_ITEMS.map(({ href, label, status }) => ({
 const CORE_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "core");
 const ADVANCED_NAV: NavItem[] = NAV.filter((item) => getRouteStatus(item.href) === "advanced");
 
-const PRIMARY_NAV: NavItem[] = ["/admin", "/", "/insights", "/security", "/agents", "/today", "/autopipeline", "/models", "/opencode"]
+const PRIMARY_NAV: NavItem[] = ["/", "/insights", "/security", "/terminal", "/agents", "/today", "/autopipeline", "/models", "/opencode"]
   .map((href) => CORE_NAV.find((item) => item.href === href))
   .filter((item): item is NavItem => Boolean(item));
 

@@ -17,6 +17,13 @@ import { seedDefaultTenant } from "./tenancy/store.ts";
 import { upsertProject } from "./projects/index.ts";
 import { seedDemoData } from "./db/demo-seed.ts";
 import { seedDemoTenant } from "./db/demoTenant.ts";
+import {
+  closeTerminalClients,
+  terminalStatusHandler,
+  terminalUpgradeHandler,
+  terminalWebSocketHandlers,
+  type TerminalSocketData,
+} from "./terminal/session.ts";
 
 const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const DIST_PATH = new URL("../dist", import.meta.url).pathname;
@@ -199,6 +206,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
   if (dashboardDb) { try { backfillCostEventsOnce(); } catch (e) { console.error("[control-surface] cost backfill failed", e); } }
 
   const shutdown = () => {
+    closeTerminalClients();
     ingestor?.stop();
     builderReconciler?.stop();
     stopInsightsScanScheduler();
@@ -209,6 +217,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
 
   return {
     stop: () => {
+      closeTerminalClients();
       ingestor?.stop();
       builderReconciler?.stop();
       stopInsightsScanScheduler();
@@ -224,12 +233,12 @@ const PORT = parseInt(process.env.PORT || "3000");
 const MAX_SSE_CONNECTIONS = 100;
 let currentSseConnections = 0;
 
-const server = Bun.serve({
+const server = Bun.serve<TerminalSocketData>({
   port: PORT,
   hostname: "0.0.0.0",
   idleTimeout: 0,
 
-  async fetch(req) {
+  async fetch(req, bunServer) {
     const url = new URL(req.url);
     const { pathname, search } = url;
 
@@ -237,6 +246,14 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ ok: true, version: "0.8.0" }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    if (pathname === "/api/terminal/status") {
+      return terminalStatusHandler(req);
+    }
+
+    if (pathname === "/api/terminal/ws") {
+      return terminalUpgradeHandler(req, bunServer);
     }
 
     if (pathname === "/api/workflows") {
@@ -310,6 +327,8 @@ const server = Bun.serve({
 
     return serveStatic(pathname);
   },
+
+  websocket: terminalWebSocketHandlers,
 });
 
 console.log(`[control-surface] listening on :${server.port}`);

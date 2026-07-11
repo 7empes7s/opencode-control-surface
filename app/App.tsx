@@ -43,6 +43,7 @@ import { SecurityPage } from "./routes/SecurityPage";
 import { AgentRegistryPage } from "./routes/AgentRegistryPage";
 import { StatusPage } from "./routes/StatusPage";
 import { AdminPage } from "./routes/AdminPage";
+import { TerminalPage } from "./routes/TerminalPage";
 import { AuthPrompt } from "./components/AuthPrompt";
 import { CommandPalette, useCommandPalette } from "./components/CommandPalette";
 
@@ -110,6 +111,9 @@ export function App() {
         </Route>
         <Route path="/gemini">
           <DashLayoutBare><GeminiPage /></DashLayoutBare>
+        </Route>
+        <Route path="/terminal">
+          <DashLayoutBare><TerminalPage /></DashLayoutBare>
         </Route>
 
         <Route path="/admin">

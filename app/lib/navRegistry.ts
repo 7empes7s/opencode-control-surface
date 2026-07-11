@@ -47,6 +47,7 @@ export const NAV_ITEMS: NavMeta[] = [
   { href: "/codex", label: "Codex", status: "core", sub: "Headless codex exec" },
   { href: "/claude", label: "Claude Code", status: "core", sub: "Headless claude wrapper (planned)" },
   { href: "/gemini", label: "Gemini", status: "core" },
+  { href: "/terminal", label: "Terminal", status: "core", sub: "Persistent root shell for interactive AI CLIs" },
   { href: "/workflows", label: "Workflows", status: "advanced", experimental: true },
   { href: "/marketplace", label: "Marketplace", status: "labs", experimental: true },
   { href: "/traces", label: "Traces", status: "advanced" },
