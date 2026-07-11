@@ -112,7 +112,7 @@ export function ReportsPage() {
   const [templateId, setTemplateId] = useState("daily-pipeline");
   const [range, setRange] = useState<RangePreset>("7d");
   const [running, setRunning] = useState(false);
-  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | null>(null);
+  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
@@ -126,7 +126,11 @@ export function ReportsPage() {
   const isAuthenticated = authStatus?.authenticated || authStatus?.devBypass;
 
   const templateNames = useMemo(() => {
-    return new Map([...templates.map((template) => [template.id, template.name] as const), ["weekly-executive", "Weekly Executive Report"]]);
+    return new Map([
+      ...templates.map((template) => [template.id, template.name] as const),
+      ["weekly-executive", "Weekly Executive Report"],
+      ["monthly-remediation", "Monthly Remediation Report"],
+    ]);
   }, [templates]);
 
   const visibleRuns = useTableControls<ReportRun, "startedAt">({
@@ -176,7 +180,7 @@ export function ReportsPage() {
     }
   };
 
-  const generateDigest = async (kind: "digest" | "executive") => {
+  const generateDigest = async (kind: "digest" | "executive" | "remediation") => {
     if (!isAuthenticated || generatingDigest) return;
     setGeneratingDigest(kind);
     setMessage(null);
@@ -184,7 +188,11 @@ export function ReportsPage() {
       const response = await authFetch(`/api/reports/${kind}`, { method: "POST" });
       const json = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(json.error || `HTTP ${response.status}`);
-      setMessage(kind === "executive" ? "Generated weekly executive report." : "Generated daily operator digest.");
+      setMessage(kind === "executive"
+        ? "Generated weekly executive report."
+        : kind === "remediation"
+          ? "Generated monthly remediation report."
+          : "Generated daily operator digest.");
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -330,7 +338,7 @@ export function ReportsPage() {
           <FileText size={20} />
           <div>
             <strong>Scheduled summaries</strong>
-            <span>Generate the operator digest or one-page executive report immediately.</span>
+            <span>Generate the operator digest, executive report, or remediation-loop report immediately.</span>
           </div>
         </div>
         <button type="button" className="btn" onClick={() => generateDigest("digest")} disabled={!isAuthenticated || generatingDigest !== null}>
@@ -340,6 +348,10 @@ export function ReportsPage() {
         <button type="button" className="btn btn-primary" onClick={() => generateDigest("executive")} disabled={!isAuthenticated || generatingDigest !== null}>
           <Play size={14} />
           {generatingDigest === "executive" ? "Generating" : "Generate executive report"}
+        </button>
+        <button type="button" className="btn" onClick={() => generateDigest("remediation")} disabled={!isAuthenticated || generatingDigest !== null}>
+          <Play size={14} />
+          {generatingDigest === "remediation" ? "Generating" : "Generate remediation report"}
         </button>
       </section>
 
