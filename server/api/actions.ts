@@ -1,6 +1,6 @@
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { runContentHealthScan } from "../db/sampler.ts";
 import { runShell } from "./shell.ts";
@@ -18,6 +18,12 @@ const MODEL_HEALTH_PATH = "/var/lib/mimule/model-health.json";
 const LITELLM_ENV_PATH = "/etc/litellm/litellm.env";
 const SINGLE_MODEL_PROBE_TIMEOUT_MS = 30_000;
 const SINGLE_MODEL_PROBE_PROMPT = 'Reply with exactly this JSON object on one line, nothing else: {"status":"ok"}';
+const NEWSBITES_DEPLOY_SCRIPT_PATH = "/opt/newsbites/deploy.sh";
+
+export function newsBitesDeployAvailable(): boolean {
+  return Boolean(process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD?.trim())
+    || existsSync(NEWSBITES_DEPLOY_SCRIPT_PATH);
+}
 
 export const ALLOWED_SERVICES = [
   "newsbites", "newsbites-autopipeline", "litellm", "opencode-server",
@@ -933,11 +939,7 @@ export async function runNewsBitesDeployContentHealthScan(
   }
 }
 
-// POST /api/newsbites/deploy
-export function newsBitesDeployHandler(req: Request): Response {
-  const denied = requireMutation(req);
-  if (denied) return denied;
-
+export function startNewsBitesDeployJob(): { jobId: string } {
   const jobId = randomUUID();
   const job: DeployJob = { jobId, status: "running", output: "", startedAt: Date.now() };
   const durable = createJob({
@@ -968,7 +970,10 @@ export function newsBitesDeployHandler(req: Request): Response {
     rollbackHint: "Use the previous deployed build or inspect the NewsBites journal if deploy fails.",
   });
 
-  const proc = spawn("bash", ["-c", "cd /opt/newsbites && ./deploy.sh 2>&1"], {
+  // Resolve at call time so tests can exercise the real job lifecycle with a
+  // harmless command while production retains the existing deploy verbatim.
+  const command = process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD?.trim() || "cd /opt/newsbites && ./deploy.sh 2>&1";
+  const proc = spawn("bash", ["-c", command], {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -1009,7 +1014,15 @@ export function newsBitesDeployHandler(req: Request): Response {
     setTimeout(() => deployJobs.delete(jobId), 600_000);
   });
 
-  return json({ jobId });
+  return { jobId };
+}
+
+// POST /api/newsbites/deploy
+export function newsBitesDeployHandler(req: Request): Response {
+  const denied = requireMutation(req);
+  if (denied) return denied;
+
+  return json(startNewsBitesDeployJob());
 }
 
 // GET /api/newsbites/deploy/:jobId

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createJob, writeActionAudit } from "../db/writer.ts";
-import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, runDiskReclaim, runInfraTimerRun, runSingleModelProbe } from "./actions.ts";
+import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, newsBitesDeployAvailable, runDiskReclaim, runInfraTimerRun, runSingleModelProbe, startNewsBitesDeployJob } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { loadGatewayConfig, resolveModel } from "../gateway/config.ts";
@@ -80,8 +80,11 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   // reclaim: medium-risk job-backed disk mutation — confirm + reason required,
   // mirroring the SPEC 14 run-timer/restart precedent for job-backed actions.
   if (kind === "reclaim") return { confirm: true, reasonRequired: true };
-  // run: low-risk job-backed dispatch (currently only run:backup:now) — no
-  // confirm/reason required, mirroring the low-risk "assign" convention.
+  // A NewsBites deploy restarts the live site, so it requires explicit
+  // confirmation and operator context. run:backup:now remains no-confirm.
+  if (kind === "run" && targetType === "newsbites") return { confirm: true, reasonRequired: true };
+  // Other run actions are low-risk job-backed dispatches (currently only
+  // run:backup:now) with no confirm/reason requirement.
   if (kind === "run") return { confirm: false, reasonRequired: false };
   if (kind === "mutate-policy") return { confirm: true, reasonRequired: true };
   if (kind === "acknowledge") return { confirm: false, reasonRequired: false };
@@ -103,6 +106,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
   if (kind === "probe") return "low";
   if (kind === "clear-cooldown") return "low";
   if (kind === "reclaim") return "medium";
+  if (kind === "run" && targetType === "newsbites") return "medium";
   if (kind === "run") return "low";
   if (kind === "mutate-policy") {
     if (targetType === "autoapply") return "medium";
@@ -522,6 +526,22 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     });
     void runInfraTimerRun(jobId, "mimule-backup", body.reason);
     return { ok: true, action: "run", jobId, message: "Backup run started (mimule-backup, enqueued via --no-block)" };
+  }
+
+  if (kind === "run" && targetType === "newsbites") {
+    if (targetId !== "deploy") {
+      return { ok: false, error: "unknown run:newsbites target: " + targetId, code: "NOT_FOUND" };
+    }
+    if (!newsBitesDeployAvailable()) {
+      return { ok: false, error: "NewsBites deploy is not available on this host", code: "NOT_FOUND" };
+    }
+    const { jobId } = startNewsBitesDeployJob();
+    return {
+      ok: true,
+      action: "run",
+      jobId,
+      message: `NewsBites deploy started — poll /api/newsbites/deploy/${jobId}`,
+    };
   }
 
   if (kind === "mutate-policy" && targetType === "model") {

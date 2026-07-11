@@ -9,7 +9,7 @@ import { listGatewayKeys } from "../gateway/keys.ts";
 import { loadGatewayConfig } from "../gateway/config.ts";
 import { getGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { listBudgets } from "../governance/budgets.ts";
-import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS } from "./actions.ts";
+import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS, newsBitesDeployAvailable } from "./actions.ts";
 import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
 
@@ -627,7 +627,8 @@ function addBudgetActions(actions: ActionDescriptor[]): void {
   }
 }
 
-// Two fixed, singleton remediation actions (SPEC 15 / ULTRAPLAN P3 A3b) — not
+// Fixed, singleton remediation actions (SPEC 15 / ULTRAPLAN P3 A3b and
+// SPEC 23 / ULTRAPLAN P3 A5) — not
 // per-entity like the loops above, always offered. They back the disk-
 // pressure and backup-stale ops detectors (server/insights/scanners/ops.ts),
 // which reference these ids literally. Left at review tier deliberately:
@@ -673,6 +674,27 @@ function addDiskReclaimAndBackupActions(actions: ActionDescriptor[]): void {
     sourceRoute: "/infra",
     requiresOnline: true,
   }));
+
+  if (newsBitesDeployAvailable()) {
+    actions.push(descriptor({
+      label: "Deploy NewsBites now",
+      kind: "run",
+      targetType: "newsbites",
+      targetId: "deploy",
+      risk: "medium",
+      confirm: true,
+      reasonRequired: true,
+      evidenceRefs: [
+        fileEvidence("Deploy script", "/opt/newsbites/deploy.sh"),
+        apiEvidence("NewsBites detail", "/api/newsbites"),
+      ],
+      impactPreview: "Runs /opt/newsbites/deploy.sh — npm install + build + service restart (~15s); job-backed with streamed output",
+      rollbackHint: "Use the previous deployed build or inspect the NewsBites journal if deploy fails.",
+      jobKind: "newsbites-deploy",
+      sourceRoute: "/newsbites",
+      requiresOnline: true,
+    }));
+  }
 }
 
 export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {

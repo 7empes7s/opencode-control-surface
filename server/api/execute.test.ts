@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { readJob } from "../db/writer.ts";
 import { _resetGatewayConfigCacheForTests } from "../gateway/config.ts";
 import { getGatewayRouteOverrideForGatewayAdmin, getGatewayRoutePlanForGatewayAdmin, resetGatewayRouteOverrideStateForTests } from "../gateway/router.ts";
 import { executeActionHandler } from "./execute.ts";
@@ -14,6 +15,9 @@ describe("executeActionHandler", () => {
   let previousCooldownsPath: string | undefined;
   let previousGatewayConfig: string | undefined;
   let previousDossiersRoot: string | undefined;
+  let previousNewsBitesDeployCommand: string | undefined;
+  let previousArticlesPath: string | undefined;
+  let previousPublicPath: string | undefined;
   let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
@@ -24,6 +28,9 @@ describe("executeActionHandler", () => {
     previousCooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
     previousGatewayConfig = process.env.GATEWAY_CONFIG;
     previousDossiersRoot = process.env.DASHBOARD_DOSSIERS_ROOT;
+    previousNewsBitesDeployCommand = process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD;
+    previousArticlesPath = process.env.DASHBOARD_CONTENT_ARTICLES_PATH;
+    previousPublicPath = process.env.DASHBOARD_CONTENT_PUBLIC_PATH;
     originalFetch = globalThis.fetch;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
@@ -63,6 +70,12 @@ models:
     else process.env.GATEWAY_CONFIG = previousGatewayConfig;
     if (previousDossiersRoot === undefined) delete process.env.DASHBOARD_DOSSIERS_ROOT;
     else process.env.DASHBOARD_DOSSIERS_ROOT = previousDossiersRoot;
+    if (previousNewsBitesDeployCommand === undefined) delete process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD;
+    else process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD = previousNewsBitesDeployCommand;
+    if (previousArticlesPath === undefined) delete process.env.DASHBOARD_CONTENT_ARTICLES_PATH;
+    else process.env.DASHBOARD_CONTENT_ARTICLES_PATH = previousArticlesPath;
+    if (previousPublicPath === undefined) delete process.env.DASHBOARD_CONTENT_PUBLIC_PATH;
+    else process.env.DASHBOARD_CONTENT_PUBLIC_PATH = previousPublicPath;
     globalThis.fetch = originalFetch;
     _resetGatewayConfigCacheForTests();
     rmSync(tempDir, { recursive: true, force: true });
@@ -87,6 +100,72 @@ models:
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, `${id}:cluster`, "test_failure", "Test incident", 1, 1, 1, "pass-1", "diagnosis-1", "open");
   }
+
+  it("governs and dispatches run:newsbites:deploy through the hermetic command seam", async () => {
+    const confirmation = await makeRequest({
+      actionId: "run:newsbites:deploy",
+      reason: "test deploy",
+    });
+    expect(confirmation.status).toBe(400);
+    expect(confirmation.result.code).toBe("CONFIRM_REQUIRED");
+
+    const reason = await makeRequest({
+      actionId: "run:newsbites:deploy",
+      confirmed: true,
+    });
+    expect(reason.status).toBe(400);
+    expect(reason.result.code).toBe("REASON_REQUIRED");
+
+    const unknown = await makeRequest({
+      actionId: "run:newsbites:unknown",
+      confirmed: true,
+      reason: "test unknown target",
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.result.code).toBe("NOT_FOUND");
+
+    const articlesRoot = join(tempDir, "articles");
+    const publicRoot = join(tempDir, "public");
+    mkdirSync(articlesRoot, { recursive: true });
+    mkdirSync(publicRoot, { recursive: true });
+    process.env.DASHBOARD_CONTENT_ARTICLES_PATH = articlesRoot;
+    process.env.DASHBOARD_CONTENT_PUBLIC_PATH = publicRoot;
+    process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD = "echo hermetic-deploy";
+
+    const { status, result } = await makeRequest({
+      actionId: "run:newsbites:deploy",
+      confirmed: true,
+      reason: "test deploy",
+    });
+
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe("run");
+    expect(result.jobId).toBeString();
+    expect(result.message).toBe(`NewsBites deploy started — poll /api/newsbites/deploy/${result.jobId}`);
+
+    let job = readJob(result.jobId);
+    for (let attempt = 0; attempt < 100 && !job?.outputTail.includes("[content-health]"); attempt++) {
+      await Bun.sleep(10);
+      job = readJob(result.jobId);
+    }
+    expect(job?.status).toBe("success");
+    expect(job?.outputTail).toContain("hermetic-deploy");
+
+    const audit = getDashboardDb()!.query(`
+      SELECT action_id, risk, reason, result_status
+      FROM action_audit
+      WHERE action_id = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get("run:newsbites:deploy") as { action_id: string; risk: string; reason: string; result_status: string } | null;
+    expect(audit).toEqual({
+      action_id: "run:newsbites:deploy",
+      risk: "medium",
+      reason: "test deploy",
+      result_status: "success",
+    });
+  });
 
   it("1. missing actionId returns 400 BAD_REQUEST", async () => {
     const { status, result } = await makeRequest({});

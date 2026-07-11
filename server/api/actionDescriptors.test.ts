@@ -20,6 +20,24 @@ test("action ids are stable and safe for lookup", () => {
   );
 });
 
+test("catalog includes the governed NewsBites deploy singleton when the deploy seam is available", () => {
+  const previousDeployCommand = process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD;
+  process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD = "echo hermetic-deploy";
+  try {
+    const deploy = buildActionCatalog({}).find((action) => action.id === "run:newsbites:deploy");
+
+    expect(deploy?.kind).toBe("run");
+    expect(deploy?.targetType).toBe("newsbites");
+    expect(deploy?.targetId).toBe("deploy");
+    expect(deploy?.risk).toBe("medium");
+    expect(deploy?.confirm).toBe(true);
+    expect(deploy?.reasonRequired).toBe(true);
+  } finally {
+    if (previousDeployCommand === undefined) delete process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD;
+    else process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD = previousDeployCommand;
+  }
+});
+
 test("catalog always emits the global budget descriptor and emits project descriptors only for stored project budgets", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "budget-descriptors-"));
   const prevDb = process.env.DASHBOARD_DB;
