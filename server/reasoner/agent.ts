@@ -12,6 +12,7 @@ import {
   readBuilderWorkflow,
   readBuilderValidations,
 } from "../builder/store.ts";
+import { builderStateRoot } from "../builder/runner.ts";
 import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 
 function requireDb() {
@@ -107,7 +108,7 @@ async function runDiagnosisJob(job: ReasonerJob): Promise<void> {
   const stdoutTail = (() => {
     try {
       const passSeq = pass.sequence ?? 1;
-      const stdoutPath = join(`/var/lib/control-surface/builder-runs`, job.runId, `pass-${passSeq}-stdout.log`);
+      const stdoutPath = join(builderStateRoot(), "builder-runs", job.runId, `pass-${passSeq}-stdout.log`);
       if (!existsSync(stdoutPath)) return "";
       return readFileSync(stdoutPath, "utf8").slice(-2000);
     } catch { return ""; }

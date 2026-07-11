@@ -3,10 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { closeDashboardDb, initDashboardDb, getDashboardDb } from "../db/dashboard.ts";
 import { withTenantContext } from "../tenancy/middleware.ts";
 import { DEFAULT_TENANT_ID } from "../tenancy/context.ts";
 import {
+  builderStateRoot,
   createBuilderPass,
   createBuilderRun,
   reconcileRunStatus,
@@ -31,6 +33,30 @@ describe("tmuxSocket", () => {
     expect(tmuxSocket("t-beta")).toBe("tib-t-beta");
     expect(tmuxSocket("my-org")).toBe("tib-my-org");
   });
+
+  test("resolves a custom socket prefix at call time", () => {
+    const previous = process.env.BUILDER_TMUX_SOCKET_PREFIX;
+    try {
+      process.env.BUILDER_TMUX_SOCKET_PREFIX = " test-builder-";
+      expect(tmuxSocket("mimule")).toBe("test-builder-mimule");
+    } finally {
+      if (previous === undefined) delete process.env.BUILDER_TMUX_SOCKET_PREFIX;
+      else process.env.BUILDER_TMUX_SOCKET_PREFIX = previous;
+    }
+  });
+});
+
+test("builderStateRoot keeps the production default and resolves env changes at call time", () => {
+  const previous = process.env.BUILDER_STATE_ROOT;
+  try {
+    delete process.env.BUILDER_STATE_ROOT;
+    expect(builderStateRoot()).toBe("/var/lib/control-surface");
+    process.env.BUILDER_STATE_ROOT = " /tmp/builder-test-state ";
+    expect(builderStateRoot()).toBe("/tmp/builder-test-state");
+  } finally {
+    if (previous === undefined) delete process.env.BUILDER_STATE_ROOT;
+    else process.env.BUILDER_STATE_ROOT = previous;
+  }
 });
 
 function pass(id: string, sequence: number): BuilderPass {
@@ -121,8 +147,10 @@ describe("reconcileRunStatus — validation-only failure", () => {
   let tempDir: string;
   let prevDb: string | undefined;
   let prevDbPath: string | undefined;
-  // Scoped to this test's own (unique, tempDir-derived) project id — never the whole
-  // tenant directory, which is shared with the live "mimule" tenant's real run data.
+  let prevBuilderStateRoot: string | undefined;
+  let prevBuilderTmuxSocketPrefix: string | undefined;
+  let testTmuxSocketPrefix: string;
+  // Scoped to this test's temp builder state root and unique project id.
   let projectRunsDir: string | null = null;
 
   function reqFor(tenantId: string): Request {
@@ -147,18 +175,28 @@ describe("reconcileRunStatus — validation-only failure", () => {
     tempDir = mkdtempSync(join(tmpdir(), "runner-validation-fail-test-"));
     prevDb = process.env.DASHBOARD_DB;
     prevDbPath = process.env.DASHBOARD_DB_PATH;
+    prevBuilderStateRoot = process.env.BUILDER_STATE_ROOT;
+    prevBuilderTmuxSocketPrefix = process.env.BUILDER_TMUX_SOCKET_PREFIX;
+    testTmuxSocketPrefix = `tib-test-${randomUUID().slice(0, 8)}-`;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+    process.env.BUILDER_STATE_ROOT = join(tempDir, "builder-state");
+    process.env.BUILDER_TMUX_SOCKET_PREFIX = testTmuxSocketPrefix;
     initDashboardDb({ path: join(tempDir, "dashboard.sqlite") });
     projectRunsDir = null;
   });
 
   afterEach(() => {
     closeDashboardDb();
+    spawnSync("tmux", ["-L", `${testTmuxSocketPrefix}mimule`, "kill-server"], { stdio: "ignore" });
     if (prevDb === undefined) delete process.env.DASHBOARD_DB;
     else process.env.DASHBOARD_DB = prevDb;
     if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
     else process.env.DASHBOARD_DB_PATH = prevDbPath;
+    if (prevBuilderStateRoot === undefined) delete process.env.BUILDER_STATE_ROOT;
+    else process.env.BUILDER_STATE_ROOT = prevBuilderStateRoot;
+    if (prevBuilderTmuxSocketPrefix === undefined) delete process.env.BUILDER_TMUX_SOCKET_PREFIX;
+    else process.env.BUILDER_TMUX_SOCKET_PREFIX = prevBuilderTmuxSocketPrefix;
     rmSync(tempDir, { recursive: true, force: true });
     if (projectRunsDir) rmSync(projectRunsDir, { recursive: true, force: true });
   });
@@ -171,8 +209,8 @@ describe("reconcileRunStatus — validation-only failure", () => {
     // and readBuilderPasses()'s tenant filter only treats NULL tenant_id rows as belonging
     // to the DEFAULT tenant (server/db/tenantScope.ts, whereTenant()) — a synthetic
     // non-default tenant id would make the pass invisible to its own reads. This test's
-    // file writes are still scoped to a tempDir-unique project id (see projectRunsDir
-    // below), so it can't collide with or delete the live service's own "mimule" data.
+    // file writes are scoped to BUILDER_STATE_ROOT under tempDir (see projectRunsDir
+    // below), so they cannot collide with the live service's own "mimule" data.
     const tenantId = DEFAULT_TENANT_ID;
 
     // Register the temp dir as a known project directly in builder_projects (the same
@@ -228,7 +266,7 @@ describe("reconcileRunStatus — validation-only failure", () => {
     // Simulate the tmux pass having already finished with exit code 0 (agent "succeeded"),
     // with no tmux session left for reconcileRunStatus to find — the same state it reads
     // in production once the real pass script's tmux session has exited.
-    projectRunsDir = join("/var/lib/control-surface/tenants", sanitize(tenantId), "projects", sanitize(workflow.projectId));
+    projectRunsDir = join(process.env.BUILDER_STATE_ROOT!, "tenants", sanitize(tenantId), "projects", sanitize(workflow.projectId));
     const runDirPath = join(projectRunsDir, "builder-runs", run.id);
     mkdirSync(runDirPath, { recursive: true });
     writeFileSync(join(runDirPath, "pass-1-exit.code"), "0", "utf8");

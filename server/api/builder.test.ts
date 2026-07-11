@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
@@ -42,6 +43,10 @@ let previousProvisionRootsAllow: string | undefined;
 let previousProvisionedRoots: string | undefined;
 let previousAgenticModelsPath: string | undefined;
 let previousPath: string | undefined;
+let previousBuilderStateRoot: string | undefined;
+let previousBuilderTmuxSocketPrefix: string | undefined;
+let tempPlanFile: string;
+const testTmuxSocketPrefix = `tib-test-${randomUUID().slice(0, 8)}-`;
 
 beforeEach(() => {
   closeDashboardDb();
@@ -52,10 +57,17 @@ beforeEach(() => {
   previousProvisionedRoots = process.env.BUILDER_PROVISIONED_ROOTS;
   previousAgenticModelsPath = process.env.BUILDER_AGENTIC_MODELS_PATH;
   previousPath = process.env.PATH;
+  previousBuilderStateRoot = process.env.BUILDER_STATE_ROOT;
+  previousBuilderTmuxSocketPrefix = process.env.BUILDER_TMUX_SOCKET_PREFIX;
+  process.env.BUILDER_STATE_ROOT = join(tempDir, "builder-state");
+  process.env.BUILDER_TMUX_SOCKET_PREFIX = testTmuxSocketPrefix;
+  tempPlanFile = join(tempDir, "PLAN.md");
+  writeFileSync(tempPlanFile, "# Builder Test Plan\n\n- [ ] Run local validation smoke\n", "utf8");
 });
 
 afterEach(() => {
   closeDashboardDb();
+  spawnSync("tmux", ["-L", `${testTmuxSocketPrefix}mimule`, "kill-server"], { stdio: "ignore" });
   if (previousDashboardDb === undefined) delete process.env.DASHBOARD_DB;
   else process.env.DASHBOARD_DB = previousDashboardDb;
   if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
@@ -68,6 +80,10 @@ afterEach(() => {
   else process.env.BUILDER_AGENTIC_MODELS_PATH = previousAgenticModelsPath;
   if (previousPath === undefined) delete process.env.PATH;
   else process.env.PATH = previousPath;
+  if (previousBuilderStateRoot === undefined) delete process.env.BUILDER_STATE_ROOT;
+  else process.env.BUILDER_STATE_ROOT = previousBuilderStateRoot;
+  if (previousBuilderTmuxSocketPrefix === undefined) delete process.env.BUILDER_TMUX_SOCKET_PREFIX;
+  else process.env.BUILDER_TMUX_SOCKET_PREFIX = previousBuilderTmuxSocketPrefix;
   rmSync(tempDir, { recursive: true, force: true });
   rmSync("/opt/ai-vault/projects/test-provisioned-api-project.md", { force: true });
 });
@@ -75,6 +91,22 @@ afterEach(() => {
 function enableDb(): void {
   process.env.DASHBOARD_DB = "1";
   initDashboardDb({ path: join(tempDir, "dashboard.sqlite") });
+}
+
+function installFakeCodex(binDirName: string): string {
+  const fakeBin = join(tempDir, binDirName);
+  mkdirSync(fakeBin, { recursive: true });
+  const fakeCodex = join(fakeBin, "codex");
+  writeFileSync(fakeCodex, `#!/bin/bash
+set -euo pipefail
+echo "fake codex invoked: $*"
+if [ -n "\${BUILDER_CHILD_ID:-}" ]; then
+  echo "fake child completed for $BUILDER_CHILD_ID"
+fi
+`, { encoding: "utf8" });
+  chmodSync(fakeCodex, 0o755);
+  process.env.PATH = `${fakeBin}:${process.env.PATH ?? ""}`;
+  return fakeBin;
 }
 
 test("builder projects includes control surface", async () => {
@@ -426,7 +458,7 @@ test("builder workflow stores configured repeated-validation pause policy", asyn
     body: JSON.stringify({
       name: "Validation pause policy",
       projectRoot: "/opt/opencode-control-surface",
-      planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+      planFile: tempPlanFile,
       mode: "auto-continue",
       status: "ready",
       config: {
@@ -489,7 +521,7 @@ test("builder workflow draft survives through SQLite read model and audit", asyn
   const body = {
     name: "Dashboard V4.1 once",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "once",
     status: "draft",
     config: {
@@ -578,7 +610,7 @@ test("builder workflow list reconciles stale timeout and agentic-heavy model pol
   const body = {
     name: "Stale GaffrPro workflow",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "auto-continue",
     status: "ready",
     config: {
@@ -750,10 +782,11 @@ test("builder provisioning rejects protected service roots", async () => {
 
 test("builder workflow start creates run pass job and artifact rows", async () => {
   enableDb();
+  installFakeCodex("start-workflow-bin");
   const body = {
     name: "Startable workflow",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "once",
     status: "draft",
     config: {
@@ -829,6 +862,7 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   expect(helpers).toContain("builder_child_id_for_pid()");
   expect(helpers).toContain("builder-child-${RUN_ID}_");
   expect(helpers).toContain("BUILDER_CHILD_PASS_LOG");
+  expect(helpers).toContain(`${testTmuxSocketPrefix}\${TENANT_ID}`);
   // Prompt file assertions: orchestration contract and context guidance live in the prompt
   const promptPath = scriptArtifact!.path.replace(/pass-\d+\.sh$/, "pass-1-prompt.txt");
   const promptContent = existsSync(promptPath) ? readFileSync(promptPath, "utf8") : "";
@@ -859,6 +893,55 @@ test("builder workflow start creates run pass job and artifact rows", async () =
   const runs = readBuilderRuns(workflowId);
   expect(runs.length).toBeGreaterThan(0);
   expect(runs[0].status).toBe("canceled");
+});
+
+test("builder workflow start and stop leave real builder state listings unchanged", async () => {
+  enableDb();
+  installFakeCodex("real-state-guard-bin");
+  const realRunsDir = "/var/lib/control-surface/builder-runs";
+  const realTenantsDir = "/var/lib/control-surface/tenants";
+  const snapshot = (path: string): string[] | null => existsSync(path) ? readdirSync(path).sort() : null;
+  const runsBefore = snapshot(realRunsDir);
+  const tenantsBefore = snapshot(realTenantsDir);
+
+  const createResponse = await builderCreateWorkflowHandler(new Request("http://localhost/api/builder/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Hermetic real-state guard workflow",
+      projectRoot: "/opt/opencode-control-surface",
+      planFile: tempPlanFile,
+      mode: "once",
+      status: "draft",
+      config: {
+        projectRoot: "/opt/opencode-control-surface",
+        agentOrder: ["codex"],
+        modelPolicy: { fallbackTargets: [] },
+        validationProfile: { commands: ["true"] },
+        gitPolicy: { commit: "manual", push: "never" },
+        backupPolicy: { enabled: false, beforeRun: false },
+        riskPolicy: { liveDeploys: "disabled", maxPasses: 1 },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json() as ApiEnvelope<BuilderWorkflowResponse>;
+
+  const startResponse = await builderStartWorkflowHandler(created.data.workflow!.id, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(startResponse.status).toBe(201);
+
+  const stopResponse = await builderStopWorkflowHandler(created.data.workflow!.id, new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json" },
+  }));
+  expect(stopResponse.status).toBe(200);
+  expect(snapshot(realRunsDir)).toEqual(runsBefore);
+  expect(snapshot(realTenantsDir)).toEqual(tenantsBefore);
 });
 
 test("builder workflow start rejects major runs without a project-local validation profile", async () => {
@@ -1088,7 +1171,7 @@ test("builder run summary includes detail-page health timeline fields", async ()
     body: JSON.stringify({
       name: "Health detail workflow",
       projectRoot: "/opt/opencode-control-surface",
-      planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+      planFile: tempPlanFile,
       mode: "once",
       status: "draft",
       config: {
@@ -1196,23 +1279,12 @@ test("builder run summary includes detail-page health timeline fields", async ()
 
 test("builder child helpers execute disposable child and record lifecycle evidence", async () => {
   enableDb();
-  const fakeBin = join(tempDir, "bin");
-  mkdirSync(fakeBin, { recursive: true });
-  const fakeCodex = join(fakeBin, "codex");
-  writeFileSync(fakeCodex, `#!/bin/bash
-set -euo pipefail
-echo "fake codex invoked: $*"
-if [ -n "\${BUILDER_CHILD_ID:-}" ]; then
-  echo "fake child completed for $BUILDER_CHILD_ID"
-fi
-`, { encoding: "utf8" });
-  chmodSync(fakeCodex, 0o755);
-  process.env.PATH = `${fakeBin}:${process.env.PATH ?? ""}`;
+  const fakeBin = installFakeCodex("bin");
 
   const body = {
     name: "Child helper smoke workflow",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "once",
     status: "draft",
     config: {
@@ -1248,6 +1320,9 @@ fi
   const run = started.data.run!;
   const scriptArtifact = started.data.artifacts.find((artifact) => artifact.kind === "command-script");
   expect(scriptArtifact).toBeTruthy();
+  expect(scriptArtifact!.path.startsWith(process.env.BUILDER_STATE_ROOT!)).toBe(true);
+  const passScript = readFileSync(scriptArtifact!.path, "utf8");
+  expect(passScript).toContain(`export PATH='${fakeBin}:`);
   const builderDir = scriptArtifact!.path.replace(/\/pass-\d+\.sh$/, "");
 
   const smokeScript = `
@@ -1299,7 +1374,7 @@ test("builder workflow start rejects tampered project roots before spawning", as
   const body = {
     name: "Tampered workflow",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "once",
     status: "draft",
     config: {
@@ -1352,7 +1427,7 @@ test("builder pause and resume toggle workflow status", async () => {
   const body = {
     name: "Pausable workflow",
     projectRoot: "/opt/opencode-control-surface",
-    planFile: "/root/DASHBOARD_V4_SCHEDULER_PLAN.md",
+    planFile: tempPlanFile,
     mode: "once",
     status: "ready",
     config: {

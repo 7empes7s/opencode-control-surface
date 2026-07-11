@@ -51,6 +51,7 @@ import {
   classifyFailureDiagnosis,
   updateBuilderRun,
   classifyStopReason,
+  builderStateRoot,
   type FailureDiagnosis,
 } from "../builder/runner.ts";
 import { getNextRunTime } from "../builder/scheduler.ts";
@@ -130,7 +131,7 @@ export function builderArtifactContentHandler(url: URL): Response {
   const serve = (p: string) => new Response(readFileSync(p, "utf8"), { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 
   // 1. Legacy flat path
-  const flatPath = `/var/lib/control-surface/builder-runs/${runId}/${filename}`;
+  const flatPath = join(builderStateRoot(), "builder-runs", runId, filename);
   if (existsSync(flatPath)) return serve(flatPath);
 
   // 2. DB-assisted: JOIN runs→workflows to get project_id (isolated, never throws up)
@@ -143,14 +144,14 @@ export function builderArtifactContentHandler(url: URL): Response {
       if (row) {
         const tid = (row.tenant_id || "mimule").replace(/[^a-zA-Z0-9._-]/g, "_");
         const pid = (row.project_id || "default").replace(/[^a-zA-Z0-9._-]/g, "_");
-        const dbPath = `/var/lib/control-surface/tenants/${tid}/projects/${pid}/builder-runs/${runId}/${filename}`;
+        const dbPath = join(builderStateRoot(), "tenants", tid, "projects", pid, "builder-runs", runId, filename);
         if (existsSync(dbPath)) return serve(dbPath);
       }
     }
   } catch { /* fall through to scan */ }
 
   // 3. Directory scan fallback — works even if DB is unavailable or schema drifts
-  const tenantsBase = "/var/lib/control-surface/tenants";
+  const tenantsBase = join(builderStateRoot(), "tenants");
   if (existsSync(tenantsBase)) {
     for (const tid of readdirSync(tenantsBase)) {
       const projectsBase = `${tenantsBase}/${tid}/projects`;
@@ -1450,8 +1451,6 @@ export type BuilderRepairBaselineResponse = {
   reason?: string;
 };
 
-const REPAIR_PLAN_DIR = "/var/lib/control-surface/builder-repair-plans";
-
 function safeRepairId(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
 }
@@ -1519,8 +1518,9 @@ export async function builderRepairBaselineHandler(runId: string, req: Request):
     await req.json().catch(() => ({}));
     const validations = readBuilderValidations(runId);
     const passes = readBuilderPasses(runId);
-    mkdirSync(REPAIR_PLAN_DIR, { recursive: true });
-    const repairPlanFile = join(REPAIR_PLAN_DIR, `${safeRepairId(runId)}-repair-build-baseline.md`);
+    const repairPlanDir = join(builderStateRoot(), "builder-repair-plans");
+    mkdirSync(repairPlanDir, { recursive: true });
+    const repairPlanFile = join(repairPlanDir, `${safeRepairId(runId)}-repair-build-baseline.md`);
     fsWriteFileSync(repairPlanFile, buildRepairPlan(run, workflow, validations, passes), { encoding: "utf8" });
 
     const repairWorkflow = createBuilderWorkflow({
@@ -1761,10 +1761,10 @@ export function builderPassLiveHandler(runId: string): Response {
       const { existsSync: fsExists, readdirSync } = require("node:fs") as typeof import("node:fs");
       const filename = `pass-${running.sequence}-stdout.log`;
       // 1. flat legacy path
-      const flat = `/var/lib/control-surface/builder-runs/${runId}/${filename}`;
+      const flat = join(builderStateRoot(), "builder-runs", runId, filename);
       if (fsExists(flat)) return { passSeq: running.sequence, logPath: flat, agent: running.agent ?? "" };
       // 2. tenant-aware scan (same pattern as builderArtifactContentHandler)
-      const tenantsBase = "/var/lib/control-surface/tenants";
+      const tenantsBase = join(builderStateRoot(), "tenants");
       if (fsExists(tenantsBase)) {
         for (const tid of readdirSync(tenantsBase)) {
           const projectsBase = `${tenantsBase}/${tid}/projects`;

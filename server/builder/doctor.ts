@@ -5,9 +5,7 @@ import { spawnSync } from "node:child_process";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import type { BuilderWorkflow, BuilderWorkflowMode } from "./store.ts";
 import { readBuilderArtifacts } from "./store.ts";
-import { createBuilderArtifact } from "./runner.ts";
-
-const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
+import { builderStateRoot, createBuilderArtifact } from "./runner.ts";
 
 export interface DoctorReviewProfile {
   codeReview: {
@@ -59,13 +57,14 @@ export interface DoctorReport {
 }
 
 function ensureRunsDir(): void {
-  if (!existsSync(BUILDER_RUNS_DIR)) {
-    mkdirSync(BUILDER_RUNS_DIR, { recursive: true });
+  const runsDir = join(builderStateRoot(), "builder-runs");
+  if (!existsSync(runsDir)) {
+    mkdirSync(runsDir, { recursive: true });
   }
 }
 
 function runDir(runId: string): string {
-  return join(BUILDER_RUNS_DIR, runId);
+  return join(builderStateRoot(), "builder-runs", runId);
 }
 
 export function buildDoctorReviewProfile(workflow: BuilderWorkflow): DoctorReviewProfile {

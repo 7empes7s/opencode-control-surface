@@ -35,12 +35,22 @@ import { isNonGatewayCliLane, recordRunnerUsage } from "./runnerAccounting.ts";
 import { getBuildValidationCommand, getValidationProfileStartBlockers } from "./validation-profile.ts";
 import { getPlanSanityStartBlockers } from "./plan-sanity.ts";
 
-const BUILDER_RUNS_DIR = "/var/lib/control-surface/builder-runs";
-const TENANT_RUNS_BASE_DIR = "/var/lib/control-surface/tenants";
 // Isolated XDG_CONFIG_HOME for builder opencode runs: a config without the scoped
 // filesystem MCP servers (vault/newsbites/editorial) that make agentic models falsely
 // believe they are sandboxed, and without the MIMULE infra CLAUDE.md instructions.
 const BUILDER_OPENCODE_CONFIG_HOME = "/var/lib/control-surface/opencode-builder";
+
+export function builderStateRoot(): string {
+  return process.env.BUILDER_STATE_ROOT?.trim() || "/var/lib/control-surface";
+}
+
+function builderRunsDir(): string {
+  return join(builderStateRoot(), "builder-runs");
+}
+
+function tenantRunsBaseDir(): string {
+  return join(builderStateRoot(), "tenants");
+}
 
 function validationSucceeded(status: string): boolean {
   return /^(ok|pass|passed|success|succeeded|skipped)$/i.test(status);
@@ -81,8 +91,9 @@ export function repeatedValidationFailurePauseReason(
 }
 
 function ensureRunsDir(): void {
-  if (!existsSync(BUILDER_RUNS_DIR)) {
-    mkdirSync(BUILDER_RUNS_DIR, { recursive: true });
+  const runsDir = builderRunsDir();
+  if (!existsSync(runsDir)) {
+    mkdirSync(runsDir, { recursive: true });
   }
 }
 
@@ -95,7 +106,7 @@ function resolveRunDir(tenantId: string | null, projectId: string | null, runId:
   }
 
   // Fall back to legacy path for backward compatibility
-  const legacyPath = join(BUILDER_RUNS_DIR, runId);
+  const legacyPath = join(builderRunsDir(), runId);
   if (existsSync(legacyPath)) {
     return legacyPath;
   }
@@ -106,19 +117,19 @@ function resolveRunDir(tenantId: string | null, projectId: string | null, runId:
 
 function runDir(tenantIdOrRunId: string | null, projectId?: string | null, runId?: string): string {
   if (runId === undefined) {
-    return join(BUILDER_RUNS_DIR, tenantIdOrRunId ?? "");
+    return join(builderRunsDir(), tenantIdOrRunId ?? "");
   }
 
   const tenantId = tenantIdOrRunId;
   // For backward compatibility, if tenantId is null or "mimule" and projectId is null, use legacy path
   if ((!tenantId || tenantId === "mimule") && !projectId) {
-    return join(BUILDER_RUNS_DIR, runId);
+    return join(builderRunsDir(), runId);
   }
 
   // For tenant-aware paths
   const safeTenantId = sanitizeTenantId(tenantId || "mimule");
   const safeProjectId = projectId ? sanitizeProjectId(projectId) : "default";
-  return join(TENANT_RUNS_BASE_DIR, safeTenantId, "projects", safeProjectId, "builder-runs", runId);
+  return join(tenantRunsBaseDir(), safeTenantId, "projects", safeProjectId, "builder-runs", runId);
 }
 
 function sanitizeTenantId(tenantId: string): string {
@@ -239,7 +250,7 @@ function readModelBriefing(selectedModel: string | null, agent: string): string 
 // ── Tmux helpers ───────────────────────────────────────────────────────────
 
 function tmuxSocket(tenantId: string): string {
-  return `tib-${tenantId}`;
+  return `${process.env.BUILDER_TMUX_SOCKET_PREFIX?.trim() || "tib-"}${tenantId}`;
 }
 
 export { tmuxSocket, acquireProjectLock, releaseProjectLock };
@@ -419,7 +430,7 @@ function runBackup(workflow: BuilderWorkflow, run: BuilderRun, passId: string): 
   const projectRoot = workflow.projectRoot;
   if (!existsSync(projectRoot)) return;
 
-  const backupDir = "/var/lib/control-surface/builder-backups";
+  const backupDir = join(builderStateRoot(), "builder-backups");
   if (!existsSync(backupDir)) {
     mkdirSync(backupDir, { recursive: true });
   }
@@ -1475,6 +1486,10 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function shellDoubleQuoteFragment(value: string): string {
+  return value.replace(/([\\"$`])/g, "\\$1");
+}
+
 function writePassScript(
   runId: string,
   workflow: BuilderWorkflow,
@@ -1525,6 +1540,7 @@ function writePassScript(
 
   const PASS_TIMEOUT_SECONDS = workflow.config.riskPolicy?.passTimeoutSeconds ?? 900;
   const timedCommand = `timeout ${PASS_TIMEOUT_SECONDS}s bash -lc ${shellQuote(command)}`;
+  const tmuxSocketPrefix = shellDoubleQuoteFragment(tmuxSocket(""));
 
   function buildChildHelpersScript(): string {
     const projectRoot = workflow.projectRoot.replace(/"/g, '\\"');
@@ -1554,7 +1570,7 @@ function writePassScript(
       '    return 1',
       '  fi',
       '  local active_children=0',
-      '  active_children=$(tmux -L "tib-${TENANT_ID}" list-sessions -F \'#{session_name}\' 2>/dev/null | grep -c "^builder-child-${RUN_ID}_" || true)',
+      `  active_children=$(tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" list-sessions -F '#{session_name}' 2>/dev/null | grep -c "^builder-child-\${RUN_ID}_" || true)`,
       '  if [ "$active_children" -ge 3 ]; then',
       '    echo "ERROR: max 3 concurrent children allowed" >&2; return 1',
       '  fi',
@@ -1593,14 +1609,14 @@ function writePassScript(
       'echo "[builder-child] $BUILDER_CHILD_ID status=$status exit=$code finished_at=$(date -Iseconds)" >> "$BUILDER_CHILD_PASS_LOG"',
       'CHILD_EOF',
       '  chmod +x "$child_script"',
-      `  tmux -L "tib-\${TENANT_ID}" new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env PATH=\\"$PATH\\" BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
+      `  tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" new-session -d -s "builder-child-$child_id" -c "${projectRoot}" "env PATH=\\"$PATH\\" BUILDER_DIR=\\"$BUILDER_DIR\\" BUILDER_CHILD_ID=\\"$child_id\\" BUILDER_CHILD_DIR=\\"$child_dir\\" BUILDER_CHILD_AGENT=\\"$child_agent\\" BUILDER_CHILD_MODEL=\\"$child_model\\" BUILDER_PROJECT_ROOT=\\"${projectRoot}\\" BUILDER_CHILD_PASS_LOG=\\"$BUILDER_DIR/${stdoutLog}\\" \\"$child_script\\""`,
       '  local child_pid=""',
       '  for _ in 1 2 3 4 5 6 7 8 9 10; do',
       '    if [ -s "$child_dir/pid" ]; then child_pid="$(cat "$child_dir/pid" 2>/dev/null)"; break; fi',
       '    sleep 0.1',
       '  done',
       '  if [ -z "$child_pid" ]; then',
-      '    child_pid=$(tmux -L "tib-${TENANT_ID}" list-panes -t "builder-child-$child_id" -F \'#{pane_pid}\' 2>/dev/null | head -1)',
+      `    child_pid=$(tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" list-panes -t "builder-child-$child_id" -F '#{pane_pid}' 2>/dev/null | head -1)`,
       '    echo "$child_pid" > "$child_dir/pid"',
       '  fi',
       '  echo "{\\"id\\":\\"$child_id\\",\\"agent\\":\\"$child_agent\\",\\"model\\":\\"$child_model\\",\\"pid\\":\\"$child_pid\\",\\"spawnedAt\\":\\"$(date -Iseconds)\\"}" >> "$BUILDER_DIR/children-manifest.jsonl"',
@@ -1612,7 +1628,7 @@ function writePassScript(
       '  local child_id',
       '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
       '  [ -z "$child_id" ] && echo "NOT_FOUND" && return',
-      '  if tmux -L "tib-${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null; then',
+      `  if tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null; then`,
       '    echo "RUNNING"',
       '  elif [ -f "$BUILDER_DIR/children/$child_id/status" ]; then',
       '    cat "$BUILDER_DIR/children/$child_id/status"',
@@ -1630,7 +1646,7 @@ function writePassScript(
       '  [ -z "$child_id" ] && echo "NOT_FOUND" && return 1',
       '  local waited=0',
       '  while [ $waited -lt $wait_timeout ]; do',
-      '    if ! tmux -L "tib-${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null && [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then',
+      `    if ! tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" has-session -t "builder-child-$child_id" 2>/dev/null && [ -f "$BUILDER_DIR/children/$child_id/exit.code" ]; then`,
       '      local status code',
       '      status=$(builder_child_status "$child_pid")',
       '      code=$(cat "$BUILDER_DIR/children/$child_id/exit.code")',
@@ -1642,7 +1658,7 @@ function writePassScript(
       '  done',
       '  echo "TIMEOUT" > "$BUILDER_DIR/children/$child_id/status"',
       '  echo "124" > "$BUILDER_DIR/children/$child_id/exit.code"',
-      '  tmux -L "tib-${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || true',
+      `  tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || true`,
       '  echo "[builder-child] $child_id status=TIMEOUT exit=124 finished_at=$(date -Iseconds)" >> "$BUILDER_DIR/' + stdoutLog + '"',
       '  echo "TIMEOUT"',
       '  return 124',
@@ -1660,7 +1676,7 @@ function writePassScript(
       '  local child_pid="$1"',
       '  local child_id',
       '  child_id="$(builder_child_id_for_pid "$child_pid" 2>/dev/null || true)"',
-      '  [ -n "$child_id" ] && tmux -L "tib-${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || kill "$child_pid" 2>/dev/null',
+      `  [ -n "$child_id" ] && tmux -L "${tmuxSocketPrefix}\${TENANT_ID}" kill-session -t "builder-child-$child_id" 2>/dev/null || kill "$child_pid" 2>/dev/null`,
       '  if [ -n "$child_id" ]; then',
       '    echo "FAILED" > "$BUILDER_DIR/children/$child_id/status"',
       '    echo "143" > "$BUILDER_DIR/children/$child_id/exit.code"',
@@ -1702,6 +1718,7 @@ BUILDER_PROJECT_ROOT="${workflow.projectRoot}"
 BUILDER_PROMPT_FILE="$BUILDER_DIR/${promptFile}"
 TENANT_ID="${workflow.tenantId ?? "mimule"}"
 export BUILDER_DIR RUN_ID BUILDER_PROJECT_ROOT BUILDER_PROMPT_FILE TENANT_ID
+export PATH=${shellQuote(process.env.PATH ?? "")}
 EXIT_CODE=143
 trap 'echo "$EXIT_CODE" > "$BUILDER_DIR/pass-${passNumber}-exit.code"' EXIT
 mkdir -p "$BUILDER_DIR/children" "$BUILDER_DIR/bin"
@@ -3263,7 +3280,7 @@ async function runPlaywrightValidation(
   config: { config?: string; targets?: string[] },
 ): Promise<string[]> {
   const validationIds: string[] = [];
-  const runDirPath = `/var/lib/control-surface/builder-runs/${run.id}`;
+  const runDirPath = join(builderStateRoot(), "builder-runs", run.id);
   const pwDir = join(runDirPath, "playwright");
   const traceFile = join(pwDir, "trace.zip");
   const reportFile = join(pwDir, "report.html");
