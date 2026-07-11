@@ -119,9 +119,14 @@ export function collectExecutiveStats(periodStart: number, periodEnd: number): E
           THEN MAX(0, resolved_at - first_seen) END) AS mttr_ms
         FROM reasoner_incidents WHERE tenant_id = ? OR tenant_id IS NULL`)
         .get(periodStart, periodEnd, periodStart, periodEnd, mttrStart, mttrStart, periodEnd, tenantId) as IncidentAggregate | null;
-      const autoRemediated = safeCount(`SELECT COUNT(DISTINCT target_id) AS count FROM action_audit
-        WHERE (tenant_id = ? OR tenant_id IS NULL) AND action_kind IN ('incidents.auto-close', 'incidents.auto-resolve')
-          AND result_status = 'success' AND ts >= ? AND ts <= ?`, [tenantId, periodStart, periodEnd]);
+      const autoRemediated = safeCount(`SELECT COUNT(*) AS count FROM reasoner_incidents AS incident
+        WHERE (incident.tenant_id = ? OR incident.tenant_id IS NULL)
+          AND incident.resolved_at >= ? AND incident.resolved_at <= ?
+          AND EXISTS (SELECT 1 FROM action_audit AS audit
+            WHERE (audit.tenant_id = ? OR audit.tenant_id IS NULL)
+              AND audit.target_id = incident.id
+              AND audit.action_kind IN ('incidents.auto-close', 'incidents.auto-resolve')
+              AND audit.result_status = 'success')`, [tenantId, periodStart, periodEnd, tenantId]);
       const closed = row?.closed ?? 0;
       incidents = {
         configured: true,

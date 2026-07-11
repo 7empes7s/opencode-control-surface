@@ -74,12 +74,19 @@ function seedRealData(now: number): void {
   db().query(`INSERT INTO reasoner_incidents
     (id, cluster_key, failure_class, title, first_seen, last_seen, occurrence_count, representative_pass_id, representative_diagnosis_id, status, tenant_id, resolved_at)
     VALUES ('inc-open', 'open', 'timeout', 'Opened', ?, ?, 1, 'p1', 'd1', 'open', 'mimule', NULL),
-           ('inc-closed', 'closed', 'timeout', 'Closed', ?, ?, 1, 'p2', 'd2', 'resolved', 'mimule', ?)`)
-    .run(now - 2_000, now - 1_000, now - 7_200_000, now - 1_000, now - 3_600_000);
+           ('inc-closed', 'closed', 'timeout', 'Closed', ?, ?, 1, 'p2', 'd2', 'resolved', 'mimule', ?),
+           ('inc-closed-manual', 'closed-manual', 'timeout', 'Closed manually', ?, ?, 1, 'p3', 'd3', 'resolved', 'mimule', ?),
+           ('inc-closed-outside', 'closed-outside', 'timeout', 'Closed outside period', ?, ?, 1, 'p4', 'd4', 'resolved', 'mimule', ?)`)
+    .run(now - 2_000, now - 1_000,
+      now - 7_200_000, now - 1_000, now - 3_600_000,
+      periodStart - 2_000, now - 1_000, now - 1_800_000,
+      periodStart - 3_600_000, periodStart - 1_000, periodStart - 1_000);
   db().query(`INSERT INTO action_audit
     (ts, actor, actor_source, action_kind, action, target_type, target_id, result_status, tenant_id)
-    VALUES (?, 'scheduler', 'system', 'incidents.auto-close', 'incidents.auto-close', 'incident', 'inc-closed', 'success', 'mimule')`)
-    .run(now - 3_500_000);
+    VALUES (?, 'scheduler', 'system', 'incidents.auto-close', 'incidents.auto-close', 'incident', 'inc-closed', 'success', 'mimule'),
+           (?, 'scheduler', 'system', 'incidents.auto-resolve', 'incidents.auto-resolve', 'incident', 'inc-closed-outside', 'success', 'mimule'),
+           (?, 'scheduler', 'system', 'incidents.auto-close', 'incidents.auto-close', 'incident', 'inc-missing', 'success', 'mimule')`)
+    .run(now - 3_500_000, now - 3_000_000, now - 2_500_000);
 
   db().query(`INSERT INTO jobs (id, ts, kind, state, status, started_at, finished_at, tenant_id)
     VALUES ('deploy-1', ?, 'newsbites-deploy', 'success', 'success', ?, ?, 'mimule')`)
@@ -107,7 +114,7 @@ describe("weekly executive report", () => {
     const stats = await withTenant(() => collectExecutiveStats(now - 7 * 24 * 60 * 60 * 1000, now));
 
     expect(stats.healthScore.configured).toBe(true);
-    expect(stats.incidents).toMatchObject({ configured: true, opened: 2, closed: 1, autoRemediated: 1, autoRemediatedShare: 1 });
+    expect(stats.incidents).toMatchObject({ configured: true, opened: 2, closed: 2, autoRemediated: 1, autoRemediatedShare: 0.5 });
     if (stats.incidents.configured) expect(stats.incidents.mttrMs).toBe(3_600_000);
     expect(stats.cost).toMatchObject({ configured: true, monthToDateCents: 50, savedByFreeFirstCents: 2 });
     expect(stats.modelAvailability).toMatchObject({ configured: true, healthy: 2, total: 3 });
