@@ -361,6 +361,38 @@ function addArticleActions(actions: ActionDescriptor[], articles: NewsBitesDetai
       impactPreview: `https://news.techinsiderbytes.com/articles/${article.slug}`,
       sourceRoute: "/newsbites",
     }));
+
+    actions.push(descriptor({
+      id: actionId("regen", "article", article.slug, "digest"),
+      label: "Regenerate digest",
+      kind: "regen",
+      targetType: "article",
+      targetId: article.slug,
+      risk: "medium",
+      confirm: true,
+      reasonRequired: true,
+      evidenceRefs: evidence,
+      impactPreview: "Re-queue the dossier at publish-prep; digest/publish.md is rebuilt by the pipeline.",
+      rollbackHint: "The pipeline writes a fresh artifact; the previous one stays in the dossier history.",
+      sourceRoute: "/newsbites",
+      requiresOnline: true,
+    }));
+
+    actions.push(descriptor({
+      id: actionId("regen", "article", article.slug, "image"),
+      label: "Regenerate image",
+      kind: "regen",
+      targetType: "article",
+      targetId: article.slug,
+      risk: "medium",
+      confirm: true,
+      reasonRequired: true,
+      evidenceRefs: evidence,
+      impactPreview: "Re-queue the dossier at the fetch-image stage to build a fresh image artifact.",
+      rollbackHint: "The pipeline writes a fresh artifact; the previous one stays in the dossier history.",
+      sourceRoute: "/newsbites",
+      requiresOnline: true,
+    }));
   }
 }
 

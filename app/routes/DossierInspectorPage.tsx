@@ -35,6 +35,12 @@ const TABS = [
   { id: "inject",     label: "Inject" },
 ];
 
+const PIPELINE_STAGES = [
+  "scout", "rank", "init", "research", "validate-research", "write",
+  "validate-write", "verify", "publish-prep", "fetch-image", "auto-gate",
+  "publish", "deploy", "notify",
+] as const;
+
 function tabStyle(active: boolean): React.CSSProperties {
   return {
     fontFamily: "var(--mono)", fontSize: 11, padding: "7px 16px",
@@ -63,6 +69,9 @@ export function DossierInspectorPage() {
 
   const { data, loading, error, refresh } = useApi<DossierArtifacts>(`/api/dossier/${date}/${slug}`);
   const [activeTab, setActiveTab] = useState("header");
+  const [retryStage, setRetryStage] = useState<(typeof PIPELINE_STAGES)[number]>("research");
+  const [retrying, setRetrying] = useState(false);
+  const [retryFeedback, setRetryFeedback] = useState<{ message: string; error: boolean } | null>(null);
 
   if (loading && !data) return <div className="loading-dim">loading dossier…</div>;
   if (error && !data) return <div className="loading-dim error">error: {error}</div>;
@@ -81,6 +90,32 @@ export function DossierInspectorPage() {
       throw new Error(result.error ?? "Failed to inject notes");
     }
     refresh();
+  };
+
+  const handleStageRetry = async () => {
+    const reason = window.prompt(`Reason for retrying ${slug} at ${retryStage}:`)?.trim();
+    if (!reason) return;
+    if (!window.confirm(`Retry ${date}/${slug} at pipeline stage ${retryStage}?`)) return;
+    setRetrying(true);
+    setRetryFeedback(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId: `start-job:dossier:${date}/${slug}:inject:${retryStage}`,
+          reason,
+          confirmed: true,
+        }),
+      });
+      const result = await res.json() as { message?: string; error?: string };
+      if (!res.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
+      setRetryFeedback({ message: result.message ?? `Stage ${retryStage} queued`, error: false });
+    } catch (error) {
+      setRetryFeedback({ message: error instanceof Error ? error.message : String(error), error: true });
+    } finally {
+      setRetrying(false);
+    }
   };
 
   return (
@@ -173,7 +208,27 @@ export function DossierInspectorPage() {
 
       {activeTab === "agent-runs" && <AgentRunList agentRuns={d.agentRuns} />}
 
-      {activeTab === "inject" && <DossierInjectPanel dossier={d} onInject={handleInject} />}
+      {activeTab === "inject" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={PANEL}>
+            <div style={PANEL_HDR}>Retry stage (governed)</div>
+            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <select
+                value={retryStage}
+                onChange={(event) => setRetryStage(event.target.value as typeof retryStage)}
+                style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "6px 9px", borderRadius: 3 }}
+              >
+                {PIPELINE_STAGES.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+              </select>
+              <button className="btn btn-primary btn-sm" disabled={retrying} onClick={handleStageRetry}>
+                {retrying ? "Queueing…" : "Retry stage"}
+              </button>
+              {retryFeedback && <span className={`action-feedback ${retryFeedback.error ? "err" : "ok"}`}>{retryFeedback.message}</span>}
+            </div>
+          </div>
+          <DossierInjectPanel dossier={d} onInject={handleInject} />
+        </div>
+      )}
     </div>
   );
 }

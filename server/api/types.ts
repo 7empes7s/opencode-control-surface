@@ -93,7 +93,8 @@ export interface ActionDescriptor {
     | "reclaim"
     | "run"
     | "rotate"
-    | "pin";
+    | "pin"
+    | "regen";
   targetType: string;
   targetId: string;
   risk: "low" | "medium" | "high" | "destructive";

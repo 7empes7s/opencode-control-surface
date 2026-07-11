@@ -189,6 +189,8 @@ export function NewsBitesPage() {
   const [killing, setKilling] = useState(false);
   const [killError, setKillError] = useState<string | null>(null);
   const [picSlug, setPicSlug] = useState<{ slug: string; title: string } | null>(null);
+  const [regenRunning, setRegenRunning] = useState<string | null>(null);
+  const [regenFeedback, setRegenFeedback] = useState<{ slug: string; message: string; error: boolean } | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -255,6 +257,29 @@ export function NewsBitesPage() {
       navigate(`/autopipeline/dossier/${json.date}/${json.slug}`);
     } else {
       alert("No dossier found for this article.");
+    }
+  };
+
+  const handleRegen = async (slug: string, artifact: "digest" | "image") => {
+    const reason = window.prompt(`Reason for regenerating the ${artifact} for ${slug}:`)?.trim();
+    if (!reason) return;
+    if (!window.confirm(`Re-queue ${slug} to regenerate its ${artifact}?`)) return;
+    const actionId = `regen:article:${slug}:${artifact}`;
+    setRegenRunning(actionId);
+    setRegenFeedback(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId, reason, confirmed: true }),
+      });
+      const result = await res.json() as { message?: string; error?: string };
+      if (!res.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
+      setRegenFeedback({ slug, message: result.message ?? `${artifact} regeneration queued`, error: false });
+    } catch (error) {
+      setRegenFeedback({ slug, message: error instanceof Error ? error.message : String(error), error: true });
+    } finally {
+      setRegenRunning(null);
     }
   };
 
@@ -434,7 +459,7 @@ export function NewsBitesPage() {
                   <th {...articlesCtrl.sortHeaderProps("date")}>date <span className="sortable-th-arrow">{articlesCtrl.sort.key === "date" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                   <th {...articlesCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{articlesCtrl.sort.key === "status" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
                   <th {...articlesCtrl.sortHeaderProps("wordCount")}>~words <span className="sortable-th-arrow">{articlesCtrl.sort.key === "wordCount" ? (articlesCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th style={{ width: 160 }}>actions</th>
+                  <th style={{ width: 330 }}>actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -454,7 +479,7 @@ export function NewsBitesPage() {
                     <td><Pill color={statusColor(a.status)}>{a.status}</Pill></td>
                     <td className="mono dim">{a.wordCount > 0 ? `~${a.wordCount}` : "—"}</td>
                     <td>
-                      <div style={{ display: "flex", gap: 4 }}>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         <button
                           className="btn btn-sm btn-ghost"
                           title="Inspect dossier"
@@ -466,11 +491,28 @@ export function NewsBitesPage() {
                           onClick={() => setPicSlug({ slug: a.slug, title: a.title || a.slug })}
                         >pic</button>
                         <button
+                          className="btn btn-sm btn-ghost"
+                          title="Re-queue the dossier at publish-prep"
+                          disabled={regenRunning === `regen:article:${a.slug}:digest`}
+                          onClick={() => handleRegen(a.slug, "digest")}
+                        >{regenRunning === `regen:article:${a.slug}:digest` ? "queueing…" : "Regen digest"}</button>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          title="Re-queue the dossier at fetch-image"
+                          disabled={regenRunning === `regen:article:${a.slug}:image`}
+                          onClick={() => handleRegen(a.slug, "image")}
+                        >{regenRunning === `regen:article:${a.slug}:image` ? "queueing…" : "Regen image"}</button>
+                        <button
                           className="btn btn-sm btn-danger"
                           title="Permanently delete article"
                           onClick={() => setKillSlug(a.slug)}
                         >kill</button>
                       </div>
+                      {regenFeedback?.slug === a.slug && (
+                        <div className={`action-feedback ${regenFeedback.error ? "err" : "ok"}`} style={{ marginTop: 4 }}>
+                          {regenFeedback.message}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

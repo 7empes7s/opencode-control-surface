@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
@@ -13,6 +13,8 @@ describe("executeActionHandler", () => {
   let previousDashboardDbPath: string | undefined;
   let previousCooldownsPath: string | undefined;
   let previousGatewayConfig: string | undefined;
+  let previousDossiersRoot: string | undefined;
+  let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
     closeDashboardDb();
@@ -21,10 +23,15 @@ describe("executeActionHandler", () => {
     previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
     previousCooldownsPath = process.env.DASHBOARD_MODEL_COOLDOWNS_PATH;
     previousGatewayConfig = process.env.GATEWAY_CONFIG;
+    previousDossiersRoot = process.env.DASHBOARD_DOSSIERS_ROOT;
+    originalFetch = globalThis.fetch;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
     process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = join(tempDir, "model-cooldowns.json");
     process.env.GATEWAY_CONFIG = join(tempDir, "gateway.yaml");
+    process.env.DASHBOARD_DOSSIERS_ROOT = join(tempDir, "dossiers");
+    mkdirSync(process.env.DASHBOARD_DOSSIERS_ROOT, { recursive: true });
+    globalThis.fetch = (() => Promise.reject(new Error("network disabled in execute tests"))) as unknown as typeof fetch;
     writeFileSync(process.env.GATEWAY_CONFIG, `
 version: 1
 litellm_url: http://127.0.0.1:4000
@@ -54,6 +61,9 @@ models:
     else process.env.DASHBOARD_MODEL_COOLDOWNS_PATH = previousCooldownsPath;
     if (previousGatewayConfig === undefined) delete process.env.GATEWAY_CONFIG;
     else process.env.GATEWAY_CONFIG = previousGatewayConfig;
+    if (previousDossiersRoot === undefined) delete process.env.DASHBOARD_DOSSIERS_ROOT;
+    else process.env.DASHBOARD_DOSSIERS_ROOT = previousDossiersRoot;
+    globalThis.fetch = originalFetch;
     _resetGatewayConfigCacheForTests();
     rmSync(tempDir, { recursive: true, force: true });
   });
@@ -295,6 +305,110 @@ models:
     expect(result.ok).toBe(true);
     expect(result.action).toBe("external-link");
     expect(result.url).toContain("some-slug");
+  });
+
+  it("governs regen confirmation/reason and rejects unknown suffixes or missing dossiers", async () => {
+    const confirmGate = await makeRequest({
+      actionId: "regen:article:story-one:digest",
+      reason: "refresh digest",
+    });
+    expect(confirmGate.status).toBe(400);
+    expect(confirmGate.result.code).toBe("CONFIRM_REQUIRED");
+
+    const reasonGate = await makeRequest({
+      actionId: "regen:article:story-one:digest",
+      confirmed: true,
+    });
+    expect(reasonGate.status).toBe(400);
+    expect(reasonGate.result.code).toBe("REASON_REQUIRED");
+
+    const unknown = await makeRequest({
+      actionId: "regen:article:story-one:other",
+      confirmed: true,
+      reason: "test invalid suffix",
+    });
+    expect(unknown.status).toBe(400);
+    expect(unknown.result.code).toBe("BAD_REQUEST");
+
+    const missing = await makeRequest({
+      actionId: "regen:article:story-one:digest",
+      confirmed: true,
+      reason: "test missing dossier",
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.result.code).toBe("NOT_FOUND");
+    expect(missing.result.error).toContain("regen needs the editorial dossier");
+  });
+
+  it("injects digest and image regen at their governed pipeline stages with audit rows", async () => {
+    const older = join(process.env.DASHBOARD_DOSSIERS_ROOT!, "2026-06-01", "story-one");
+    const newest = join(process.env.DASHBOARD_DOSSIERS_ROOT!, "2026-07-10", "story-one");
+    mkdirSync(older, { recursive: true });
+    mkdirSync(newest, { recursive: true });
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = ((url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, message: "queued" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    }) as unknown as typeof fetch;
+
+    for (const [artifact, stage] of [["digest", "publish-prep"], ["image", "fetch-image"]] as const) {
+      const actionId = `regen:article:story-one:${artifact}`;
+      const { status, result } = await makeRequest({ actionId, confirmed: true, reason: `refresh ${artifact}` });
+      expect(status).toBe(200);
+      expect(result.action).toBe("regen");
+      const payload = JSON.parse(String(calls.at(-1)?.init?.body));
+      expect(calls.at(-1)?.url).toBe("http://127.0.0.1:3200/command");
+      expect(payload).toEqual({ cmd: "inject", dossierDir: newest, stage, slug: "story-one" });
+      const audit = getDashboardDb()!.query("SELECT risk, result_status FROM action_audit WHERE action_id = ? ORDER BY id DESC LIMIT 1")
+        .get(actionId) as { risk: string; result_status: string };
+      expect(audit).toEqual({ risk: "medium", result_status: "success" });
+    }
+  });
+
+  it("validates dossier stage retry targets and reports missing dossiers", async () => {
+    for (const actionId of [
+      "start-job:dossier:20260710/story-one:inject:write",
+      "start-job:dossier:2026-07-10/Story_One:inject:write",
+      "start-job:dossier:2026-07-10/story-one:inject:not-a-stage",
+    ]) {
+      const response = await makeRequest({ actionId, confirmed: true, reason: "test validation" });
+      expect(response.status).toBe(400);
+      expect(response.result.code).toBe("BAD_REQUEST");
+    }
+
+    const missing = await makeRequest({
+      actionId: "start-job:dossier:2026-07-10/story-one:inject:write",
+      confirmed: true,
+      reason: "retry write",
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.result.code).toBe("NOT_FOUND");
+  });
+
+  it("injects a governed dossier stage retry with the requested stage and audit row", async () => {
+    const dossierDir = join(process.env.DASHBOARD_DOSSIERS_ROOT!, "2026-07-10", "story-one");
+    mkdirSync(dossierDir, { recursive: true });
+    let pipelineBody: Record<string, string> | null = null;
+    globalThis.fetch = ((_url: RequestInfo | URL, init?: RequestInit) => {
+      pipelineBody = JSON.parse(String(init?.body));
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, message: "retry queued" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    }) as unknown as typeof fetch;
+    const actionId = "start-job:dossier:2026-07-10/story-one:inject:validate-write";
+    const { status, result } = await makeRequest({ actionId, confirmed: true, reason: "retry validation" });
+
+    expect(status).toBe(200);
+    expect(result.action).toBe("start-job");
+    expect(result.message).toContain("validate-write");
+    expect(pipelineBody).toEqual({ cmd: "inject", dossierDir, stage: "validate-write", slug: "story-one" });
+    const audit = getDashboardDb()!.query("SELECT risk, result_status FROM action_audit WHERE action_id = ? ORDER BY id DESC LIMIT 1")
+      .get(actionId) as { risk: string; result_status: string };
+    expect(audit).toEqual({ risk: "medium", result_status: "success" });
   });
 
   it("11. incident acknowledge persists lifecycle fields", async () => {

@@ -151,6 +151,30 @@ test("catalog includes model action descriptors with audit-ready metadata", () =
   expect(cooldown?.confirm).toBe(false);
 });
 
+test("catalog emits governed digest and image regen descriptors alongside existing article actions", () => {
+  const actions = buildActionCatalog({
+    articles: [{
+      slug: "story-one",
+      title: "Story One",
+      status: "published",
+      date: "2026-07-10",
+      vertical: "technology",
+      wordCount: 640,
+    }],
+  });
+
+  expect(actions.some((action) => action.id === "open-source:article:story-one")).toBe(true);
+  expect(actions.some((action) => action.id === "external-link:article:story-one")).toBe(true);
+  for (const artifact of ["digest", "image"] as const) {
+    const regen = actions.find((action) => action.id === `regen:article:story-one:${artifact}`);
+    expect(regen?.kind).toBe("regen");
+    expect(regen?.risk).toBe("medium");
+    expect(regen?.confirm).toBe(true);
+    expect(regen?.reasonRequired).toBe(true);
+    expect(regen?.requiresOnline).toBe(true);
+  }
+});
+
 test("catalog emits a pin for every configured gateway model and clear only while an override is active", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "gateway-route-descriptors-"));
   const prevDb = process.env.DASHBOARD_DB;

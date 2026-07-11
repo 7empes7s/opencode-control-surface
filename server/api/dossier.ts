@@ -3,8 +3,36 @@ import { join } from "node:path";
 import { ok } from "./types.ts";
 import type { DossierSource, DossierClaim, AgentRun, DossierArtifacts } from "./types";
 
-// Define the dossier root path
-const DOSSIERS_ROOT = "/opt/mimoun/openclaw-config/workspace/newsbites_editorial/dossiers";
+// Tests override this read-only root so they never inspect or write production dossiers.
+const DEFAULT_DOSSIERS_ROOT = "/opt/mimoun/openclaw-config/workspace/newsbites_editorial/dossiers";
+
+export function getDossiersRoot(): string {
+  return process.env.DASHBOARD_DOSSIERS_ROOT || DEFAULT_DOSSIERS_ROOT;
+}
+
+export async function findNewestDossierForSlug(slug: string): Promise<string | null> {
+  const root = getDossiersRoot();
+  let dateEntries;
+  try {
+    dateEntries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const dates = dateEntries
+    .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => b.localeCompare(a));
+  for (const date of dates) {
+    const dossierPath = join(root, date, slug);
+    try {
+      if ((await fs.stat(dossierPath)).isDirectory()) return dossierPath;
+    } catch {
+      // Keep scanning older dossier dates.
+    }
+  }
+  return null;
+}
 
 // Helper function to safely read a file
 async function readFileSafe(filePath: string): Promise<string | null> {
@@ -99,7 +127,7 @@ function parseDossierHeader(content: string): Record<string, Record<string, stri
 // GET /api/dossier/:date/:slug - Get dossier artifacts
 export async function getDossierArtifacts(req: Request, date: string, slug: string): Promise<Response> {
   try {
-    const dossierPath = join(DOSSIERS_ROOT, date, slug);
+    const dossierPath = join(getDossiersRoot(), date, slug);
     
     // Check if dossier exists
     try {
@@ -267,7 +295,7 @@ export async function injectDossierNotes(req: Request, date: string, slug: strin
       });
     }
     
-    const dossierPath = join(DOSSIERS_ROOT, date, slug);
+    const dossierPath = join(getDossiersRoot(), date, slug);
     const notesPath = join(dossierPath, "notes.md");
 
     try {

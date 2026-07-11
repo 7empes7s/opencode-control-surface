@@ -12,10 +12,19 @@ import { getCurrentTenantContext } from "../tenancy/middleware.ts";
 import { clearModelCooldown, modelQualityPath, setModelQualityStatus } from "./modelQuality.ts";
 import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
 import { setAutoApplyTier, type AutoApplyTier } from "../insights/autoapplyPolicy.ts";
+import { findNewestDossierForSlug, getDossiersRoot } from "./dossier.ts";
+import { promises as fs } from "node:fs";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 const ESCALATION_PLAN_DIR = "/var/lib/control-surface/incident-escalation-plans";
 const CONTROL_SURFACE_ROOT = "/opt/opencode-control-surface";
+// Mirrors STAGES in the NewsBites autopipeline script. Dossier retries are
+// page-scoped governed actions and intentionally have no catalog descriptors.
+const PIPELINE_STAGES = [
+  "scout", "rank", "init", "research", "validate-research", "write",
+  "validate-write", "verify", "publish-prep", "fetch-image", "auto-gate",
+  "publish", "deploy", "notify",
+] as const;
 
 interface ExecuteRequest {
   actionId: string;
@@ -61,6 +70,7 @@ function parseActionId(actionId: string): ParsedActionId | null {
 function getEnforcement(kind: string, targetType: string): { confirm: boolean; reasonRequired: boolean } {
   if (kind === "rotate" && targetType === "gateway-key") return { confirm: true, reasonRequired: true };
   if (kind === "pin" && targetType === "gateway-route") return { confirm: true, reasonRequired: true };
+  if (kind === "regen") return { confirm: true, reasonRequired: true };
   if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "clear-cooldown") {
     return { confirm: false, reasonRequired: false };
   }
@@ -87,6 +97,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
 function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "rotate" && targetType === "gateway-key") return "medium";
   if (kind === "pin") return "low";
+  if (kind === "regen") return "medium";
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
   if (kind === "probe") return "low";
@@ -144,6 +155,29 @@ function safeEscalationId(value: string): string {
 function clampGatewayKeyRotationGraceSeconds(value: unknown): number {
   const raw = typeof value === "number" && Number.isFinite(value) ? value : 86_400;
   return Math.max(60, Math.min(30 * 86_400, Math.floor(raw)));
+}
+
+async function injectPipelineStage(dossierDir: string, stage: string, slug: string): Promise<ExecuteResult> {
+  try {
+    const response = await fetch(PIPELINE_API + "/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: "inject", dossierDir, stage, slug }),
+      signal: AbortSignal.timeout(3_000),
+    });
+    let result: { ok?: boolean; message?: string; error?: string } = {};
+    try {
+      result = await response.json() as typeof result;
+    } catch {
+      // Preserve an honest HTTP failure below when the pipeline returns no JSON.
+    }
+    if (!response.ok || result.ok === false) {
+      return { ok: false, error: result.error || result.message || `autopipeline returned HTTP ${response.status}`, code: "EXEC_ERROR" };
+    }
+    return { ok: true, action: "inject", message: result.message || `dossier injected at ${stage}` };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "autopipeline unavailable", code: "EXEC_ERROR" };
+  }
 }
 
 function escalationSuggestedActions(json: string | null): string[] {
@@ -236,6 +270,37 @@ async function routeAndExecute(
 
   if (kind === "external-link" && targetType === "article") {
     return { ok: true, action: "external-link", url: "https://news.techinsiderbytes.com/articles/" + targetId };
+  }
+
+  if (kind === "regen" && targetType === "article") {
+    if (suffix !== "digest" && suffix !== "image") {
+      return { ok: false, error: "regen suffix must be digest or image", code: "BAD_REQUEST" };
+    }
+    const dossierDir = await findNewestDossierForSlug(targetId);
+    if (!dossierDir) {
+      return { ok: false, error: `no dossier found for article ${targetId} — regen needs the editorial dossier`, code: "NOT_FOUND" };
+    }
+    const stage = suffix === "digest" ? "publish-prep" : "fetch-image";
+    const result = await injectPipelineStage(dossierDir, stage, targetId);
+    if (!result.ok) return result;
+    return { ok: true, action: "regen", message: result.message };
+  }
+
+  if (kind === "start-job" && targetType === "dossier" && suffix === "inject") {
+    const [date = "", slug = "", ...extraTargetParts] = targetId.split("/");
+    const stage = parsed.segments[4] ?? "";
+    if (extraTargetParts.length > 0 || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^[a-z0-9-]+$/.test(slug) || !PIPELINE_STAGES.includes(stage as typeof PIPELINE_STAGES[number])) {
+      return { ok: false, error: "invalid dossier date, slug, or pipeline stage", code: "BAD_REQUEST" };
+    }
+    const dossierDir = join(getDossiersRoot(), date, slug);
+    try {
+      if (!(await fs.stat(dossierDir)).isDirectory()) throw new Error("not a directory");
+    } catch {
+      return { ok: false, error: `dossier not found: ${date}/${slug}`, code: "NOT_FOUND" };
+    }
+    const result = await injectPipelineStage(dossierDir, stage, slug);
+    if (!result.ok) return result;
+    return { ok: true, action: "start-job", message: `${result.message} (stage ${stage})` };
   }
 
   if (kind === "open-source" && targetType === "article") {
