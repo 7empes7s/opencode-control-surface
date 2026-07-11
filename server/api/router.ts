@@ -300,6 +300,7 @@ import {
 } from "./reports.ts";
 import { reportsExportHandler } from "./reports-export.ts";
 import { generateOperatorDigest } from "../reporting/digest.ts";
+import { generateWeeklyExecutiveReport } from "../reporting/executive.ts";
 import { tenantSettingsGetHandler, tenantSettingsPutHandler } from "./tenant-settings.ts";
 import { complianceDpaHandler,
   complianceSubprocessorsHandler,
@@ -1619,6 +1620,19 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
         JSON.stringify({ sent, preview: text.slice(0, 200), length: text.length }),
         { headers: { "Content-Type": "application/json" } },
       );
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return new Response(JSON.stringify({ error: errMsg }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+  if (method === "POST" && pathname === "/api/reports/executive") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    try {
+      return Response.json(await generateWeeklyExecutiveReport({ force: true }));
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       return new Response(JSON.stringify({ error: errMsg }), {

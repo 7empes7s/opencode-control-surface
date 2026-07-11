@@ -11,6 +11,7 @@ import { createWorkflow, getWorkflow, listWorkflows, updateWorkflow, deleteWorkf
 import { readFileSync } from "fs";
 import { startRetentionScheduler } from "./governance/retention.ts";
 import { startInsightsScanScheduler, stopInsightsScanScheduler } from "./insights/scheduler.ts";
+import { maybeGenerateWeeklyExecutiveReport } from "./reporting/executive.ts";
 import { backfillCostEventsOnce } from "./gateway/ledger.ts";
 import { setLaneLimit } from "./orchestrator/lanes.ts";
 import { seedDefaultTenant } from "./tenancy/store.ts";
@@ -203,12 +204,21 @@ export async function startServer(): Promise<{ stop: () => void }> {
 
   startRetentionScheduler();
   startInsightsScanScheduler();
+  const executiveReportTick = () => {
+    void maybeGenerateWeeklyExecutiveReport().catch((error) => {
+      console.error("[control-surface] weekly executive report failed", error instanceof Error ? error.message : error);
+    });
+  };
+  executiveReportTick();
+  const executiveReportTimer = setInterval(executiveReportTick, 15 * 60 * 1000);
+  executiveReportTimer.unref?.();
   if (dashboardDb) { try { backfillCostEventsOnce(); } catch (e) { console.error("[control-surface] cost backfill failed", e); } }
 
   const shutdown = () => {
     closeTerminalClients();
     ingestor?.stop();
     builderReconciler?.stop();
+    clearInterval(executiveReportTimer);
     stopInsightsScanScheduler();
     process.exit(0);
   };
@@ -220,6 +230,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
       closeTerminalClients();
       ingestor?.stop();
       builderReconciler?.stop();
+      clearInterval(executiveReportTimer);
       stopInsightsScanScheduler();
     },
   };
