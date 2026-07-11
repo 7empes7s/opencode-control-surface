@@ -27,6 +27,18 @@ export type BudgetCheckResult = {
   warn?: boolean;
 };
 
+export function listBudgets(ctx?: TenantContext): GovernanceBudget[] {
+  if (!isDashboardDbEnabled()) return [];
+  const db = getDashboardDb();
+  if (!db) return [];
+
+  const tenantCtx = ctx ?? getCurrentTenantContext();
+  const { clause: tenantClause, params: tenantParams } = whereTenant(tenantCtx);
+  return db.query(
+    `SELECT * FROM governance_budgets WHERE 1 = 1 ${tenantClause} ORDER BY scope, project_id`,
+  ).all(...tenantParams) as GovernanceBudget[];
+}
+
 function getStartOfDay(): number {
   const d = new Date();
   d.setHours(0, 0, 0, 0);

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, Copy, Download, RefreshCw, Route, Zap, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
+import { useAuthApi } from "../hooks/useAuthApi";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
@@ -99,6 +100,20 @@ type GatewayShowback = {
   lastUpdatedAt: string;
 };
 
+type GovernanceBudget = {
+  id: string;
+  scope: "global" | "project";
+  project_id: string | null;
+  daily_cap_usd: number | null;
+  monthly_cap_usd: number | null;
+  warn_pct: number;
+};
+
+type BudgetData = {
+  budgets: GovernanceBudget[];
+  spending: { daily: number; monthly: number };
+};
+
 type ActionFeedback = { type: "success" | "error"; message: string } | null;
 type OneTimeGatewayKey = { key: string; record: GatewayKeyRecord; rotationRevokeAt: number | null } | null;
 
@@ -161,6 +176,7 @@ export function GatewayPage() {
   const { data: ledgerData, loading: ledgerLoading, error: ledgerError, refresh: refreshLedger } = useApi<{ rows: LedgerRow[]; lastUpdatedAt: string }>("/api/gateway/ledger?limit=100", 30_000);
   const { data: showbackData } = useAuthenticatedApi<GatewayShowback>("/api/gateway/showback", 60_000);
   const { data: keysData, loading: keysLoading, error: keysError, refresh: refreshKeys } = useAuthenticatedApi<{ keys: GatewayKeyRecord[] }>("/api/gateway/keys", 30_000);
+  const { data: budgetData, loading: budgetLoading, error: budgetError, refresh: refreshBudget } = useAuthApi<BudgetData>("/api/governance/budgets", 30_000);
   const gatewayActions = useAuthenticatedApi<never>("", 0);
 
   const status = statusData;
@@ -196,14 +212,14 @@ export function GatewayPage() {
       }
     },
   });
-  const loading = statusLoading || statsLoading || ledgerLoading || keysLoading;
+  const loading = statusLoading || statsLoading || ledgerLoading || keysLoading || budgetLoading;
   const initialLoading = loading && !status && !stats && !ledgerData;
   const refreshing = loading && !initialLoading;
-  const error = statusError || statsError || ledgerError || keysError;
+  const error = statusError || statsError || ledgerError || keysError || budgetError;
   const recommendation = status?.recommendations?.[0] ?? null;
   const updatedAt = lastUpdated(status, stats, ledgerData);
 
-  const refresh = () => { refreshStatus(); refreshStats(); refreshLedger(); };
+  const refresh = () => { refreshStatus(); refreshStats(); refreshLedger(); refreshBudget(); };
   const refreshAll = () => { refresh(); refreshKeys(); };
   const refreshAfterAction = () => {
     refreshAll();
@@ -254,6 +270,60 @@ export function GatewayPage() {
       reason: reason.trim(),
       confirmed: true,
     });
+  }
+
+  async function editGlobalBudget() {
+    const budget = budgetData?.budgets.find((item) => item.scope === "global");
+    const dailyInput = window.prompt("Daily cap USD (1-10000)", String(budget?.daily_cap_usd ?? 5));
+    if (dailyInput === null) return;
+    const dailyCapUsd = Number(dailyInput);
+    if (!Number.isFinite(dailyCapUsd) || dailyCapUsd < 1 || dailyCapUsd > 10_000) {
+      setFeedback({ type: "error", message: "Daily cap must be between $1 and $10,000." });
+      return;
+    }
+    const monthlyInput = window.prompt("Monthly cap USD (1-10000)", String(budget?.monthly_cap_usd ?? 50));
+    if (monthlyInput === null) return;
+    const monthlyCapUsd = Number(monthlyInput);
+    if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd < 1 || monthlyCapUsd > 10_000) {
+      setFeedback({ type: "error", message: "Monthly cap must be between $1 and $10,000." });
+      return;
+    }
+    const warnInput = window.prompt("Warn threshold (0.1-1)", String(budget?.warn_pct ?? 0.8));
+    if (warnInput === null) return;
+    const warnPct = Number(warnInput);
+    if (!Number.isFinite(warnPct) || warnPct < 0.1 || warnPct > 1) {
+      setFeedback({ type: "error", message: "Warn threshold must be between 0.1 and 1." });
+      return;
+    }
+    const reason = window.prompt("Reason for changing the global budget caps");
+    if (!reason?.trim()) {
+      setFeedback({ type: "error", message: "A reason is required to change budget caps." });
+      return;
+    }
+    if (!window.confirm(`Set global caps to $${dailyCapUsd}/day and $${monthlyCapUsd}/month, warning at ${Math.round(warnPct * 100)}%? Gateway calls stop when a cap is hit.`)) return;
+
+    setPendingAction("budget:set-cap");
+    setFeedback(null);
+    try {
+      const res = await gatewayActions.request("/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId: "mutate-policy:budget:global:set-cap",
+          params: { dailyCapUsd, monthlyCapUsd, warnPct },
+          reason: reason.trim(),
+          confirmed: true,
+        }),
+      });
+      const parsed = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || !parsed.ok) throw new Error(parsed.error ?? `HTTP ${res.status}`);
+      setFeedback({ type: "success", message: parsed.message ?? "Global budget caps updated." });
+      refreshBudget();
+    } catch (err) {
+      setFeedback({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   async function clearGatewayRouteOverride() {
@@ -779,6 +849,39 @@ export function GatewayPage() {
                 </button>
               </div>
             ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Budget">
+          <div className="section-card-body" style={{ padding: "12px 16px" }}>
+            {(() => {
+              if (budgetLoading && !budgetData) {
+                return <p style={{ fontSize: 12, color: "var(--text-dim)", margin: 0 }}>Loading budget...</p>;
+              }
+              const budget = budgetData?.budgets.find((item) => item.scope === "global");
+              if (!budget) {
+                return (
+                  <>
+                    <p style={{ fontSize: 12, color: "var(--text-dim)", margin: "0 0 12px" }}>No global budget configured — gateway spend is uncapped</p>
+                    <button className="btn-secondary" type="button" disabled={pendingAction !== null} onClick={editGlobalBudget}>Set caps</button>
+                  </>
+                );
+              }
+              const dailyPct = budget.daily_cap_usd ? (budgetData?.spending.daily ?? 0) / budget.daily_cap_usd : 0;
+              const monthlyPct = budget.monthly_cap_usd ? (budgetData?.spending.monthly ?? 0) / budget.monthly_cap_usd : 0;
+              const usedPct = Math.max(dailyPct, monthlyPct);
+              return (
+                <>
+                  <div className="data-row-detail-grid" style={{ marginBottom: 12 }}>
+                    <div><span>Daily</span><strong>{fmtCost(budgetData?.spending.daily ?? 0)} / {budget.daily_cap_usd == null ? "uncapped" : fmtCost(budget.daily_cap_usd)}</strong></div>
+                    <div><span>Monthly</span><strong>{fmtCost(budgetData?.spending.monthly ?? 0)} / {budget.monthly_cap_usd == null ? "uncapped" : fmtCost(budget.monthly_cap_usd)}</strong></div>
+                    <div><span>Used</span><strong>{pct(usedPct)}</strong></div>
+                    <div><span>Warn at</span><strong>{pct(budget.warn_pct)}</strong></div>
+                  </div>
+                  <button className="btn-secondary" type="button" disabled={pendingAction !== null} onClick={editGlobalBudget}>Edit caps</button>
+                </>
+              );
+            })()}
           </div>
         </SectionCard>
 

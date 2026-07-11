@@ -8,6 +8,7 @@ import { getVastAccount, getVastInstance } from "../adapters/vast.ts";
 import { listGatewayKeys } from "../gateway/keys.ts";
 import { loadGatewayConfig } from "../gateway/config.ts";
 import { getGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
+import { listBudgets } from "../governance/budgets.ts";
 import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS } from "./actions.ts";
 import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
@@ -559,6 +560,41 @@ function addGatewayActions(actions: ActionDescriptor[]): void {
   }
 }
 
+function addBudgetActions(actions: ActionDescriptor[]): void {
+  const common = {
+    kind: "mutate-policy" as const,
+    targetType: "budget",
+    risk: "medium" as const,
+    confirm: true,
+    reasonRequired: true,
+    impactPreview: "Gateway calls are stopped when a cap is hit. Defaults are $5/day, $50/month, with a warning at 80%.",
+    rollbackHint: "Set new caps or raise them from /cost, /gateway, or the Governance page",
+    sourceRoute: "/cost",
+    requiresOnline: true,
+  };
+
+  actions.push(descriptor({
+    ...common,
+    id: "mutate-policy:budget:global:set-cap",
+    label: "Set global budget caps",
+    targetId: "global",
+  }));
+
+  try {
+    for (const budget of listBudgets()) {
+      if (budget.scope !== "project" || !budget.project_id) continue;
+      actions.push(descriptor({
+        ...common,
+        id: `mutate-policy:budget:project:${encodeURIComponent(budget.project_id)}:set-cap`,
+        label: `Set budget caps for ${budget.project_id}`,
+        targetId: "project",
+      }));
+    }
+  } catch {
+    // The catalog remains useful when the dashboard DB is disabled or unavailable.
+  }
+}
+
 // Two fixed, singleton remediation actions (SPEC 15 / ULTRAPLAN P3 A3b) — not
 // per-entity like the loops above, always offered. They back the disk-
 // pressure and backup-stale ops detectors (server/insights/scanners/ops.ts),
@@ -609,6 +645,7 @@ function addDiskReclaimAndBackupActions(actions: ActionDescriptor[]): void {
 
 export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   const actions: ActionDescriptor[] = [];
+  addBudgetActions(actions);
   addGatewayActions(actions);
   addServiceActions(actions, input.services);
   addTimerActions(actions, input.timers);

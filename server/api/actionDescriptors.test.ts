@@ -3,18 +3,60 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { upsertBudget } from "../governance/budgets.ts";
 import { _resetGatewayConfigCacheForTests, loadGatewayConfig } from "../gateway/config.ts";
 import {
   clearGatewayRouteOverrideForGatewayAdmin,
   resetGatewayRouteOverrideStateForTests,
   setGatewayRouteOverrideForGatewayAdmin,
 } from "../gateway/router.ts";
+import { testTenantContext } from "../tenancy/context.ts";
+import { tenantStore } from "../tenancy/middleware.ts";
 import { actionId, buildActionCatalog } from "./actionDescriptors.ts";
 
 test("action ids are stable and safe for lookup", () => {
   expect(actionId("start-job", "service", "NewsBites Autopipeline", "restart now")).toBe(
     "start-job:service:newsbites-autopipeline:restart-now",
   );
+});
+
+test("catalog always emits the global budget descriptor and emits project descriptors only for stored project budgets", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "budget-descriptors-"));
+  const prevDb = process.env.DASHBOARD_DB;
+  const prevDbPath = process.env.DASHBOARD_DB_PATH;
+  closeDashboardDb();
+  process.env.DASHBOARD_DB = "1";
+  process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+  initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
+  try {
+    const before = tenantStore.run(testTenantContext({ tenantId: "budget-test" }), () => buildActionCatalog({}));
+    const global = before.find((action) => action.id === "mutate-policy:budget:global:set-cap");
+    expect(global?.risk).toBe("medium");
+    expect(global?.confirm).toBe(true);
+    expect(global?.reasonRequired).toBe(true);
+    expect(before.some((action) => action.id.startsWith("mutate-policy:budget:project:"))).toBe(false);
+
+    tenantStore.run(testTenantContext({ tenantId: "budget-test" }), () => {
+      upsertBudget("project", {
+        projectId: "project-alpha",
+        dailyCapUsd: 3,
+        monthlyCapUsd: 30,
+        warnPct: 0.75,
+      });
+    });
+    const after = tenantStore.run(testTenantContext({ tenantId: "budget-test" }), () => buildActionCatalog({}));
+    const project = after.find((action) => action.id === "mutate-policy:budget:project:project-alpha:set-cap");
+    expect(project?.risk).toBe("medium");
+    expect(project?.confirm).toBe(true);
+    expect(project?.reasonRequired).toBe(true);
+  } finally {
+    closeDashboardDb();
+    if (prevDb === undefined) delete process.env.DASHBOARD_DB;
+    else process.env.DASHBOARD_DB = prevDb;
+    if (prevDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
+    else process.env.DASHBOARD_DB_PATH = prevDbPath;
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("catalog marks allowlisted and non-allowlisted service restarts", () => {

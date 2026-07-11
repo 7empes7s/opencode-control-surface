@@ -394,4 +394,41 @@ models:
     `).get("mutate-policy:budget:project:project-alpha:set-cap") as { count: number };
     expect(audit.count).toBe(1);
   });
+
+  it("16. global budget cap action persists global scope and audit", async () => {
+    const { status, result } = await makeRequest({
+      actionId: "mutate-policy:budget:global:set-cap",
+      confirmed: true,
+      reason: "global budget test",
+      params: { dailyCapUsd: 5, monthlyCapUsd: 50, warnPct: 0.8 },
+    });
+    expect(status).toBe(200);
+    expect(result.ok).toBe(true);
+    expect(result.result.budget.scope).toBe("global");
+    expect(result.result.budget.project_id).toBeNull();
+    expect(result.result.budget.warn_pct).toBe(0.8);
+
+    const row = getDashboardDb()!.query(`
+      SELECT scope, project_id, daily_cap_usd, monthly_cap_usd, warn_pct
+      FROM governance_budgets
+      WHERE scope = 'global'
+    `).get() as {
+      scope: string;
+      project_id: string | null;
+      daily_cap_usd: number;
+      monthly_cap_usd: number;
+      warn_pct: number;
+    } | null;
+    expect(row?.daily_cap_usd).toBe(5);
+    expect(row?.monthly_cap_usd).toBe(50);
+    expect(row?.warn_pct).toBe(0.8);
+
+    const audit = getDashboardDb()!.query(`
+      SELECT COUNT(*) AS count
+      FROM action_audit
+      WHERE action_id = ?
+        AND result_status = 'success'
+    `).get("mutate-policy:budget:global:set-cap") as { count: number };
+    expect(audit.count).toBe(1);
+  });
 });

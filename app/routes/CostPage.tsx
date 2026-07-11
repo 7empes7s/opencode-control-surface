@@ -380,6 +380,74 @@ export function CostPage() {
     }
   }
 
+  async function editBudgetCaps(budget?: BudgetRow) {
+    const scope = budget?.scope === "project" ? "project" : "global";
+    const projectId = scope === "project" ? budget?.project_id : null;
+    if (scope === "project" && !projectId) {
+      setCapError("Project budget is missing a project id.");
+      return;
+    }
+
+    const dailyInput = window.prompt("Daily cap USD (1-10000)", String(budget?.daily_cap_usd ?? 5));
+    if (dailyInput === null) return;
+    const dailyCapUsd = Number(dailyInput);
+    if (!Number.isFinite(dailyCapUsd) || dailyCapUsd < 1 || dailyCapUsd > 10_000) {
+      setCapError("Daily cap must be between $1 and $10,000.");
+      return;
+    }
+
+    const monthlyInput = window.prompt("Monthly cap USD (1-10000)", String(budget?.monthly_cap_usd ?? 50));
+    if (monthlyInput === null) return;
+    const monthlyCapUsd = Number(monthlyInput);
+    if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd < 1 || monthlyCapUsd > 10_000) {
+      setCapError("Monthly cap must be between $1 and $10,000.");
+      return;
+    }
+
+    const warnInput = window.prompt("Warn threshold (0.1-1)", String(budget?.warn_pct ?? 0.8));
+    if (warnInput === null) return;
+    const warnPct = Number(warnInput);
+    if (!Number.isFinite(warnPct) || warnPct < 0.1 || warnPct > 1) {
+      setCapError("Warn threshold must be between 0.1 and 1.");
+      return;
+    }
+
+    const reason = window.prompt("Reason for changing these budget caps");
+    if (!reason?.trim()) {
+      setCapError("A reason is required to change budget caps.");
+      return;
+    }
+    const target = scope === "project" ? `project ${projectId}` : "global gateway spend";
+    if (!window.confirm(`Set ${target} caps to $${dailyCapUsd}/day and $${monthlyCapUsd}/month, warning at ${Math.round(warnPct * 100)}%?`)) return;
+
+    const actionId = scope === "project"
+      ? `mutate-policy:budget:project:${encodeURIComponent(projectId!)}:set-cap`
+      : "mutate-policy:budget:global:set-cap";
+    setCapLoading(true);
+    setCapError(null);
+    setCapSuccess(null);
+    try {
+      const res = await authFetch("/api/actions/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId,
+          params: { dailyCapUsd, monthlyCapUsd, warnPct },
+          reason: reason.trim(),
+          confirmed: true,
+        }),
+      });
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || !json.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      setCapSuccess(json.message ?? "Budget caps updated.");
+      refresh();
+    } catch (e) {
+      setCapError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCapLoading(false);
+    }
+  }
+
   return (
     <div className="dash-page">
       {capModal && (
@@ -544,6 +612,12 @@ export function CostPage() {
           defaultOpen={true}
         >
           <div className="section-card-body table-wrap">
+            {!d.budgets.some((budget) => budget.scope === "global") && (
+              <button className="btn btn-primary" type="button" disabled={capLoading} onClick={() => editBudgetCaps()} style={{ margin: "12px 16px" }}>
+                Set global caps
+              </button>
+            )}
+            {capError && <div className="action-feedback error" style={{ margin: "0 16px 10px", fontSize: 12 }}>{capError}</div>}
             {d.budgets.length === 0 ? (
               <div className="loading-dim">No budgets defined — use the editor below to set a global cap.</div>
             ) : (
@@ -558,6 +632,7 @@ export function CostPage() {
                     <th {...budgetControls.sortHeaderProps("budget")}>Budget <SortArrow active={budgetControls.sort.key === "budget"} dir={budgetControls.sort.dir} /></th>
                     <th {...budgetControls.sortHeaderProps("used")}>Used <SortArrow active={budgetControls.sort.key === "used"} dir={budgetControls.sort.dir} /></th>
                     <th {...budgetControls.sortHeaderProps("status")}>Status <SortArrow active={budgetControls.sort.key === "status"} dir={budgetControls.sort.dir} /></th>
+                    <th className="cell-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -593,10 +668,15 @@ export function CostPage() {
                               {status.label}
                             </span>
                           </td>
+                          <td className="cell-right">
+                            <button className="btn-secondary" type="button" disabled={capLoading} onClick={() => editBudgetCaps(budget)}>
+                              Edit caps
+                            </button>
+                          </td>
                         </tr>
                         {expanded && (
                           <tr className="data-row-detail">
-                            <td colSpan={6}>
+                            <td colSpan={7}>
                               <div className="data-row-detail-inner">
                                 <div className="data-row-detail-grid">
                                   <div><span>Daily cap</span><strong>{budget.daily_cap_usd == null ? "—" : fmtCurrency(Math.round(budget.daily_cap_usd * 100))}</strong></div>
