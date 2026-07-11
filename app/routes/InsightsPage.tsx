@@ -434,9 +434,92 @@ function AiInventory() {
   });
   const [ignoreReason, setIgnoreReason] = useState("");
   const [pendingAction, setPendingAction] = useState<{ id: string; kind: "register" | "ignore" } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkCriticality, setBulkCriticality] = useState<NonNullable<DiscoveredAsset["criticality"]>>("medium");
 
   const assets = data ?? [];
   const filtered = statusFilter === "all" ? assets : assets.filter((a) => a.status === statusFilter);
+  const allVisibleSelected = filtered.length > 0 && filtered.every((asset) => selectedIds.has(asset.id));
+
+  function toggleSelected(assetId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else if (next.size < 100) next.add(assetId);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) filtered.forEach((asset) => next.delete(asset.id));
+      else {
+        for (const asset of filtered) {
+          if (next.size >= 100) break;
+          next.add(asset.id);
+        }
+      }
+      return next;
+    });
+  }
+
+  async function runBulk(kind: "register" | "ignore") {
+    const assetIds = [...selectedIds];
+    if (assetIds.length === 0) return;
+    const owner = kind === "register" ? window.prompt("Owner (optional)", "") : null;
+    if (kind === "register" && owner === null) return;
+    const reason = kind === "ignore" ? window.prompt("Ignore reason (optional)", "") : null;
+    if (kind === "ignore" && reason === null) return;
+    if (!window.confirm(`${kind === "register" ? "Register" : "Ignore"} ${assetIds.length} selected asset(s)?`)) return;
+
+    setBusyId(`bulk-${kind}`);
+    setMessage(null);
+    try {
+      const res = await authFetch(`/api/discovery/assets/bulk-${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assetIds,
+          ...(kind === "register" ? { owner: owner || undefined, criticality: bulkCriticality } : { reason: reason || undefined }),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { data?: { processed?: number; notFoundIds?: string[]; insightsResolved?: number } };
+      setMessage(`${body.data?.processed ?? 0} asset(s) ${kind === "register" ? "registered" : "ignored"}. ${body.data?.insightsResolved ?? 0} insight(s) resolved.${body.data?.notFoundIds?.length ? ` ${body.data.notFoundIds.length} not found.` : ""}`);
+      setSelectedIds(new Set());
+      refresh();
+    } catch (e) {
+      setMessage(`Bulk ${kind} failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function updateAsset(asset: DiscoveredAsset, changes: { owner?: string; criticality?: DiscoveredAsset["criticality"] }) {
+    setBusyId(asset.id);
+    setMessage(null);
+    try {
+      const res = await authFetch(`/api/discovery/assets/${encodeURIComponent(asset.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setMessage("Asset details updated.");
+      refresh();
+    } catch (e) {
+      setMessage(`Update failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function editOwner(asset: DiscoveredAsset) {
+    const owner = window.prompt("Asset owner (leave blank to clear)", asset.owner ?? "");
+    if (owner === null || owner.trim() === (asset.owner ?? "")) return;
+    void updateAsset(asset, { owner });
+  }
 
   async function rescan() {
     setBusyId("rescan");
@@ -558,6 +641,32 @@ function AiInventory() {
         </button>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="insights-message" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <strong>{selectedIds.size} selected (100 max)</strong>
+          <select
+            value={bulkCriticality}
+            onChange={(event) => setBulkCriticality(event.target.value as NonNullable<DiscoveredAsset["criticality"]>)}
+            aria-label="Criticality for selected assets"
+            style={{ minHeight: 44 }}
+          >
+            <option value="low">Low criticality</option>
+            <option value="medium">Medium criticality</option>
+            <option value="high">High criticality</option>
+            <option value="critical">Critical</option>
+          </select>
+          <button type="button" className="btn" disabled={busyId !== null} onClick={() => runBulk("register")} style={{ minHeight: 44 }}>
+            Register selected
+          </button>
+          <button type="button" className="btn btn-ghost" disabled={busyId !== null} onClick={() => runBulk("ignore")} style={{ minHeight: 44 }}>
+            Ignore selected
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={() => setSelectedIds(new Set())} style={{ minHeight: 44 }}>
+            Clear
+          </button>
+        </div>
+      )}
+
       {message && (
         <div className="insights-message" style={{ marginBottom: 12 }}>
           <CheckCircle2 size={15} /> {message}
@@ -576,6 +685,12 @@ function AiInventory() {
       )}
 
       <div className="insight-card-list">
+        {filtered.length > 0 && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 44, fontSize: 12 }}>
+            <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
+            Select all visible
+          </label>
+        )}
         {filtered.map((asset) => {
           const isExpanded = expandedId === asset.id;
           const action = isExpanded && pendingAction?.id === asset.id ? pendingAction.kind : null;
@@ -584,12 +699,19 @@ function AiInventory() {
           return (
             <article key={asset.id} className={`insight-card${asset.status === "unregistered" ? " severity-medium" : ""}`} style={{ minHeight: 44 }}>
               <div className="insight-card-head">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(asset.id)}
+                  onChange={() => toggleSelected(asset.id)}
+                  aria-label={`Select ${displayName}`}
+                  style={{ minWidth: 20, minHeight: 20, marginRight: 8 }}
+                />
                 <div>
                   <div className="insight-title-row">
                     <span className={`pill ${STATUS_COLOR[asset.status]}`} style={{ fontSize: 10 }}>{asset.status}</span>
                     <span className="pill blue" style={{ fontSize: 10 }}>{KIND_LABEL[asset.kind] ?? asset.kind}</span>
                     <ExposureBadge asset={asset} />
-                    {asset.criticality && (
+                    {asset.criticality && asset.status !== "registered" && (
                       <span className={`pill ${asset.criticality === "critical" || asset.criticality === "high" ? "red" : asset.criticality === "medium" ? "amber" : "gray"}`} style={{ fontSize: 10 }}>
                         {asset.criticality}
                       </span>
@@ -600,7 +722,32 @@ function AiInventory() {
                     <span style={{ opacity: 0.7 }}>Source:</span> {asset.sourceProbe} &nbsp;·&nbsp;
                     <span style={{ opacity: 0.7 }}>Signature:</span> {asset.signature.slice(0, 80)}{asset.signature.length > 80 ? "…" : ""}
                   </p>
-                  {asset.owner && <p style={{ fontSize: 11, margin: "2px 0 0" }}>Owner: <strong>{asset.owner}</strong></p>}
+                  {asset.status === "registered" ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={busyId === asset.id}
+                        onClick={() => editOwner(asset)}
+                        style={{ minHeight: 44, fontSize: 11 }}
+                        title="Edit asset owner"
+                      >
+                        Owner: <strong>{asset.owner || "Unassigned"}</strong>
+                      </button>
+                      <select
+                        value={asset.criticality ?? "medium"}
+                        disabled={busyId === asset.id}
+                        onChange={(event) => updateAsset(asset, { criticality: event.target.value as NonNullable<DiscoveredAsset["criticality"]> })}
+                        aria-label={`Criticality for ${displayName}`}
+                        style={{ minHeight: 44 }}
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+                  ) : asset.owner ? <p style={{ fontSize: 11, margin: "2px 0 0" }}>Owner: <strong>{asset.owner}</strong></p> : null}
                   {asset.ignoredReason && <p style={{ fontSize: 11, margin: "2px 0 0", opacity: 0.6 }}>Ignored: {asset.ignoredReason}</p>}
                 </div>
               </div>

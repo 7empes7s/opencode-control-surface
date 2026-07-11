@@ -14,6 +14,8 @@ import { isKnownPolicyRegistryKey } from "./policyRegistry.ts";
 import { setAutoApplyTier, type AutoApplyTier } from "../insights/autoapplyPolicy.ts";
 import { findNewestDossierForSlug, getDossiersRoot } from "./dossier.ts";
 import { promises as fs } from "node:fs";
+import { DISCOVERY_SOURCES, type DiscoverySource } from "../discovery/reconcile.ts";
+import { runDiscoveryScan } from "./discovery.ts";
 
 const PIPELINE_API = "http://127.0.0.1:3200";
 const ESCALATION_PLAN_DIR = "/var/lib/control-surface/incident-escalation-plans";
@@ -71,7 +73,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   if (kind === "rotate" && targetType === "gateway-key") return { confirm: true, reasonRequired: true };
   if (kind === "pin" && targetType === "gateway-route") return { confirm: true, reasonRequired: true };
   if (kind === "regen") return { confirm: true, reasonRequired: true };
-  if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "clear-cooldown") {
+  if (kind === "navigate" || kind === "copy-command" || kind === "external-link" || kind === "open-source" || kind === "preview" || kind === "refresh" || kind === "probe" || kind === "scan" || kind === "clear-cooldown") {
     return { confirm: false, reasonRequired: false };
   }
   if (kind === "start-job") {
@@ -104,6 +106,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
   if (kind === "start-job" && (targetType === "service" || targetType === "vast")) return "high";
   if (kind === "start-job") return "medium";
   if (kind === "probe") return "low";
+  if (kind === "scan") return "low";
   if (kind === "clear-cooldown") return "low";
   if (kind === "reclaim") return "medium";
   if (kind === "run" && targetType === "newsbites") return "medium";
@@ -448,6 +451,23 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     });
     void runSingleModelProbe(jobId, targetId, body.reason);
     return { ok: true, action: "probe", jobId, message: `${targetId} probe started` };
+  }
+
+  if (kind === "scan" && targetType === "discovery") {
+    if (!Object.prototype.hasOwnProperty.call(DISCOVERY_SOURCES, targetId)) {
+      return { ok: false, error: `discovery source "${targetId || "(missing)"}" not found`, code: "NOT_FOUND" };
+    }
+    try {
+      const { assetsFound } = runDiscoveryScan(targetId as DiscoverySource);
+      return {
+        ok: true,
+        action: "scan",
+        message: `Discovery re-scan (${targetId}) — ${assetsFound} asset(s) seen`,
+      };
+    } catch (error) {
+      console.error("[discovery] probe failed", error instanceof Error ? error.message : error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error), code: "EXEC_ERROR" };
+    }
   }
 
   if (kind === "clear-cooldown" && targetType === "model") {

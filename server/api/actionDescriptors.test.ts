@@ -20,6 +20,22 @@ test("action ids are stable and safe for lookup", () => {
   );
 });
 
+test("catalog emits seven low-risk no-confirm discovery scan descriptors", () => {
+  const scans = buildActionCatalog({}).filter((action) => action.kind === "scan" && action.targetType === "discovery");
+  expect(scans).toHaveLength(7);
+  expect(scans.map((action) => action.id).sort()).toEqual([
+    "scan:discovery:docker-ps",
+    "scan:discovery:env-backend-url",
+    "scan:discovery:env-key-presence",
+    "scan:discovery:path-scan",
+    "scan:discovery:proc-cmdline",
+    "scan:discovery:ss-listen",
+    "scan:discovery:systemctl-list-units",
+  ]);
+  expect(scans.every((action) => action.risk === "low" && !action.confirm && !action.reasonRequired)).toBe(true);
+  expect(scans.every((action) => action.sourceRoute === "/insights" && action.requiresOnline)).toBe(true);
+});
+
 test("catalog includes the governed NewsBites deploy singleton when the deploy seam is available", () => {
   const previousDeployCommand = process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD;
   process.env.DASHBOARD_NEWSBITES_DEPLOY_CMD = "echo hermetic-deploy";

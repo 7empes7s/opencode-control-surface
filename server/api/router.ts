@@ -236,8 +236,11 @@ import {
 import { promptsHandler } from "./prompts.ts";
 import {
   discoveryListAssetsHandler,
+  discoveryBulkRegisterHandler,
+  discoveryBulkIgnoreHandler,
   discoveryRegisterAssetHandler,
   discoveryIgnoreAssetHandler,
+  discoveryUpdateAssetHandler,
   discoveryRescanHandler,
 } from "./discovery.ts";
 import { gatewayTracesHandler } from "./traces.ts";
@@ -1651,10 +1654,14 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   // ── AI Discovery & Inventory (Phase 4a) ─────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/discovery/assets") return discoveryListAssetsHandler(req, url);
   if (method === "POST" && pathname === "/api/discovery/rescan") return discoveryRescanHandler(req);
+  if (method === "POST" && pathname === "/api/discovery/assets/bulk-register") return discoveryBulkRegisterHandler(req);
+  if (method === "POST" && pathname === "/api/discovery/assets/bulk-ignore") return discoveryBulkIgnoreHandler(req);
   const discoveryAssetRegMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/register$/);
   if (method === "POST" && discoveryAssetRegMatch) return discoveryRegisterAssetHandler(req, decodeURIComponent(discoveryAssetRegMatch[1]));
   const discoveryAssetIgnoreMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/ignore$/);
   if (method === "POST" && discoveryAssetIgnoreMatch) return discoveryIgnoreAssetHandler(req, decodeURIComponent(discoveryAssetIgnoreMatch[1]));
+  const discoveryAssetMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)$/);
+  if (method === "PATCH" && discoveryAssetMatch) return discoveryUpdateAssetHandler(req, decodeURIComponent(discoveryAssetMatch[1]));
 
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/compliance/dpa") return complianceDpaHandler(req);

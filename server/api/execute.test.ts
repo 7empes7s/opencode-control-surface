@@ -7,6 +7,7 @@ import { readJob } from "../db/writer.ts";
 import { _resetGatewayConfigCacheForTests } from "../gateway/config.ts";
 import { getGatewayRouteOverrideForGatewayAdmin, getGatewayRoutePlanForGatewayAdmin, resetGatewayRouteOverrideStateForTests } from "../gateway/router.ts";
 import { executeActionHandler } from "./execute.ts";
+import { DISCOVERY_SOURCES, type DiscoveredAssetInput } from "../discovery/reconcile.ts";
 
 describe("executeActionHandler", () => {
   let tempDir: string;
@@ -100,6 +101,32 @@ models:
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, `${id}:cluster`, "test_failure", "Test incident", 1, 1, 1, "pass-1", "diagnosis-1", "open");
   }
+
+  it("dispatches discovery scans without confirmation and rejects unknown sources", async () => {
+    const original = DISCOVERY_SOURCES["proc-cmdline"];
+    try {
+      DISCOVERY_SOURCES["proc-cmdline"] = () => [{
+        kind: "process",
+        signature: "synthetic scan process",
+        sourceProbe: "proc-cmdline",
+        fingerprint: { pid: 1 },
+      } satisfies DiscoveredAssetInput];
+
+      const scanned = await makeRequest({ actionId: "scan:discovery:proc-cmdline" });
+      expect(scanned.status).toBe(200);
+      expect(scanned.result).toEqual({
+        ok: true,
+        action: "scan",
+        message: "Discovery re-scan (proc-cmdline) — 1 asset(s) seen",
+      });
+
+      const unknown = await makeRequest({ actionId: "scan:discovery:bogus" });
+      expect(unknown.status).toBe(404);
+      expect(unknown.result.code).toBe("NOT_FOUND");
+    } finally {
+      DISCOVERY_SOURCES["proc-cmdline"] = original;
+    }
+  });
 
   it("governs and dispatches run:newsbites:deploy through the hermetic command seam", async () => {
     const confirmation = await makeRequest({

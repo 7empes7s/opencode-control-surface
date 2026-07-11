@@ -242,6 +242,18 @@ export function discoverCredentials(env: NodeJS.ProcessEnv = process.env): Disco
   return out;
 }
 
+export const DISCOVERY_SOURCES = {
+  "proc-cmdline": discoverProcesses,
+  "ss-listen": discoverListeningPorts,
+  "systemctl-list-units": discoverSystemdUnits,
+  "docker-ps": discoverContainers,
+  "env-backend-url": discoverBackendsFromEnv,
+  "path-scan": discoverCliTools,
+  "env-key-presence": discoverCredentials,
+} satisfies Record<string, () => DiscoveredAssetInput[]>;
+
+export type DiscoverySource = keyof typeof DISCOVERY_SOURCES;
+
 export function discoverAiAssets(): DiscoveredAssetInput[] {
   const out: DiscoveredAssetInput[] = [];
   const collect = (fn: () => DiscoveredAssetInput[]): void => {
@@ -252,13 +264,7 @@ export function discoverAiAssets(): DiscoveredAssetInput[] {
     }
   };
 
-  collect(discoverProcesses);
-  collect(discoverListeningPorts);
-  collect(discoverSystemdUnits);
-  collect(discoverContainers);
-  collect(discoverBackendsFromEnv);
-  collect(discoverCliTools);
-  collect(discoverCredentials);
+  for (const probe of Object.values(DISCOVERY_SOURCES)) collect(probe);
 
   return out;
 }

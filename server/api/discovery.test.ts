@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { readActionAudit } from "../db/writer.ts";
-import { reconcileDiscoveredAssets, listDiscoveredAssets, type DiscoveredAssetInput } from "../discovery/reconcile.ts";
+import { DISCOVERY_SOURCES, reconcileDiscoveredAssets, listDiscoveredAssets, type DiscoveredAssetInput } from "../discovery/reconcile.ts";
 import { upsertInsight } from "../insights/store.ts";
 import {
   discoveryListAssetsHandler,
+  discoveryBulkRegisterHandler,
+  discoveryBulkIgnoreHandler,
   discoveryRegisterAssetHandler,
   discoveryIgnoreAssetHandler,
+  discoveryUpdateAssetHandler,
   discoveryRescanHandler,
+  runDiscoveryScan,
 } from "./discovery.ts";
 import type { ApiEnvelope } from "./types.ts";
 import type { DiscoveredAsset } from "../discovery/reconcile.ts";
@@ -209,20 +213,142 @@ describe("POST /api/discovery/assets/:id/ignore", () => {
   });
 });
 
+describe("bulk discovery asset mutations", () => {
+  test("bulk-register processes two assets, resolves insights, and writes per-asset bulk audits", async () => {
+    const assets = reconcileDiscoveredAssets([
+      SAMPLE_ASSET,
+      {
+        kind: "cli",
+        signature: "synthetic-codex",
+        sourceProbe: "path-scan",
+        fingerprint: { name: "synthetic-codex" },
+      },
+    ], Date.now());
+    assets.forEach((asset) => seedInsightForAsset(asset.id));
+
+    const res = await discoveryBulkRegisterHandler(authed("POST", "/api/discovery/assets/bulk-register", {
+      assetIds: assets.map((asset) => asset.id),
+      owner: "platform",
+      criticality: "high",
+      attachedService: "ai-runtime",
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as ApiEnvelope<{ processed: number; notFoundIds: string[]; insightsResolved: number }>;
+    expect(body.data).toEqual({ processed: 2, notFoundIds: [], insightsResolved: 2 });
+    expect(listDiscoveredAssets("registered").filter((asset) => assets.some((seeded) => seeded.id === asset.id))).toHaveLength(2);
+
+    const audits = readActionAudit({ actionKind: "discovery.asset.register" })
+      .filter((row) => assets.some((asset) => asset.id === row.targetId));
+    expect(audits).toHaveLength(2);
+    expect(audits.every((row) => (row.request as { bulk?: boolean } | null)?.bulk === true)).toBe(true);
+  });
+
+  test("bulk-register collects unknown ids", async () => {
+    const asset = seedAsset();
+    const res = await discoveryBulkRegisterHandler(authed("POST", "/api/discovery/assets/bulk-register", {
+      assetIds: [asset.id, "unknown-asset"],
+    }));
+    const body = await res.json() as ApiEnvelope<{ processed: number; notFoundIds: string[]; insightsResolved: number }>;
+    expect(body.data).toEqual({ processed: 1, notFoundIds: ["unknown-asset"], insightsResolved: 0 });
+  });
+
+  test("bulk endpoints reject empty and over-100 batches", async () => {
+    const empty = await discoveryBulkRegisterHandler(authed("POST", "/api/discovery/assets/bulk-register", { assetIds: [] }));
+    expect(empty.status).toBe(400);
+    const tooMany = await discoveryBulkIgnoreHandler(authed("POST", "/api/discovery/assets/bulk-ignore", {
+      assetIds: Array.from({ length: 101 }, (_, index) => `asset-${index}`),
+    }));
+    expect(tooMany.status).toBe(400);
+  });
+});
+
+describe("PATCH /api/discovery/assets/:id", () => {
+  test("returns 404 for an unknown asset", async () => {
+    const res = await discoveryUpdateAssetHandler(
+      authed("PATCH", "/api/discovery/assets/unknown", { owner: "ops" }),
+      "unknown",
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("returns 409 for an unregistered asset", async () => {
+    const asset = seedAsset();
+    const res = await discoveryUpdateAssetHandler(
+      authed("PATCH", `/api/discovery/assets/${asset.id}`, { owner: "ops" }),
+      asset.id,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "Only registered assets can be edited" });
+  });
+
+  test("updates owner and criticality with before/after audit", async () => {
+    const asset = seedAsset();
+    await discoveryRegisterAssetHandler(authed("POST", `/api/discovery/assets/${asset.id}/register`, {
+      owner: "old-owner",
+      criticality: "low",
+    }), asset.id);
+
+    const res = await discoveryUpdateAssetHandler(
+      authed("PATCH", `/api/discovery/assets/${asset.id}`, { owner: "new-owner", criticality: "critical" }),
+      asset.id,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as ApiEnvelope<{ asset: DiscoveredAsset }>;
+    expect(body.data.asset.owner).toBe("new-owner");
+    expect(body.data.asset.criticality).toBe("critical");
+    const [audit] = readActionAudit({ actionKind: "discovery.asset.update" });
+    expect(audit?.risk).toBe("low");
+    expect(audit?.request).toEqual({
+      before: { owner: "old-owner", criticality: "low" },
+      after: { owner: "new-owner", criticality: "critical" },
+    });
+  });
+});
+
 describe("POST /api/discovery/rescan", () => {
-  test("rejects unauthenticated requests with 401", () => {
-    const res = discoveryRescanHandler(noToken("POST", "/api/discovery/rescan"));
+  test("rejects unauthenticated requests with 401", async () => {
+    const res = await discoveryRescanHandler(noToken("POST", "/api/discovery/rescan"));
     expect(res.status).toBe(401);
   });
 
   test("runs rescan and returns assetCount + audit row", async () => {
-    const res = discoveryRescanHandler(authed("POST", "/api/discovery/rescan"));
-    expect(res.status).toBe(200);
-    const body = await res.json() as ApiEnvelope<{ assetsFound: number; scannedAt: number }>;
-    expect(typeof body.data.assetsFound).toBe("number");
-    expect(body.data.scannedAt).toBeGreaterThan(0);
+    const originals = { ...DISCOVERY_SOURCES };
+    try {
+      for (const source of Object.keys(DISCOVERY_SOURCES)) {
+        (DISCOVERY_SOURCES as Record<string, () => DiscoveredAssetInput[]>)[source] = () => [];
+      }
+      const res = await discoveryRescanHandler(authed("POST", "/api/discovery/rescan"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as ApiEnvelope<{ assetsFound: number; scannedAt: number }>;
+      expect(body.data.assetsFound).toBe(0);
+      expect(body.data.scannedAt).toBeGreaterThan(0);
 
-    const audit = readActionAudit({ limit: 10 });
-    expect(audit.some((row) => row.actionKind === "discovery.rescan")).toBe(true);
+      const audit = readActionAudit({ limit: 10 });
+      expect(audit.some((row) => row.actionKind === "discovery.rescan" && row.targetId === "all")).toBe(true);
+    } finally {
+      Object.assign(DISCOVERY_SOURCES, originals);
+    }
+  });
+
+  test("rejects an unknown source without scanning", async () => {
+    const res = await discoveryRescanHandler(authed("POST", "/api/discovery/rescan", { source: "bogus" }));
+    expect(res.status).toBe(400);
+  });
+
+  test("runDiscoveryScan executes only the selected source", () => {
+    const original = DISCOVERY_SOURCES["proc-cmdline"];
+    let calls = 0;
+    try {
+      DISCOVERY_SOURCES["proc-cmdline"] = () => {
+        calls += 1;
+        return [SAMPLE_ASSET];
+      };
+      const result = runDiscoveryScan("proc-cmdline");
+      expect(result.assetsFound).toBe(1);
+      expect(calls).toBe(1);
+      expect(listDiscoveredAssets().some((asset) => asset.signature === SAMPLE_ASSET.signature)).toBe(true);
+    } finally {
+      DISCOVERY_SOURCES["proc-cmdline"] = original;
+    }
   });
 });

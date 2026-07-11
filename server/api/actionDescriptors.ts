@@ -12,6 +12,7 @@ import { listBudgets } from "../governance/budgets.ts";
 import { ALLOWED_CONTAINERS, ALLOWED_SERVICES, ALLOWED_TIMERS, newsBitesDeployAvailable } from "./actions.ts";
 import { getEscalatableIncidents, getIncidentEntries, type EscalatableIncident } from "./incidents.ts";
 import { ok, type ActionDescriptor, type ApiEnvelope, type DoctorDetail, type EvidenceRef, type InfraDetail, type ModelsDetail, type NewsBitesDetail } from "./types.ts";
+import { DISCOVERY_SOURCES } from "../discovery/reconcile.ts";
 
 const GPU_HEALTH_PATH = "/var/lib/mimule/gpu-health.json";
 
@@ -697,6 +698,25 @@ function addDiskReclaimAndBackupActions(actions: ActionDescriptor[]): void {
   }
 }
 
+function addDiscoveryScanActions(actions: ActionDescriptor[]): void {
+  for (const source of Object.keys(DISCOVERY_SOURCES)) {
+    actions.push(descriptor({
+      id: `scan:discovery:${source}`,
+      label: `Re-scan discovery source: ${source}`,
+      kind: "scan",
+      targetType: "discovery",
+      targetId: source,
+      risk: "low",
+      confirm: false,
+      reasonRequired: false,
+      evidenceRefs: [apiEvidence("Discovery inventory", "/api/discovery/assets")],
+      impactPreview: `Refresh only the ${source} discovery probe immediately instead of waiting for the 15-minute scheduler.`,
+      sourceRoute: "/insights",
+      requiresOnline: true,
+    }));
+  }
+}
+
 export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   const actions: ActionDescriptor[] = [];
   addBudgetActions(actions);
@@ -711,6 +731,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addDoctorActions(actions, input.doctorEntries);
   addVastAndGpuActions(actions, input);
   addDiskReclaimAndBackupActions(actions);
+  addDiscoveryScanActions(actions);
   return actions;
 }
 

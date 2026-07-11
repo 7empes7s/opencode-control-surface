@@ -90,6 +90,7 @@ export interface ActionDescriptor {
     | "export"
     | "preview"
     | "probe"
+    | "scan"
     | "reclaim"
     | "run"
     | "rotate"
