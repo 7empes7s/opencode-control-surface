@@ -23,6 +23,7 @@ import { GatewayPage } from "./routes/GatewayPage";
 import { LiteLLMPage } from "./routes/LiteLLMPage";
 import { GovernancePage } from "./routes/GovernancePage";
 import { WorkflowsPage } from "./routes/WorkflowsPage";
+import { RunbooksPage } from "./routes/RunbooksPage";
 import { ProjectsPage } from "./routes/ProjectsPage";
 import { AboutPage } from "./routes/AboutPage";
 import { MarketplacePage } from "./routes/MarketplacePage";
@@ -187,6 +188,9 @@ export function App() {
         </Route>
         <Route path="/workflows">
           <DashLayout><WorkflowsPage /></DashLayout>
+        </Route>
+        <Route path="/runbooks">
+          <DashLayout><RunbooksPage /></DashLayout>
         </Route>
         <Route path="/projects">
           <DashLayout><ProjectsPage /></DashLayout>

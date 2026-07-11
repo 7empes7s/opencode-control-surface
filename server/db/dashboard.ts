@@ -313,6 +313,45 @@ function migrateDashboardDb(db: Database): void {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS runbook_definitions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      steps_json TEXT NOT NULL,
+      created_by TEXT,
+      created_at INTEGER,
+      updated_at INTEGER,
+      archived_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS runbook_runs (
+      id TEXT PRIMARY KEY,
+      runbook_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+      actor TEXT,
+      reason TEXT,
+      risk TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_runbook_runs_runbook_id
+      ON runbook_runs (runbook_id);
+
+    CREATE TABLE IF NOT EXISTS runbook_run_steps (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      step_index INTEGER,
+      action_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed', 'skipped')),
+      message TEXT,
+      error TEXT,
+      started_at INTEGER,
+      finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_runbook_run_steps_run_id
+      ON runbook_run_steps (run_id);
+
     CREATE TABLE IF NOT EXISTS builder_projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

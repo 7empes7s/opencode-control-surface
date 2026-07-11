@@ -40,11 +40,13 @@ interface ExecuteRequest {
   batchId?: string;
 }
 
+type AuditedExecuteRequest = ExecuteRequest & { runbookRunId?: string };
+
 type ExecuteResult =
   | { ok: true; action: string; jobId?: string; text?: string; url?: string; path?: string; route?: string; message?: string; result?: Record<string, unknown> }
   | { ok: false; error: string; code: "BAD_REQUEST" | "NOT_FOUND" | "DISABLED" | "CONFIRM_REQUIRED" | "REASON_REQUIRED" | "ALLOWLIST" | "NOT_IMPLEMENTED" | "EXEC_ERROR" }
 
-interface ParsedActionId {
+export interface ParsedActionId {
   kind: string;
   targetType: string;
   targetId: string;
@@ -52,7 +54,7 @@ interface ParsedActionId {
   segments: string[];
 }
 
-function parseActionId(actionId: string): ParsedActionId | null {
+export function parseActionId(actionId: string): ParsedActionId | null {
   if (!actionId || actionId.trim() === "") {
     return null;
   }
@@ -138,6 +140,51 @@ function rollbackHintForActionId(actionId: string): string | undefined {
   if (kind === "mute" && targetType === "incident") return `unmute:incident:${targetId}`;
   if (kind === "unmute" && targetType === "incident") return `mute:incident:${targetId}`;
   return undefined;
+}
+
+export function writeExecutedActionAudit(
+  parsed: ParsedActionId,
+  actionId: string,
+  body: AuditedExecuteRequest,
+  result: ExecuteResult,
+): void {
+  const { kind, targetType, targetId, suffix } = parsed;
+  const { reason, confirmed, params, batchId, runbookRunId } = body;
+  writeActionAudit({
+    actionKind: kind + "." + targetType,
+    actionId,
+    targetType,
+    targetId,
+    risk: getRisk(kind, targetType, suffix),
+    reason,
+    request: { actionId, confirmed, params, batchId, ...(runbookRunId ? { runbookRunId } : {}) },
+    resultStatus: result.ok ? "success" : "failed",
+    result: result.ok ? (result as { message?: string }).message : undefined,
+    error: result.ok ? undefined : (result as { error: string }).error,
+    resultJson: batchId ? { batchId } : undefined,
+    rollbackHint: result.ok ? rollbackHintForActionId(actionId) : undefined,
+  });
+}
+
+export async function executeCatalogAction(
+  actionId: string,
+  options: {
+    params?: Record<string, unknown>;
+    reason?: string;
+    confirmed: true;
+    runbookRunId?: string;
+  },
+  req: Request,
+): Promise<ExecuteResult> {
+  const parsed = parseActionId(actionId);
+  if (!parsed) {
+    return { ok: false, error: "actionId required and must have at least 2 segments", code: "BAD_REQUEST" };
+  }
+
+  const body: AuditedExecuteRequest = { actionId, ...options };
+  const result = await routeAndExecute(parsed, body, req);
+  writeExecutedActionAudit(parsed, actionId, body, result);
+  return result;
 }
 
 type EscalationIncidentRow = {
@@ -1045,20 +1092,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
 
   const result = await routeAndExecute(parsed, body, req);
 
-  writeActionAudit({
-    actionKind: kind + "." + targetType,
-    actionId,
-    targetType,
-    targetId,
-    risk: getRisk(kind, targetType, suffix),
-    reason,
-    request: { actionId, confirmed, params, batchId },
-    resultStatus: result.ok ? "success" : "failed",
-    result: result.ok ? (result as { message?: string }).message : undefined,
-    error: result.ok ? undefined : (result as { error: string }).error,
-    resultJson: batchId ? { batchId } : undefined,
-    rollbackHint: result.ok ? rollbackHintForActionId(actionId) : undefined,
-  });
+  writeExecutedActionAudit(parsed, actionId, { actionId, reason, confirmed, params, batchId }, result);
 
   if (!result.ok) {
     const errorResult = result as { ok: false; error: string; code: string };

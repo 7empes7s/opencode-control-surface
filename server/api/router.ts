@@ -181,6 +181,15 @@ import {
 } from "./actions.ts";
 import { executeActionHandler } from "./execute.ts";
 import {
+  runbooksListHandler,
+  runbookCreateHandler,
+  runbookUpdateHandler,
+  runbookArchiveHandler,
+  runbookStartHandler,
+  runbookRunGetHandler,
+  runbookRunsHandler,
+} from "./runbooks.ts";
+import {
   gatewayStatusHandler,
   gatewayModelsHandler,
   gatewayLedgerHandler,
@@ -534,6 +543,42 @@ if (method === "GET" && pathname === "/api/stream") {
   return response;
 }
   if (method === "GET" && pathname === "/api/actions/catalog") return actionCatalogHandler(url);
+  if (method === "GET" && pathname === "/api/runbooks") {
+    if (!checkToken(req)) return unauthorized();
+    return Promise.resolve(runbooksListHandler());
+  }
+  const runbookRunGetMatch = pathname.match(/^\/api\/runbooks\/runs\/([^/]+)$/);
+  if (method === "GET" && runbookRunGetMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return Promise.resolve(runbookRunGetHandler(decodeURIComponent(runbookRunGetMatch[1])));
+  }
+  const runbookRunsMatch = pathname.match(/^\/api\/runbooks\/([^/]+)\/runs$/);
+  if (method === "GET" && runbookRunsMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return Promise.resolve(runbookRunsHandler(decodeURIComponent(runbookRunsMatch[1]), url));
+  }
+  if (method === "POST" && pathname === "/api/runbooks") {
+    const denied = requireMutation(req);
+    if (denied) return Promise.resolve(denied);
+    return runbookCreateHandler(req);
+  }
+  const runbookStartMatch = pathname.match(/^\/api\/runbooks\/([^/]+)\/run$/);
+  if (method === "POST" && runbookStartMatch) {
+    const denied = requireMutation(req);
+    if (denied) return Promise.resolve(denied);
+    return runbookStartHandler(req, decodeURIComponent(runbookStartMatch[1]));
+  }
+  const runbookDefinitionMatch = pathname.match(/^\/api\/runbooks\/([^/]+)$/);
+  if (method === "PUT" && runbookDefinitionMatch) {
+    const denied = requireMutation(req);
+    if (denied) return Promise.resolve(denied);
+    return runbookUpdateHandler(req, decodeURIComponent(runbookDefinitionMatch[1]));
+  }
+  if (method === "DELETE" && runbookDefinitionMatch) {
+    const denied = requireMutation(req);
+    if (denied) return Promise.resolve(denied);
+    return Promise.resolve(runbookArchiveHandler(decodeURIComponent(runbookDefinitionMatch[1])));
+  }
   if (method === "GET" && pathname === "/api/policy/registry") {
     if (!checkToken(req)) return unauthorized();
     return policyRegistryHandler();

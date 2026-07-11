@@ -39,6 +39,7 @@ export const NAV_ITEMS: NavMeta[] = [
   { href: "/infra", label: "Infra", status: "core", sub: "Hetzner / Vast / GPU / services" },
   { href: "/incidents", label: "Incidents", status: "core", sub: "Cross-cutting failure timeline" },
   { href: "/jobs", label: "Jobs", status: "core" },
+  { href: "/runbooks", label: "Runbooks", status: "core", sub: "Parameterized, audited action bundles" },
   { href: "/audit", label: "Audit", status: "core" },
   { href: "/builder", label: "Builder", status: "core" },
   { href: "/brainstorm", label: "Brainstorm", status: "core" },
