@@ -376,6 +376,7 @@ import {
   webhooksListHandler,
 } from "./publicApi.ts";
 import { getUsageSummary, recordUsageEvents } from "../usage/analytics.ts";
+import { getModuleUsage } from "../usage/analytics.ts";
 
 export const handleApi = withTenantContext(withRequestAuthContext(handleApiOuter));
 
@@ -408,6 +409,17 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
     const to = url.searchParams.get("to") ?? new Date(now).toISOString().slice(0, 10);
     try {
       return Response.json(getUsageSummary(from, to));
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+    }
+  }
+  if (method === "GET" && pathname === "/api/usage/modules") {
+    if (!checkToken(req)) return unauthorized();
+    const now = Date.now();
+    const from = url.searchParams.get("from") ?? new Date(now - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const to = url.searchParams.get("to") ?? new Date(now + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    try {
+      return Response.json(getModuleUsage(from, to));
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }

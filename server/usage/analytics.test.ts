@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { handleApi } from "../api/router.ts";
 import {
+  getModuleUsage,
   getUsageSummary,
   recordUsageEvents,
   rollupUsageDaily,
@@ -136,6 +137,55 @@ describe("first-party usage analytics", () => {
     });
   });
 
+  test("summarizes module usage with findings attribution, key union, totals, and earns-its-keep ordering", () => {
+    const db = getDashboardDb()!;
+    db.exec("ALTER TABLE insights ADD COLUMN updated_at INTEGER");
+    const insertUsage = db.query("INSERT INTO usage_daily (day, tenant_id, event_type, path, count) VALUES (?, ?, ?, ?, ?)");
+    insertUsage.run("2026-07-01", "mimule", "pageview", "/models", 8);
+    insertUsage.run("2026-07-01", "mimule", "action", "/models", 4);
+    insertUsage.run("2026-07-02", "mimule", "pageview", "/insights", 12);
+    insertUsage.run("2026-07-02", "mimule", "action", "/insights", 4);
+    insertUsage.run("2026-07-02", "mimule", "pageview", "/usage-only", 20);
+    insertUsage.run("2026-07-02", "other", "action", "/models", 99);
+    insertUsage.run("2026-06-30", "mimule", "action", "/outside", 99);
+
+    const insertInsight = db.query(`
+      INSERT INTO insights (
+        id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+        manual_page_href, status, tenant_id, created_at, resolved_at, updated_at
+      ) VALUES (?, 'ops', 'medium', ?, 'summary', 0.9, '[]', ?, ?, ?, ?, ?, ?)
+    `);
+    const inPeriod = Date.parse("2026-07-02T12:00:00.000Z");
+    insertInsight.run("applied-insights", "Applied insight", "/insights?tab=open#finding", "applied", "mimule", inPeriod, null, inPeriod);
+    insertInsight.run("resolved-insights", "Resolved insight", "/insights", "resolved", "mimule", inPeriod, inPeriod + 1, inPeriod + 2);
+    insertInsight.run("findings-only", "Finding only", "/incidents?view=all", "resolved", "mimule", inPeriod, inPeriod, inPeriod);
+    insertInsight.run("out-before", "Before period", "/models", "resolved", "mimule", inPeriod, Date.parse("2026-06-30T23:59:59.999Z"), inPeriod);
+    insertInsight.run("out-at-end", "At exclusive end", "/models", "resolved", "mimule", inPeriod, null, Date.parse("2026-07-03T00:00:00.000Z"));
+    insertInsight.run("still-open", "Still open", "/models", "open", "mimule", inPeriod, null, inPeriod);
+    insertInsight.run("other-tenant", "Other tenant", "/models", "resolved", "other", inPeriod, inPeriod, inPeriod);
+
+    expect(getModuleUsage("2026-07-01", "2026-07-03")).toEqual({
+      from: "2026-07-01",
+      to: "2026-07-03",
+      modules: [
+        { path: "/insights", pageviews: 12, actions: 4, findingsActedOn: 2 },
+        { path: "/models", pageviews: 8, actions: 4, findingsActedOn: 0 },
+        { path: "/incidents", pageviews: 0, actions: 0, findingsActedOn: 1 },
+        { path: "/usage-only", pageviews: 20, actions: 0, findingsActedOn: 0 },
+      ],
+      totals: { pageviews: 40, actions: 8, findingsActedOn: 3 },
+    });
+  });
+
+  test("returns honest zero module usage for an empty database", () => {
+    expect(getModuleUsage("2026-07-01", "2026-07-03")).toEqual({
+      from: "2026-07-01",
+      to: "2026-07-03",
+      modules: [],
+      totals: { pageviews: 0, actions: 0, findingsActedOn: 0 },
+    });
+  });
+
   test("API records beacons, returns summaries, and rejects unauthenticated requests", async () => {
     const beaconUrl = new URL("http://127.0.0.1:3000/api/usage/beacon");
     const anonymousPost = await handleApi(new Request(beaconUrl, {
@@ -165,5 +215,27 @@ describe("first-party usage analytics", () => {
       paths: [{ path: "/models", pageviews: 1, actions: 0 }],
       totals: { pageviews: 1, actions: 0 },
     });
+  });
+
+  test("module usage API returns data and rejects bad or unauthenticated requests", async () => {
+    const db = getDashboardDb()!;
+    db.query("INSERT INTO usage_daily (day, tenant_id, event_type, path, count) VALUES ('2026-07-02', 'mimule', 'pageview', '/reports', 3)").run();
+
+    const modulesUrl = new URL("http://127.0.0.1:3000/api/usage/modules?from=2026-07-01&to=2026-07-03");
+    const anonymous = await handleApi(new Request(modulesUrl), modulesUrl);
+    expect(anonymous.status).toBe(401);
+
+    const response = await handleApi(authenticatedRequest("/api/usage/modules?from=2026-07-01&to=2026-07-03"), modulesUrl);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      from: "2026-07-01",
+      to: "2026-07-03",
+      modules: [{ path: "/reports", pageviews: 3, actions: 0, findingsActedOn: 0 }],
+      totals: { pageviews: 3, actions: 0, findingsActedOn: 0 },
+    });
+
+    const badUrl = new URL("http://127.0.0.1:3000/api/usage/modules?from=not-a-date&to=2026-07-03");
+    const bad = await handleApi(authenticatedRequest("/api/usage/modules?from=not-a-date&to=2026-07-03"), badUrl);
+    expect(bad.status).toBe(400);
   });
 });

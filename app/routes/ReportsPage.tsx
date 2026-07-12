@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Copy, Download, FileDown, FileText, Play, RefreshCw, Upload } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useApi } from "../hooks/useApi";
@@ -21,7 +21,22 @@ type ReportsArchiveResponse = {
 };
 
 type RangePreset = "24h" | "7d" | "30d";
+type ModuleRangePreset = "7d" | "30d" | "90d";
 type ExportFormat = "pdf" | "pptx" | "docx";
+
+type ModuleUsageRow = {
+  path: string;
+  pageviews: number;
+  actions: number;
+  findingsActedOn: number;
+};
+
+type ModuleUsageResponse = {
+  from: string;
+  to: string;
+  modules: ModuleUsageRow[];
+  totals: { pageviews: number; actions: number; findingsActedOn: number };
+};
 
 const EXPORT_LABELS: Record<ExportFormat, string> = {
   pdf: "PDF",
@@ -33,6 +48,12 @@ const RANGE_MS: Record<RangePreset, number> = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
+const MODULE_RANGE_DAYS: Record<ModuleRangePreset, number> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
 };
 
 function formatDate(ts: number | null | undefined): string {
@@ -111,6 +132,10 @@ export function ReportsPage() {
   const { authStatus } = useAuthStatus();
   const [templateId, setTemplateId] = useState("daily-pipeline");
   const [range, setRange] = useState<RangePreset>("7d");
+  const [moduleRange, setModuleRange] = useState<ModuleRangePreset>("30d");
+  const [moduleUsage, setModuleUsage] = useState<ModuleUsageResponse | null>(null);
+  const [moduleUsageLoading, setModuleUsageLoading] = useState(true);
+  const [moduleUsageError, setModuleUsageError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | "system-labor" | "sla-uptime" | "discovery-posture" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -148,6 +173,51 @@ export function ReportsPage() {
       run.error,
     ],
     sortValue: (run) => run.startedAt,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const tomorrow = new Date();
+    tomorrow.setUTCHours(0, 0, 0, 0);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const from = new Date(tomorrow);
+    from.setUTCDate(from.getUTCDate() - MODULE_RANGE_DAYS[moduleRange]);
+    const query = new URLSearchParams({
+      from: from.toISOString().slice(0, 10),
+      to: tomorrow.toISOString().slice(0, 10),
+    });
+
+    setModuleUsageLoading(true);
+    authFetch(`/api/usage/modules?${query}`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        return body as ModuleUsageResponse;
+      })
+      .then((body) => {
+        if (cancelled) return;
+        setModuleUsage(body);
+        setModuleUsageError(null);
+        setModuleUsageLoading(false);
+      })
+      .catch((fetchError: unknown) => {
+        if (cancelled) return;
+        setModuleUsageError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+        setModuleUsageLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [moduleRange]);
+
+  const moduleTable = useTableControls<ModuleUsageRow, "path" | "pageviews" | "actions" | "findingsActedOn">({
+    rows: moduleUsage?.modules ?? [],
+    pageSize: 10,
+    defaultSort: { key: "actions", dir: "desc" },
+    filterText: (module) => module.path,
+    sortValue: (module, key) => module[key],
+    tieBreak: ["path"],
   });
 
   const totals = useMemo(() => {
@@ -398,6 +468,80 @@ export function ReportsPage() {
           </div>
         </section>
       )}
+
+      <section className="dash-section">
+        <h2 className="dash-section-title">Module usage</h2>
+        <div className="insight-group-title">
+          <span className="dim">Which modules earn their keep — measured, not guessed</span>
+          <label>
+            <span className="dim">Period </span>
+            <select className="form-select" value={moduleRange} onChange={(event) => setModuleRange(event.target.value as ModuleRangePreset)}>
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="90d">Last 90 days</option>
+            </select>
+          </label>
+        </div>
+
+        <TableControls
+          {...moduleTable.controlsProps}
+          searchPlaceholder="Search module path..."
+          className="reports-search"
+        />
+
+        {moduleUsageLoading && !moduleUsage && <div className="loading-panel">Loading module usage.</div>}
+        {moduleUsageError && !moduleUsage && <div className="loading-panel error">Module usage did not load: {moduleUsageError}</div>}
+        {!moduleUsageLoading && moduleUsage?.modules.length === 0 && (
+          <div className="empty-state">
+            <FileText size={24} />
+            <strong>No usage recorded yet</strong>
+            <span>No usage recorded yet — usage accrues as the dashboard is used (page visits need the beacon; actions and findings come from the audit history).</span>
+          </div>
+        )}
+
+        {moduleUsage && moduleUsage.modules.length > 0 && (
+          <div className="table-wrap">
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th {...moduleTable.sortHeaderProps("path")}>Module <span className="sortable-th-arrow">{moduleTable.sort.key === "path" ? (moduleTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...moduleTable.sortHeaderProps("pageviews")}>Visits <span className="sortable-th-arrow">{moduleTable.sort.key === "pageviews" ? (moduleTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...moduleTable.sortHeaderProps("actions")}>Actions <span className="sortable-th-arrow">{moduleTable.sort.key === "actions" ? (moduleTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                    <th {...moduleTable.sortHeaderProps("findingsActedOn")}>Findings acted on <span className="sortable-th-arrow">{moduleTable.sort.key === "findingsActedOn" ? (moduleTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {moduleTable.rows.map((module) => (
+                    <tr key={module.path}>
+                      <td className="mono">{module.path}</td>
+                      <td className="mono">{module.pageviews.toLocaleString()}</td>
+                      <td className="mono">{module.actions.toLocaleString()}</td>
+                      <td className="mono">{module.findingsActedOn.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td><strong>Total</strong></td>
+                    <td className="mono"><strong>{moduleUsage.totals.pageviews.toLocaleString()}</strong></td>
+                    <td className="mono"><strong>{moduleUsage.totals.actions.toLocaleString()}</strong></td>
+                    <td className="mono"><strong>{moduleUsage.totals.findingsActedOn.toLocaleString()}</strong></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {moduleUsage && moduleUsage.modules.length > 0 && moduleTable.filteredCount === 0 && (
+          <div className="empty-state content-health-filter-empty">
+            <FileText size={24} />
+            <strong>No matching modules.</strong>
+            <span>Adjust the module search to widen the usage view.</span>
+          </div>
+        )}
+      </section>
 
       <section className="dash-section">
         <div className="insight-group-title">

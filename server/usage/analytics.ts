@@ -13,6 +13,13 @@ export type UsageSummary = {
   totals: { pageviews: number; actions: number };
 };
 
+export type ModuleUsage = {
+  from: string;
+  to: string;
+  modules: Array<{ path: string; pageviews: number; actions: number; findingsActedOn: number }>;
+  totals: { pageviews: number; actions: number; findingsActedOn: number };
+};
+
 function normalizePath(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.length > 512) return null;
   const delimiterIndex = value.search(/[?#]/);
@@ -168,4 +175,84 @@ export function getUsageSummary(
     summary.totals.actions += row.actions;
   }
   return summary;
+}
+
+export function getModuleUsage(
+  periodStart: number | Date | string,
+  periodEnd: number | Date | string,
+): ModuleUsage {
+  const from = utcDay(periodStart);
+  const to = utcDay(periodEnd);
+  if (from > to) throw new Error("usage summary start must not be after end");
+
+  const result: ModuleUsage = {
+    from,
+    to,
+    modules: [],
+    totals: { pageviews: 0, actions: 0, findingsActedOn: 0 },
+  };
+  const db = getDashboardDb();
+  if (!db) return result;
+
+  const tenantId = getCurrentTenantContext().tenantId;
+  const usageRows = db.query(`
+    SELECT
+      path,
+      SUM(CASE WHEN event_type = 'pageview' THEN count ELSE 0 END) AS pageviews,
+      SUM(CASE WHEN event_type = 'action' THEN count ELSE 0 END) AS actions
+    FROM usage_daily
+    WHERE tenant_id = ? AND day >= ? AND day <= ?
+    GROUP BY path
+  `).all(tenantId, from, to) as Array<{ path: string; pageviews: number; actions: number }>;
+
+  const insightColumns = db.query("PRAGMA table_info(insights)").all() as Array<{ name: string }>;
+  const actedAtExpression = insightColumns.some((column) => column.name === "updated_at")
+    ? "COALESCE(resolved_at, updated_at)"
+    : "COALESCE(resolved_at, created_at)";
+  const fromTs = Date.parse(`${from}T00:00:00.000Z`);
+  const toTs = Date.parse(`${to}T00:00:00.000Z`);
+  const findingRows = db.query(`
+    SELECT manual_page_href AS manualPageHref, COUNT(*) AS findingsActedOn
+    FROM insights
+    WHERE tenant_id = ?
+      AND status IN ('applied', 'resolved')
+      AND ${actedAtExpression} >= ?
+      AND ${actedAtExpression} < ?
+    GROUP BY manual_page_href
+  `).all(tenantId, fromTs, toTs) as Array<{ manualPageHref: string; findingsActedOn: number }>;
+
+  const modules = new Map<string, { path: string; pageviews: number; actions: number; findingsActedOn: number }>();
+  for (const row of usageRows) {
+    modules.set(row.path, {
+      path: row.path,
+      pageviews: Number(row.pageviews),
+      actions: Number(row.actions),
+      findingsActedOn: 0,
+    });
+  }
+  for (const row of findingRows) {
+    const normalizedPath = normalizePath(row.manualPageHref);
+    if (!normalizedPath) continue;
+    const module = modules.get(normalizedPath) ?? {
+      path: normalizedPath,
+      pageviews: 0,
+      actions: 0,
+      findingsActedOn: 0,
+    };
+    module.findingsActedOn += Number(row.findingsActedOn);
+    modules.set(normalizedPath, module);
+  }
+
+  result.modules = [...modules.values()].sort((a, b) =>
+    b.actions - a.actions ||
+    b.findingsActedOn - a.findingsActedOn ||
+    b.pageviews - a.pageviews ||
+    a.path.localeCompare(b.path)
+  );
+  for (const module of result.modules) {
+    result.totals.pageviews += module.pageviews;
+    result.totals.actions += module.actions;
+    result.totals.findingsActedOn += module.findingsActedOn;
+  }
+  return result;
 }
