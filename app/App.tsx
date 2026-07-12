@@ -1,4 +1,5 @@
-import { Router, Route, Switch } from "wouter";
+import { useEffect, useRef } from "react";
+import { Router, Route, Switch, useLocation } from "wouter";
 import { DashSidebar } from "./components/DashSidebar";
 import { DashHeader } from "./components/DashHeader";
 import { DashHome } from "./routes/DashHome";
@@ -47,6 +48,36 @@ import { AdminPage } from "./routes/AdminPage";
 import { TerminalPage } from "./routes/TerminalPage";
 import { AuthPrompt } from "./components/AuthPrompt";
 import { CommandPalette, useCommandPalette } from "./components/CommandPalette";
+import { authFetch } from "./lib/authFetch";
+
+function UsageBeacon() {
+  const [location] = useLocation();
+  const pendingPaths = useRef<string[]>([]);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    pendingPaths.current.push(location);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      while (pendingPaths.current.length > 0) {
+        const events = pendingPaths.current.splice(0, 50).map((path) => ({ path }));
+        void authFetch("/api/usage/beacon", {
+          method: "POST",
+          keepalive: true,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ events }),
+        }).catch(() => undefined);
+      }
+    }, 250);
+
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [location]);
+
+  return null;
+}
 
 function DashLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -83,6 +114,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
   const { open, onClose } = useCommandPalette();
   return (
     <>
+      <UsageBeacon />
       {children}
       <CommandPalette open={open} onClose={onClose} />
     </>

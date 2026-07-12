@@ -375,11 +375,12 @@ import {
   webhooksDisableHandler,
   webhooksListHandler,
 } from "./publicApi.ts";
+import { getUsageSummary, recordUsageEvents } from "../usage/analytics.ts";
 
 export const handleApi = withTenantContext(withRequestAuthContext(handleApiOuter));
 
 function handleApiOuter(req: Request, url: URL): Promise<Response> {
-  if (isMutatingApiRequest(req.method, url.pathname)) {
+  if (isMutatingApiRequest(req.method, url.pathname) && url.pathname !== "/api/usage/beacon") {
     return withAuditBoundary(req, url.pathname, resolveActorForAudit(req), () =>
       handleApiInner(req, url),
     );
@@ -394,6 +395,23 @@ function shouldRateLimitRequest(method: string): boolean {
 async function handleApiInner(req: Request, url: URL): Promise<Response> {
   const { pathname } = url;
   const method = req.method;
+
+  if (method === "POST" && pathname === "/api/usage/beacon") {
+    if (!checkToken(req)) return unauthorized();
+    const body = await req.json().catch(() => null) as { events?: Array<{ path: string }> } | null;
+    return Response.json({ recorded: recordUsageEvents(body?.events ?? [], req) });
+  }
+  if (method === "GET" && pathname === "/api/usage/summary") {
+    if (!checkToken(req)) return unauthorized();
+    const now = Date.now();
+    const from = url.searchParams.get("from") ?? new Date(now - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const to = url.searchParams.get("to") ?? new Date(now).toISOString().slice(0, 10);
+    try {
+      return Response.json(getUsageSummary(from, to));
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+    }
+  }
 
   // ── HTTP boundary input validation ─────────────────────────────────────────
   const allowedMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];

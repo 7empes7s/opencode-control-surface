@@ -1,6 +1,7 @@
 import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { getAuditRetentionDays, purgeExpiredAuditRows } from "./audit/export.ts";
+import { rollupUsageDaily, sweepUsageRetention } from "../usage/analytics.ts";
 
 export type RetentionPolicy = {
   tracesTtlDays: number;
@@ -34,6 +35,14 @@ export function runRetentionCleanup(): {
   let runDirsDeleted = 0;
   const now = Date.now();
   const policy = getRetentionPolicy();
+
+  try {
+    rollupUsageDaily(now);
+    sweepUsageRetention(now);
+  } catch (error) {
+    // Keep the sweep behind the rollup: if aggregation fails, no raw usage is deleted.
+    errors.push(`usage retention failed: ${String(error)}`);
+  }
 
   const tracesDir = "/var/lib/control-surface/traces";
   const runDirsBase = "/var/lib/control-surface/runs";

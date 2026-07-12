@@ -189,6 +189,26 @@ function migrateDashboardDb(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_action_audit_ts ON action_audit (ts);
     CREATE INDEX IF NOT EXISTS idx_action_audit_action_kind ON action_audit (action_kind);
 
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      event_type TEXT NOT NULL CHECK(event_type IN ('pageview')),
+      path TEXT NOT NULL,
+      actor_source TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_ts
+      ON usage_events (tenant_id, ts);
+
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      day TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      path TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      PRIMARY KEY(day, tenant_id, event_type, path)
+    );
+
     CREATE TABLE IF NOT EXISTS gateway_route_override (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       target_model TEXT NOT NULL,
