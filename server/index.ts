@@ -13,6 +13,7 @@ import { startRetentionScheduler } from "./governance/retention.ts";
 import { startInsightsScanScheduler, stopInsightsScanScheduler } from "./insights/scheduler.ts";
 import { maybeGenerateWeeklyExecutiveReport } from "./reporting/executive.ts";
 import { maybeGenerateMonthlyRemediationReport } from "./reporting/remediation.ts";
+import { maybeGenerateWeeklySystemLaborReport } from "./reporting/systemLabor.ts";
 import { backfillCostEventsOnce } from "./gateway/ledger.ts";
 import { setLaneLimit } from "./orchestrator/lanes.ts";
 import { seedDefaultTenant } from "./tenancy/store.ts";
@@ -211,6 +212,9 @@ export async function startServer(): Promise<{ stop: () => void }> {
     });
     void maybeGenerateMonthlyRemediationReport().catch((error) => {
       console.error("[control-surface] monthly remediation report failed", error instanceof Error ? error.message : error);
+    });
+    void maybeGenerateWeeklySystemLaborReport().catch((error) => {
+      console.error("[control-surface] weekly system labor report failed", error instanceof Error ? error.message : error);
     });
   };
   executiveReportTick();

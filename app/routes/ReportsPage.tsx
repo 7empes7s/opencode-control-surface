@@ -112,7 +112,7 @@ export function ReportsPage() {
   const [templateId, setTemplateId] = useState("daily-pipeline");
   const [range, setRange] = useState<RangePreset>("7d");
   const [running, setRunning] = useState(false);
-  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | null>(null);
+  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | "system-labor" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
@@ -130,6 +130,7 @@ export function ReportsPage() {
       ...templates.map((template) => [template.id, template.name] as const),
       ["weekly-executive", "Weekly Executive Report"],
       ["monthly-remediation", "Monthly Remediation Report"],
+      ["weekly-system-labor", "Weekly System Labor Report"],
     ]);
   }, [templates]);
 
@@ -180,7 +181,7 @@ export function ReportsPage() {
     }
   };
 
-  const generateDigest = async (kind: "digest" | "executive" | "remediation") => {
+  const generateDigest = async (kind: "digest" | "executive" | "remediation" | "system-labor") => {
     if (!isAuthenticated || generatingDigest) return;
     setGeneratingDigest(kind);
     setMessage(null);
@@ -192,6 +193,8 @@ export function ReportsPage() {
         ? "Generated weekly executive report."
         : kind === "remediation"
           ? "Generated monthly remediation report."
+          : kind === "system-labor"
+            ? "Generated weekly system labor report."
           : "Generated daily operator digest.");
       refresh();
     } catch (err) {
@@ -338,7 +341,7 @@ export function ReportsPage() {
           <FileText size={20} />
           <div>
             <strong>Scheduled summaries</strong>
-            <span>Generate the operator digest, executive report, or remediation-loop report immediately.</span>
+            <span>Generate the operator digest, executive, remediation-loop, or system-labor report immediately.</span>
           </div>
         </div>
         <button type="button" className="btn" onClick={() => generateDigest("digest")} disabled={!isAuthenticated || generatingDigest !== null}>
@@ -352,6 +355,10 @@ export function ReportsPage() {
         <button type="button" className="btn" onClick={() => generateDigest("remediation")} disabled={!isAuthenticated || generatingDigest !== null}>
           <Play size={14} />
           {generatingDigest === "remediation" ? "Generating" : "Generate remediation report"}
+        </button>
+        <button type="button" className="btn" onClick={() => generateDigest("system-labor")} disabled={!isAuthenticated || generatingDigest !== null}>
+          <Play size={14} />
+          {generatingDigest === "system-labor" ? "Generating" : "Generate system labor report"}
         </button>
       </section>
 
