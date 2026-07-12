@@ -18,6 +18,7 @@ function request(path: string, init: RequestInit = {}): Request {
     ...init,
     headers: {
       "x-real-ip": "finance-intel-test",
+      "x-operator-token": "finance-intel-test-token",
       ...(init.headers as Record<string, string> | undefined ?? {}),
     },
   });
@@ -30,6 +31,7 @@ beforeEach(() => {
   previousObservabilityDbPath = process.env.OBSERVABILITY_DB_PATH;
   previousOperatorToken = process.env.OPERATOR_TOKEN;
   process.env.OBSERVABILITY_DB_PATH = join(tempDir, "observability.sqlite");
+  process.env.OPERATOR_TOKEN = "finance-intel-test-token";
 });
 
 afterEach(() => {
@@ -111,7 +113,6 @@ describe("GET /api/finance-intel/portfolio-config", () => {
 describe("POST /api/finance-intel/portfolio-config", () => {
   beforeEach(() => {
     resetRateLimitMap();
-    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 200 when updating portfolio config", async () => {
@@ -119,7 +120,7 @@ describe("POST /api/finance-intel/portfolio-config", () => {
       request("/api/finance-intel/portfolio-config", {
         method: "POST",
         body: JSON.stringify({ name: "Test Portfolio", watchlist: ["AAPL", "GOOGL", "MSFT"] }),
-        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
+        headers: { "content-type": "application/json" },
       }),
       new URL("http://127.0.0.1:3000/api/finance-intel/portfolio-config"),
     );
@@ -132,7 +133,6 @@ describe("POST /api/finance-intel/portfolio-config", () => {
 describe("POST /api/finance-intel/trigger-analysis", () => {
   beforeEach(() => {
     resetRateLimitMap();
-    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 200 when triggering analysis", async () => {
@@ -140,7 +140,7 @@ describe("POST /api/finance-intel/trigger-analysis", () => {
       request("/api/finance-intel/trigger-analysis", {
         method: "POST",
         body: JSON.stringify({ portfolio: ["AAPL"] }),
-        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
+        headers: { "content-type": "application/json" },
       }),
       new URL("http://127.0.0.1:3000/api/finance-intel/trigger-analysis"),
     );

@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleApi } from "./router.ts";
+
+const TEST_OPERATOR_TOKEN = "dossier-test-token";
+let previousOperatorToken: string | undefined;
 
 function resetRateLimitMap(): void {
   (globalThis as unknown as { __rateLimitMap?: Record<string, number> }).__rateLimitMap = {};
@@ -10,10 +13,21 @@ function request(path: string, init: RequestInit = {}): Request {
     ...init,
     headers: {
       "x-real-ip": "dossier-test",
+      "x-operator-token": TEST_OPERATOR_TOKEN,
       ...(init.headers as Record<string, string> | undefined ?? {}),
     },
   });
 }
+
+beforeEach(() => {
+  previousOperatorToken = process.env.OPERATOR_TOKEN;
+  process.env.OPERATOR_TOKEN = TEST_OPERATOR_TOKEN;
+});
+
+afterEach(() => {
+  if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = previousOperatorToken;
+});
 
 describe("GET /api/dossier/:date/:slug", () => {
   beforeEach(() => {
@@ -50,7 +64,6 @@ describe("GET /api/dossier/:date/:slug", () => {
 describe("POST /api/dossier/:date/:slug/inject", () => {
   beforeEach(() => {
     resetRateLimitMap();
-    process.env.OPERATOR_TOKEN = "test-token";
   });
 
   test("returns 404 for non-existent dossier (expected behavior)", async () => {
@@ -58,7 +71,7 @@ describe("POST /api/dossier/:date/:slug/inject", () => {
       request("/api/dossier/2026-01-01/test-slug/inject", {
         method: "POST",
         body: JSON.stringify({ notes: "test notes", requeueStage: null }),
-        headers: { "content-type": "application/json", "x-operator-token": "test-token" },
+        headers: { "content-type": "application/json" },
       }),
       new URL("http://127.0.0.1:3000/api/dossier/2026-01-01/test-slug/inject"),
     );

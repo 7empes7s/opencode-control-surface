@@ -13,10 +13,21 @@ function request(path: string, init: RequestInit = {}): Request {
     ...init,
     headers: {
       "x-real-ip": "system-config-test",
+      "x-operator-token": TEST_OPERATOR_TOKEN,
       ...(init.headers as Record<string, string> | undefined ?? {}),
     },
   });
 }
+
+beforeEach(() => {
+  previousOperatorToken = process.env.OPERATOR_TOKEN;
+  process.env.OPERATOR_TOKEN = TEST_OPERATOR_TOKEN;
+});
+
+afterEach(() => {
+  if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+  else process.env.OPERATOR_TOKEN = previousOperatorToken;
+});
 
 describe("GET /api/system-config/current", () => {
   beforeEach(() => {
@@ -40,13 +51,6 @@ describe("GET /api/system-config/current", () => {
 describe("POST /api/system-config/update", () => {
   beforeEach(() => {
     resetRateLimitMap();
-    previousOperatorToken = process.env.OPERATOR_TOKEN;
-    process.env.OPERATOR_TOKEN = TEST_OPERATOR_TOKEN;
-  });
-
-  afterEach(() => {
-    if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
-    else process.env.OPERATOR_TOKEN = previousOperatorToken;
   });
 
   test("returns 200 when updating system config", async () => {
@@ -61,7 +65,7 @@ describe("POST /api/system-config/update", () => {
             }
           }
         }),
-        headers: { "content-type": "application/json", "x-operator-token": TEST_OPERATOR_TOKEN },
+        headers: { "content-type": "application/json" },
       }),
       new URL("http://127.0.0.1:3000/api/system-config"),
     );

@@ -545,7 +545,10 @@ if (method === "GET" && pathname === "/api/stream") {
   currentSseConnections--; // Decrement if we somehow don't have a body
   return response;
 }
-  if (method === "GET" && pathname === "/api/actions/catalog") return actionCatalogHandler(url);
+  if (method === "GET" && pathname === "/api/actions/catalog") {
+    if (!checkToken(req)) return unauthorized();
+    return actionCatalogHandler(url);
+  }
   if (method === "GET" && pathname === "/api/runbooks") {
     if (!checkToken(req)) return unauthorized();
     return Promise.resolve(runbooksListHandler());
@@ -662,7 +665,10 @@ if (method === "GET" && pathname === "/api/stream") {
     if (!checkToken(req)) return unauthorized();
     return actionAuditHandler(url);
   }
-  if (method === "GET" && pathname === "/api/governance/audit") return governanceAuditHandler(req);
+  if (method === "GET" && pathname === "/api/governance/audit") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceAuditHandler(req);
+  }
   if (method === "POST" && pathname === "/api/audit/export") {
     if (!checkToken(req)) return unauthorized();
     return auditExportHandler(url, method, await req.clone().json().catch(() => ({})), req);
@@ -729,23 +735,53 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/home") return homeHandler();
   if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();
   if (method === "GET" && pathname === "/api/metrics/showcase") return showcaseMetricsHandler();
-  if (method === "GET" && pathname === "/api/events") return eventsHandler(url);
-  if (method === "GET" && pathname === "/api/metrics") return metricsHandler(url);
-  if (method === "GET" && pathname === "/api/autopipeline") return autopipelineHandler();
-  if (method === "GET" && pathname === "/api/doctor") return doctorHandler(url);
-  if (method === "GET" && pathname === "/api/models") return modelsHandler();
-  if (method === "GET" && pathname === "/api/models/chain-sync") return modelChainSyncHandler();
+  if (method === "GET" && pathname === "/api/events") {
+    if (!checkToken(req)) return unauthorized();
+    return eventsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/metrics") {
+    if (!checkToken(req)) return unauthorized();
+    return metricsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/autopipeline") {
+    if (!checkToken(req)) return unauthorized();
+    return autopipelineHandler();
+  }
+  if (method === "GET" && pathname === "/api/doctor") {
+    if (!checkToken(req)) return unauthorized();
+    return doctorHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/models") {
+    if (!checkToken(req)) return unauthorized();
+    return modelsHandler();
+  }
+  if (method === "GET" && pathname === "/api/models/chain-sync") {
+    if (!checkToken(req)) return unauthorized();
+    return modelChainSyncHandler();
+  }
   const modelLifecycleEarlyMatch = pathname.match(/^\/api\/models\/([^/]+)\/lifecycle$/);
-  if (method === "GET" && modelLifecycleEarlyMatch) return modelLifecycleHandler(modelLifecycleEarlyMatch[1]);
-  if (method === "GET" && pathname === "/api/agent-team") return agentTeamHandler();
+  if (method === "GET" && modelLifecycleEarlyMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return modelLifecycleHandler(modelLifecycleEarlyMatch[1]);
+  }
+  if (method === "GET" && pathname === "/api/agent-team") {
+    if (!checkToken(req)) return unauthorized();
+    return agentTeamHandler();
+  }
   const agentTeamJobMatch = pathname.match(/^\/api\/agent-team\/job\/([^/]+)$/);
-  if (method === "GET" && agentTeamJobMatch) return agentTeamJobHandler(decodeURIComponent(agentTeamJobMatch[1]));
+  if (method === "GET" && agentTeamJobMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return agentTeamJobHandler(decodeURIComponent(agentTeamJobMatch[1]));
+  }
   if (method === "POST" && pathname === "/api/agent-team/action") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return agentTeamActionHandler(req);
   }
-  if (method === "GET" && pathname === "/api/newsbites") return newsBitesHandler();
+  if (method === "GET" && pathname === "/api/newsbites") {
+    if (!checkToken(req)) return unauthorized();
+    return newsBitesHandler();
+  }
   if (method === "GET" && pathname === "/api/version") {
     if (shouldRefreshCache()) {
       checkForUpdate().then(setCachedUpdateInfo).catch(() => setCachedUpdateInfo(null));
@@ -795,7 +831,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/v1/audit") return publicApiAuditHandler(req);
   if (method === "GET" && pathname === "/api/v1/trust-score") return publicApiTrustScoreHandler(req);
   if (method === "GET" && pathname === "/api/v1/cost") return publicApiCostHandler(req);
-  if (method === "GET" && pathname === "/api/webhooks") return webhooksListHandler(req);
+  if (method === "GET" && pathname === "/api/webhooks") {
+    if (!checkToken(req)) return unauthorized();
+    return webhooksListHandler(req);
+  }
   if (method === "POST" && pathname === "/api/webhooks") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -807,7 +846,10 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return webhooksDisableHandler(req, decodeURIComponent(webhookDisableMatch[1]));
   }
-  if (method === "GET" && pathname === "/api/infra") return infraHandler();
+  if (method === "GET" && pathname === "/api/infra") {
+    if (!checkToken(req)) return unauthorized();
+    return infraHandler();
+  }
   if (method === "GET" && pathname === "/api/channels") {
     if (!checkToken(req)) return unauthorized();
     return channelsHandler(url);
@@ -816,7 +858,10 @@ if (method === "GET" && pathname === "/api/stream") {
     if (!checkToken(req)) return unauthorized();
     return notificationRulesHandler(url);
   }
-  if (method === "GET" && pathname === "/api/incidents") return incidentsHandler();
+  if (method === "GET" && pathname === "/api/incidents") {
+    if (!checkToken(req)) return unauthorized();
+    return incidentsHandler();
+  }
   if (method === "POST" && pathname === "/api/incidents/bulk") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -876,16 +921,35 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return incidentPostMortemHandler(decodeURIComponent(incidentPostMortemMatch[1]), req);
   }
-  if (method === "GET" && pathname === "/api/data-explorer/tables") return dataExplorerTablesHandler();
+  if (method === "GET" && pathname === "/api/data-explorer/tables") {
+    if (!checkToken(req)) return unauthorized();
+    return dataExplorerTablesHandler();
+  }
   const dataExplorerTableMatch = pathname.match(/^\/api\/data-explorer\/table\/([^/]+)$/);
   if (method === "GET" && dataExplorerTableMatch) {
+    if (!checkToken(req)) return unauthorized();
     return dataExplorerTableHandler(decodeURIComponent(dataExplorerTableMatch[1]), url);
   }
-  if (method === "GET" && pathname === "/api/agents/skills") return agentsSkillsHandler(url);
-  if (method === "GET" && pathname === "/api/agents/quick-prompts") return agentsQuickPromptsHandler(url);
-  if (method === "GET" && pathname === "/api/agents/summary") return agentsSummaryHandler();
-  if (method === "GET" && pathname === "/api/agents/discovery") return agentsDiscoveryHandler();
-  if (method === "GET" && pathname === "/api/agents/workspaces") return agentsWorkspacesHandler();
+  if (method === "GET" && pathname === "/api/agents/skills") {
+    if (!checkToken(req)) return unauthorized();
+    return agentsSkillsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/agents/quick-prompts") {
+    if (!checkToken(req)) return unauthorized();
+    return agentsQuickPromptsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/agents/summary") {
+    if (!checkToken(req)) return unauthorized();
+    return agentsSummaryHandler();
+  }
+  if (method === "GET" && pathname === "/api/agents/discovery") {
+    if (!checkToken(req)) return unauthorized();
+    return agentsDiscoveryHandler();
+  }
+  if (method === "GET" && pathname === "/api/agents/workspaces") {
+    if (!checkToken(req)) return unauthorized();
+    return agentsWorkspacesHandler();
+  }
   if (pathname.startsWith("/api/builder/") && !checkToken(req)) return unauthorized();
   if (method === "GET" && pathname === "/api/builder/projects") return builderProjectsHandler();
   if (method === "GET" && pathname === "/api/builder/discover") return builderDiscoverHandler(url);
@@ -927,7 +991,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/builder/doctor-reports") return builderDoctorReportsHandler(url);
   if (method === "GET" && pathname === "/api/builder/doctor/reports") return builderDoctorReportsHandler(url);
   if (method === "GET" && pathname === "/api/builder/runs") return builderRunsHandler(url);
-  if (method === "GET" && pathname === "/api/workload") return workloadHandler(req);
+  if (method === "GET" && pathname === "/api/workload") {
+    if (!checkToken(req)) return unauthorized();
+    return workloadHandler(req);
+  }
   const builderRunMatch = pathname.match(/^\/api\/builder\/runs\/([^/]+)$/);
   if (method === "GET" && builderRunMatch) {
     // Reconcile running status on every GET
@@ -996,27 +1063,55 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/builder/log") return builderArtifactContentHandler(url);
 
   // Traces
-  if (method === "GET" && pathname === "/api/traces") return traceListDatesHandler();
+  if (method === "GET" && pathname === "/api/traces") {
+    if (!checkToken(req)) return unauthorized();
+    return traceListDatesHandler();
+  }
   const traceByDateMatch = pathname.match(/^\/api\/traces\/(\d{4}-\d{2}-\d{2})$/);
-  if (method === "GET" && traceByDateMatch) return traceByDateHandler(traceByDateMatch[1]);
-  if (method === "GET" && pathname === "/api/traces/gateway") return gatewayTracesHandler(req, url);
+  if (method === "GET" && traceByDateMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return traceByDateHandler(traceByDateMatch[1]);
+  }
+  if (method === "GET" && pathname === "/api/traces/gateway") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayTracesHandler(req, url);
+  }
 
   // Audit chain
-  if (method === "GET" && pathname === "/api/audit/chain-status") return auditChainStatusHandler();
+  if (method === "GET" && pathname === "/api/audit/chain-status") {
+    if (!checkToken(req)) return unauthorized();
+    return auditChainStatusHandler();
+  }
 
   // ── LiteLLM ─────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/litellm/status") return litellmStatusHandler();
-  if (method === "GET" && pathname === "/api/litellm/routing") return litellmRoutingHandler();
-  if (method === "GET" && pathname === "/api/litellm/config") return litellmConfigHandler();
+  if (method === "GET" && pathname === "/api/litellm/status") {
+    if (!checkToken(req)) return unauthorized();
+    return litellmStatusHandler();
+  }
+  if (method === "GET" && pathname === "/api/litellm/routing") {
+    if (!checkToken(req)) return unauthorized();
+    return litellmRoutingHandler();
+  }
+  if (method === "GET" && pathname === "/api/litellm/config") {
+    if (!checkToken(req)) return unauthorized();
+    return litellmConfigHandler();
+  }
 
   // ── Scout ───────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/scout/runs") return getScoutRuns(req);
+  if (method === "GET" && pathname === "/api/scout/runs") {
+    if (!checkToken(req)) return unauthorized();
+    return getScoutRuns(req);
+  }
   const scoutRunMatch = pathname.match(/^\/api\/scout\/runs\/([^/]+)$/);
   if (method === "GET" && scoutRunMatch) {
+    if (!checkToken(req)) return unauthorized();
     const { getScoutRun } = await import("./scout.ts");
     return getScoutRun(req, scoutRunMatch[1]);
   }
-  if (method === "GET" && pathname === "/api/scout/config") return getScoutConfig(req);
+  if (method === "GET" && pathname === "/api/scout/config") {
+    if (!checkToken(req)) return unauthorized();
+    return getScoutConfig(req);
+  }
   if (method === "PUT" && pathname === "/api/scout/config") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1029,10 +1124,20 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Finance Intel ────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/finance-intel/stats") return getFinanceStats(req);
-  if (method === "GET" && pathname === "/api/finance-intel/runs") return getFinanceRuns(req);
-  if (method === "GET" && pathname === "/api/finance-intel/enrichments") return getFinanceEnrichments(req);
+  if (method === "GET" && pathname === "/api/finance-intel/stats") {
+    if (!checkToken(req)) return unauthorized();
+    return getFinanceStats(req);
+  }
+  if (method === "GET" && pathname === "/api/finance-intel/runs") {
+    if (!checkToken(req)) return unauthorized();
+    return getFinanceRuns(req);
+  }
+  if (method === "GET" && pathname === "/api/finance-intel/enrichments") {
+    if (!checkToken(req)) return unauthorized();
+    return getFinanceEnrichments(req);
+  }
   if (method === "GET" && (pathname === "/api/finance-intel/portfolio-config" || pathname === "/api/finance-intel/portfolio-configs")) {
+    if (!checkToken(req)) return unauthorized();
     return getPortfolioConfigs(req);
   }
   const financeTriggerMatch = pathname.match(/^\/api\/finance-intel\/(trigger-analysis|portfolio-configs?)$/);
@@ -1048,24 +1153,42 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── System Config ─────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/system-config") return getSystemConfig(req);
+  if (method === "GET" && pathname === "/api/system-config") {
+    if (!checkToken(req)) return unauthorized();
+    return getSystemConfig(req);
+  }
   if (method === "PUT" && pathname === "/api/system-config") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return updateSystemConfig(req);
   }
-  if (method === "GET" && pathname === "/api/system-config/history") return getSystemConfigHistory(req);
+  if (method === "GET" && pathname === "/api/system-config/history") {
+    if (!checkToken(req)) return unauthorized();
+    return getSystemConfigHistory(req);
+  }
 
   // ── Paperclip ────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/paperclip/agents") return paperclipAgentsHandler();
-  if (method === "GET" && pathname === "/api/paperclip/tasks") return paperclipTasksHandler();
+  if (method === "GET" && pathname === "/api/paperclip/agents") {
+    if (!checkToken(req)) return unauthorized();
+    return paperclipAgentsHandler();
+  }
+  if (method === "GET" && pathname === "/api/paperclip/tasks") {
+    if (!checkToken(req)) return unauthorized();
+    return paperclipTasksHandler();
+  }
 
   // ── Filesystem ──────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/fs/browse") return fsBrowseHandler(url);
+  if (method === "GET" && pathname === "/api/fs/browse") {
+    if (!checkToken(req)) return unauthorized();
+    return fsBrowseHandler(url);
+  }
 
   // ── Dossier ─────────────────────────────────────────────────────────────────
   const dossierMatch = pathname.match(/^\/api\/dossier\/([^/]+)\/([^/]+)$/);
-  if (method === "GET" && dossierMatch) return getDossierArtifacts(req, dossierMatch[1], dossierMatch[2]);
+  if (method === "GET" && dossierMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return getDossierArtifacts(req, dossierMatch[1], dossierMatch[2]);
+  }
   const dossierInjectMatch = pathname.match(/^\/api\/dossier\/([^/]+)\/([^/]+)\/inject$/);
   if (method === "POST" && dossierInjectMatch) {
     const denied = requireMutation(req);
@@ -1080,8 +1203,14 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return modelPromotionRequestHandler(req, modelPromotionRequestMatch[1]);
   }
-  if (method === "GET" && pathname === "/api/models/routing-log") return getRoutingLogs(req);
-  if (method === "GET" && pathname === "/api/models/routing-stats") return getRoutingStats(req);
+  if (method === "GET" && pathname === "/api/models/routing-log") {
+    if (!checkToken(req)) return unauthorized();
+    return getRoutingLogs(req);
+  }
+  if (method === "GET" && pathname === "/api/models/routing-stats") {
+    if (!checkToken(req)) return unauthorized();
+    return getRoutingStats(req);
+  }
   if (method === "POST" && pathname === "/api/models/force-route") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1095,12 +1224,30 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // Gateway
-  if (method === "GET" && pathname === "/api/gateway/status") return gatewayStatusHandler();
-  if (method === "GET" && pathname === "/api/gateway") return gatewayStatusHandler();
-  if (method === "GET" && pathname === "/api/gateway/models") return gatewayModelsHandler();
-  if (method === "GET" && pathname === "/api/gateway/ledger") return gatewayLedgerHandler(url);
-  if (method === "GET" && pathname === "/api/gateway/stats") return gatewayStatsHandler(url);
-  if (method === "GET" && pathname === "/api/gateway/showback") return gatewayShowbackHandler(req);
+  if (method === "GET" && pathname === "/api/gateway/status") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayStatusHandler();
+  }
+  if (method === "GET" && pathname === "/api/gateway") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayStatusHandler();
+  }
+  if (method === "GET" && pathname === "/api/gateway/models") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayModelsHandler();
+  }
+  if (method === "GET" && pathname === "/api/gateway/ledger") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayLedgerHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/gateway/stats") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayStatsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/gateway/showback") {
+    if (!checkToken(req)) return unauthorized();
+    return gatewayShowbackHandler(req);
+  }
   const gatewayCircuitMatch = pathname.match(/^\/api\/gateway\/circuits\/([^/]+)\/(reset|half-open)$/);
   if (method === "POST" && gatewayCircuitMatch) {
     const denied = requireMutation(req);
@@ -1128,6 +1275,7 @@ if (method === "GET" && pathname === "/api/stream") {
     return gatewayClearRouteOverrideHandler(req);
   }
   if (method === "GET" && pathname === "/api/gateway/keys") {
+    if (!checkToken(req)) return unauthorized();
     return listGatewayKeysHandler(req);
   }
   if (method === "POST" && pathname === "/api/gateway/keys") {
@@ -1149,7 +1297,10 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // Cost Alias
-  if (method === "GET" && pathname === "/api/cost") return getCostSummary(req);
+  if (method === "GET" && pathname === "/api/cost") {
+    if (!checkToken(req)) return unauthorized();
+    return getCostSummary(req);
+  }
   // OpenAI-compatible surface
   if (method === "POST" && pathname === "/v1/chat/completions") return v1ChatCompletionsHandler(req);
   if (method === "GET" && pathname === "/v1/models") return v1ModelsHandler();
@@ -1161,14 +1312,30 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // Mission Control, Today, Workload, Settings
-  if (method === "GET" && pathname === "/api/mission-control") return missionControlHandler();
-  if (method === "GET" && pathname === "/api/today") return todayHandler();
-  if (method === "GET" && pathname === "/api/workload") return workloadHandler(req);
+  if (method === "GET" && pathname === "/api/mission-control") {
+    if (!checkToken(req)) return unauthorized();
+    return missionControlHandler();
+  }
+  if (method === "GET" && pathname === "/api/today") {
+    if (!checkToken(req)) return unauthorized();
+    return todayHandler();
+  }
+  if (method === "GET" && pathname === "/api/workload") {
+    if (!checkToken(req)) return unauthorized();
+    return workloadHandler(req);
+  }
   if (method === "GET" && pathname === "/api/settings/auth-status") return settingsAuthStatusHandler();
-  if (method === "GET" && pathname === "/api/settings/access") return settingsAccessHandler(req);
-  if (method === "POST" && pathname === "/api/settings/access/invite") return settingsAccessInviteHandler(req);
+  if (method === "GET" && pathname === "/api/settings/access") {
+    if (!checkToken(req)) return unauthorized();
+    return settingsAccessHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/settings/access/invite") {
+    if (!checkToken(req)) return unauthorized();
+    return settingsAccessInviteHandler(req);
+  }
   const settingsAccessRoleMatch = pathname.match(/^\/api\/settings\/access\/users\/([^/]+)\/role$/);
   if (method === "PUT" && settingsAccessRoleMatch) {
+    if (!checkToken(req)) return unauthorized();
     return settingsAccessRoleHandler(req, decodeURIComponent(settingsAccessRoleMatch[1]));
   }
   if (method === "GET" && pathname === "/api/settings/state") {
@@ -1183,20 +1350,36 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Governance ──────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/governance/policies") return governancePoliciesHandler();
+  if (method === "GET" && pathname === "/api/governance/policies") {
+    if (!checkToken(req)) return unauthorized();
+    return governancePoliciesHandler();
+  }
   if (method === "POST" && pathname === "/api/governance/policies/reload") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return governancePoliciesReloadHandler();
   }
-  if (method === "GET" && pathname === "/api/governance/rbac/me") return governanceRbacMeHandler(req);
-  if (method === "GET" && pathname === "/api/governance/users") return governanceUsersHandler(req);
+  if (method === "GET" && pathname === "/api/governance/rbac/me") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceRbacMeHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/governance/users") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceUsersHandler(req);
+  }
   const govUserRoleMatch = pathname.match(/^\/api\/governance\/users\/([^/]+)\/role$/);
   if (method === "POST" && govUserRoleMatch) {
+    if (!checkToken(req)) return unauthorized();
     return governanceUserRoleHandler(req, decodeURIComponent(govUserRoleMatch[1]));
   }
-  if (method === "GET" && pathname === "/api/rbac/matrix") return rbacMatrixHandler(req);
-  if (method === "GET" && pathname === "/api/governance/approvals") return governanceApprovalsListHandler(req);
+  if (method === "GET" && pathname === "/api/rbac/matrix") {
+    if (!checkToken(req)) return unauthorized();
+    return rbacMatrixHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/governance/approvals") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceApprovalsListHandler(req);
+  }
   const govApprovalMatch = pathname.match(/^\/api\/governance\/approvals\/([^/]+)\/(approve|reject)$/);
   if (method === "POST" && govApprovalMatch) {
     const denied = requireMutation(req);
@@ -1210,9 +1393,13 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return approvalCreateHandler(req);
   }
-  if (method === "GET" && pathname === "/api/approvals") return approvalsListHandler(req);
+  if (method === "GET" && pathname === "/api/approvals") {
+    if (!checkToken(req)) return unauthorized();
+    return approvalsListHandler(req);
+  }
   const approvalGetMatch = pathname.match(/^\/api\/approvals\/([^/]+)$/);
   if (method === "GET" && approvalGetMatch) {
+    if (!checkToken(req)) return unauthorized();
     return approvalGetHandler(req, approvalGetMatch[1]);
   }
   if (method === "POST" && approvalGetMatch) {
@@ -1228,21 +1415,46 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Secrets ──────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/governance/secrets") return governanceSecretsListHandler(req);
-  if (method === "POST" && pathname === "/api/governance/secrets") return governanceSecretsWriteHandler(req);
+  if (method === "GET" && pathname === "/api/governance/secrets") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceSecretsListHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/governance/secrets") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceSecretsWriteHandler(req);
+  }
   const govSecretDeleteMatch = pathname.match(/^\/api\/governance\/secrets\/(.+)$/);
   if (method === "DELETE" && govSecretDeleteMatch) {
+    if (!checkToken(req)) return unauthorized();
     return governanceSecretsDeleteHandler(req, govSecretDeleteMatch[1]);
   }
-  if (method === "GET" && pathname === "/api/governance/budgets") return governanceBudgetsListHandler(req);
-  if (method === "POST" && pathname === "/api/governance/budgets") return governanceBudgetsWriteHandler(req);
-  if (method === "GET" && pathname === "/api/governance/retention") return governanceRetentionHandler();
-  if (method === "POST" && pathname === "/api/governance/retention") return governanceRetentionWriteHandler(req);
-  if (method === "GET" && pathname === "/api/governance/audit") return governanceAuditHandler(req);
+  if (method === "GET" && pathname === "/api/governance/budgets") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceBudgetsListHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/governance/budgets") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceBudgetsWriteHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/governance/retention") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceRetentionHandler();
+  }
+  if (method === "POST" && pathname === "/api/governance/retention") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceRetentionWriteHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/governance/audit") {
+    if (!checkToken(req)) return unauthorized();
+    return governanceAuditHandler(req);
+  }
 
   // Deploy job status (GET with path param)
   const deployMatch = pathname.match(/^\/api\/newsbites\/deploy\/([^/]+)$/);
-  if (method === "GET" && deployMatch) return newsBitesDeployStatusHandler(deployMatch[1]);
+  if (method === "GET" && deployMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return newsBitesDeployStatusHandler(deployMatch[1]);
+  }
 
   // ── Mutating endpoints ─────────────────────────────────────────────────────
   if (method === "POST" && pathname === "/api/autopipeline/command") {
@@ -1289,7 +1501,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (articleActionMatch) {
     const slug = decodeURIComponent(articleActionMatch[1]);
     const action = articleActionMatch[2];
-    if (method === "GET"  && action === "dossier-path")   return articleDossierPathHandler(req, slug);
+    if (method === "GET"  && action === "dossier-path") {
+      if (!checkToken(req)) return unauthorized();
+      return articleDossierPathHandler(req, slug);
+    }
     if (method === "POST" && action === "refresh-image") {
       const denied = requireMutation(req);
       if (denied) return denied;
@@ -1381,7 +1596,10 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Claude tab ────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/claude/health") return claudeHealthHandler();
+  if (method === "GET" && pathname === "/api/claude/health") {
+    if (!checkToken(req)) return unauthorized();
+    return claudeHealthHandler();
+  }
   if (pathname.startsWith("/api/claude/") && !checkToken(req)) return unauthorized();
   if (method === "GET" && pathname === "/api/claude/sessions") return claudeListHandler();
   if (method === "POST" && pathname === "/api/claude/sessions") {
@@ -1412,7 +1630,10 @@ if (method === "GET" && pathname === "/api/stream") {
   }
 
   // ── Gemini tab ──────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/gemini/health") return geminiHealthHandler();
+  if (method === "GET" && pathname === "/api/gemini/health") {
+    if (!checkToken(req)) return unauthorized();
+    return geminiHealthHandler();
+  }
   if (pathname.startsWith("/api/gemini/") && !checkToken(req)) return unauthorized();
   if (method === "GET" && pathname === "/api/gemini/sessions") return geminiListHandler();
   if (method === "POST" && pathname === "/api/gemini/sessions") {
@@ -1443,17 +1664,33 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
 
   // ── Reasoner ────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/reasoner/jobs") return reasonerJobsHandler();
-  if (method === "GET" && pathname === "/api/reasoner/diagnoses") return reasonerDiagnosesHandler();
-  if (method === "GET" && pathname === "/api/reasoner/incidents") return reasonerIncidentsHandler(url);
-  if (method === "GET" && pathname === "/api/reasoner/loop-stats") return reasonerLoopStatsHandler();
+  if (method === "GET" && pathname === "/api/reasoner/jobs") {
+    if (!checkToken(req)) return unauthorized();
+    return reasonerJobsHandler();
+  }
+  if (method === "GET" && pathname === "/api/reasoner/diagnoses") {
+    if (!checkToken(req)) return unauthorized();
+    return reasonerDiagnosesHandler();
+  }
+  if (method === "GET" && pathname === "/api/reasoner/incidents") {
+    if (!checkToken(req)) return unauthorized();
+    return reasonerIncidentsHandler(url);
+  }
+  if (method === "GET" && pathname === "/api/reasoner/loop-stats") {
+    if (!checkToken(req)) return unauthorized();
+    return reasonerLoopStatsHandler();
+  }
   const reasonerDiagnosisMatch = pathname.match(/^\/api\/reasoner\/diagnoses\/([^/]+)$/);
   if (method === "GET" && reasonerDiagnosisMatch) {
+    if (!checkToken(req)) return unauthorized();
     return reasonerDiagnosisByPassHandler(reasonerDiagnosisMatch[1]);
   }
   const reasonerIncidentMatch = pathname.match(/^\/api\/reasoner\/incidents\/([^/]+)$/);
   if (reasonerIncidentMatch) {
-    if (method === "GET") return reasonerIncidentByIdHandler(reasonerIncidentMatch[1]);
+    if (method === "GET") {
+      if (!checkToken(req)) return unauthorized();
+      return reasonerIncidentByIdHandler(reasonerIncidentMatch[1]);
+    }
     if (method === "POST") {
       const denied = requireMutation(req);
       if (denied) return denied;
@@ -1462,9 +1699,13 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const reasonerPostMortemMatch = pathname.match(/^\/api\/reasoner\/incidents\/([^/]+)\/post-mortem$/);
   if (method === "GET" && reasonerPostMortemMatch) {
+    if (!checkToken(req)) return unauthorized();
     return reasonerIncidentPostMortemHandler(reasonerPostMortemMatch[1]);
   }
-  if (method === "GET" && pathname === "/api/reasoner/playbooks") return reasonerPlaybooksHandler();
+  if (method === "GET" && pathname === "/api/reasoner/playbooks") {
+    if (!checkToken(req)) return unauthorized();
+    return reasonerPlaybooksHandler();
+  }
   const reasonerApplyPlaybookMatch = pathname.match(/^\/api\/reasoner\/playbooks\/([^/]+)\/apply$/);
   if (method === "POST" && reasonerApplyPlaybookMatch) {
     const denied = requireMutation(req);
@@ -1496,7 +1737,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
 
   // ── Tenants ────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/tenants") return tenantsListHandler(req);
+  if (method === "GET" && pathname === "/api/tenants") {
+    if (!checkToken(req)) return unauthorized();
+    return tenantsListHandler(req);
+  }
   if (method === "POST" && pathname === "/api/tenants") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1504,7 +1748,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const tenantMatch = pathname.match(/^\/api\/tenants\/([^/]+)$/);
   if (tenantMatch) {
-    if (method === "GET") return tenantGetHandler(req, tenantMatch[1]);
+    if (method === "GET") {
+      if (!checkToken(req)) return unauthorized();
+      return tenantGetHandler(req, tenantMatch[1]);
+    }
     if (method === "PATCH") {
       const denied = requireMutation(req);
       if (denied) return denied;
@@ -1513,11 +1760,17 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const tenantTmuxMatch = pathname.match(/^\/api\/tenants\/([^/]+)\/tmux-status$/);
   if (tenantTmuxMatch) {
-    if (method === "GET") return tenantTmuxStatusHandler(req, tenantTmuxMatch[1]);
+    if (method === "GET") {
+      if (!checkToken(req)) return unauthorized();
+      return tenantTmuxStatusHandler(req, tenantTmuxMatch[1]);
+    }
   }
 
   // ── Projects ────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/projects") return projectsListHandler(req, url);
+  if (method === "GET" && pathname === "/api/projects") {
+    if (!checkToken(req)) return unauthorized();
+    return projectsListHandler(req, url);
+  }
   if (method === "POST" && pathname === "/api/projects") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1530,7 +1783,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch) {
-    if (method === "GET") return projectGetHandler(req, projectMatch[1]);
+    if (method === "GET") {
+      if (!checkToken(req)) return unauthorized();
+      return projectGetHandler(req, projectMatch[1]);
+    }
     if (method === "PATCH") {
       const denied = requireMutation(req);
       if (denied) return denied;
@@ -1559,7 +1815,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/sso/session") return ssoSessionHandler(req);
 
   // ── Marketplace ────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/marketplace/skills") return marketplaceListHandler(req);
+  if (method === "GET" && pathname === "/api/marketplace/skills") {
+    if (!checkToken(req)) return unauthorized();
+    return marketplaceListHandler(req);
+  }
   if (method === "POST" && pathname === "/api/marketplace/skills/install") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1590,11 +1849,20 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
     return marketplaceRunHandler(req, marketplaceRunMatch[1]);
   }
   const marketplaceRunsMatch = pathname.match(/^\/api\/marketplace\/skills\/([^/]+)\/runs$/);
-  if (method === "GET" && marketplaceRunsMatch) return marketplaceRunsHandler(req, marketplaceRunsMatch[1]);
+  if (method === "GET" && marketplaceRunsMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return marketplaceRunsHandler(req, marketplaceRunsMatch[1]);
+  }
 
   // ── Reports ─────────────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/reports") return reportsListHandler(req);
-  if (method === "GET" && pathname === "/api/reports/templates") return reportsTemplatesHandler();
+  if (method === "GET" && pathname === "/api/reports") {
+    if (!checkToken(req)) return unauthorized();
+    return reportsListHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/reports/templates") {
+    if (!checkToken(req)) return unauthorized();
+    return reportsTemplatesHandler();
+  }
   if (method === "POST" && pathname === "/api/reports/run") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1602,10 +1870,12 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const reportRunMatch = pathname.match(/^\/api\/reports\/([^/]+)$/);
   if (method === "GET" && reportRunMatch) {
+    if (!checkToken(req)) return unauthorized();
     return reportsGetHandler(req, reportRunMatch[1]);
   }
   const reportCsvMatch = pathname.match(/^\/api\/reports\/([^/]+)\/csv$/);
   if (method === "GET" && reportCsvMatch) {
+    if (!checkToken(req)) return unauthorized();
     return reportsDownloadCsvHandler(req, reportCsvMatch[1]);
   }
   const reportExportMatch = pathname.match(/^\/api\/reports\/([^/]+)\/export$/);
@@ -1665,7 +1935,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
 
   // ── Tenant Settings ────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/tenant/settings") return tenantSettingsGetHandler(req);
+  if (method === "GET" && pathname === "/api/tenant/settings") {
+    if (!checkToken(req)) return unauthorized();
+    return tenantSettingsGetHandler(req);
+  }
   if (method === "PUT" && pathname === "/api/tenant/settings") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1712,30 +1985,72 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/cloud-tier/status") return cloudTierStatusHandler();
 
   // ── Cost Management ───────────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/cost/budgets") return getBudgets(req);
+  if (method === "GET" && pathname === "/api/cost/budgets") {
+    if (!checkToken(req)) return unauthorized();
+    return getBudgets(req);
+  }
   if (method === "POST" && pathname === "/api/cost/budgets") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return createBudget(req);
   }
-  if (method === "GET" && pathname === "/api/cost/spend") return getSpend(req);
-  if (method === "GET" && pathname === "/api/cost/runway/vast") return getVastRunway(req);
-  if (method === "GET" && pathname.startsWith("/api/cost/attribution/")) return getAttribution(req);
-  if (method === "GET" && pathname === "/api/cost/fallbacks") return getFallbacks(req);
-  if (method === "POST" && pathname === "/api/cost/recommendations") return getRecommendations(req);
-  if (method === "GET" && pathname === "/api/cost/summary") return getCostSummary(req);
+  if (method === "GET" && pathname === "/api/cost/spend") {
+    if (!checkToken(req)) return unauthorized();
+    return getSpend(req);
+  }
+  if (method === "GET" && pathname === "/api/cost/runway/vast") {
+    if (!checkToken(req)) return unauthorized();
+    return getVastRunway(req);
+  }
+  if (method === "GET" && pathname.startsWith("/api/cost/attribution/")) {
+    if (!checkToken(req)) return unauthorized();
+    return getAttribution(req);
+  }
+  if (method === "GET" && pathname === "/api/cost/fallbacks") {
+    if (!checkToken(req)) return unauthorized();
+    return getFallbacks(req);
+  }
+  if (method === "POST" && pathname === "/api/cost/recommendations") {
+    if (!checkToken(req)) return unauthorized();
+    return getRecommendations(req);
+  }
+  if (method === "GET" && pathname === "/api/cost/summary") {
+    if (!checkToken(req)) return unauthorized();
+    return getCostSummary(req);
+  }
 
   // ── AI Discovery & Inventory (Phase 4a) ─────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/discovery/assets") return discoveryListAssetsHandler(req, url);
-  if (method === "POST" && pathname === "/api/discovery/rescan") return discoveryRescanHandler(req);
-  if (method === "POST" && pathname === "/api/discovery/assets/bulk-register") return discoveryBulkRegisterHandler(req);
-  if (method === "POST" && pathname === "/api/discovery/assets/bulk-ignore") return discoveryBulkIgnoreHandler(req);
+  if (method === "GET" && pathname === "/api/discovery/assets") {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryListAssetsHandler(req, url);
+  }
+  if (method === "POST" && pathname === "/api/discovery/rescan") {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryRescanHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/discovery/assets/bulk-register") {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryBulkRegisterHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/discovery/assets/bulk-ignore") {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryBulkIgnoreHandler(req);
+  }
   const discoveryAssetRegMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/register$/);
-  if (method === "POST" && discoveryAssetRegMatch) return discoveryRegisterAssetHandler(req, decodeURIComponent(discoveryAssetRegMatch[1]));
+  if (method === "POST" && discoveryAssetRegMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryRegisterAssetHandler(req, decodeURIComponent(discoveryAssetRegMatch[1]));
+  }
   const discoveryAssetIgnoreMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)\/ignore$/);
-  if (method === "POST" && discoveryAssetIgnoreMatch) return discoveryIgnoreAssetHandler(req, decodeURIComponent(discoveryAssetIgnoreMatch[1]));
+  if (method === "POST" && discoveryAssetIgnoreMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryIgnoreAssetHandler(req, decodeURIComponent(discoveryAssetIgnoreMatch[1]));
+  }
   const discoveryAssetMatch = pathname.match(/^\/api\/discovery\/assets\/([^/]+)$/);
-  if (method === "PATCH" && discoveryAssetMatch) return discoveryUpdateAssetHandler(req, decodeURIComponent(discoveryAssetMatch[1]));
+  if (method === "PATCH" && discoveryAssetMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return discoveryUpdateAssetHandler(req, decodeURIComponent(discoveryAssetMatch[1]));
+  }
 
   // ── Compliance (Phase 7) ────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/compliance/dpa") {
@@ -1775,7 +2090,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
 
   // ── Feature Flags (Phase 15) ─────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/feature-flags") return featureFlagsListHandler(req);
+  if (method === "GET" && pathname === "/api/feature-flags") {
+    if (!checkToken(req)) return unauthorized();
+    return featureFlagsListHandler(req);
+  }
   if (method === "POST" && pathname === "/api/feature-flags") {
     const denied = requireMutation(req);
     if (denied) return denied;
@@ -1784,7 +2102,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   const featureFlagMatch = pathname.match(/^\/api\/feature-flags\/([^/]+)$/);
   if (featureFlagMatch) {
     const flagId = decodeURIComponent(featureFlagMatch[1]);
-    if (method === "GET") return featureFlagsGetHandler(req, flagId);
+    if (method === "GET") {
+      if (!checkToken(req)) return unauthorized();
+      return featureFlagsGetHandler(req, flagId);
+    }
     if (method === "PATCH" || method === "POST") {
       const denied = requireMutation(req);
       if (denied) return denied;
@@ -1798,21 +2119,25 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   }
   const featureFlagHistoryMatch = pathname.match(/^\/api\/feature-flags\/([^/]+)\/history$/);
   if (method === "GET" && featureFlagHistoryMatch) {
+    if (!checkToken(req)) return unauthorized();
     return featureFlagsHistoryHandler(req, decodeURIComponent(featureFlagHistoryMatch[1]));
   }
 
   // ── Brainstormer ─────────────────────────────────────────────────────────────────
   if (pathname.startsWith('/api/brainstorm/preflight/')) {
+    if (!checkToken(req)) return unauthorized();
     const strippedPath = pathname.replace('/api/brainstorm/preflight', '');
     const innerReq = new Request(new URL(strippedPath + url.search, url.origin).toString(), req);
     return preflightApp.fetch(innerReq);
   }
   if (pathname === '/api/brainstorm/stream') {
+    if (!checkToken(req)) return unauthorized();
     const sessionId = url.searchParams.get('sessionId') ?? '';
     const { tenantId } = getCurrentTenantContext();
     return brainstormStreamHandler(tenantId, sessionId);
   }
   if (pathname.startsWith('/api/brainstorm/')) {
+    if (!checkToken(req)) return unauthorized();
     const strippedPath = pathname.replace('/api/brainstorm', '');
     const innerReq = new Request(new URL(strippedPath + url.search, url.origin).toString(), req);
     return brainstormApp.fetch(innerReq);

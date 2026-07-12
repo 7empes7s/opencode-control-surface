@@ -9,14 +9,17 @@ describe("data explorer API", () => {
   let tempDir: string;
   let previousDashboardDb: string | undefined;
   let previousDashboardDbPath: string | undefined;
+  let previousOperatorToken: string | undefined;
 
   beforeEach(() => {
     closeDashboardDb();
     tempDir = mkdtempSync(join(tmpdir(), "data-explorer-api-"));
     previousDashboardDb = process.env.DASHBOARD_DB;
     previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
+    previousOperatorToken = process.env.OPERATOR_TOKEN;
     process.env.DASHBOARD_DB = "1";
     process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
+    process.env.OPERATOR_TOKEN = "data-explorer-test-token";
     initDashboardDb({ path: process.env.DASHBOARD_DB_PATH });
   });
 
@@ -26,11 +29,15 @@ describe("data explorer API", () => {
     else process.env.DASHBOARD_DB = previousDashboardDb;
     if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
     else process.env.DASHBOARD_DB_PATH = previousDashboardDbPath;
+    if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+    else process.env.OPERATOR_TOKEN = previousOperatorToken;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
   function req(path: string) {
-    return new Request(`http://localhost${path}`);
+    return new Request(`http://localhost${path}`, {
+      headers: { "x-operator-token": "data-explorer-test-token" },
+    });
   }
 
   function seedInsight(id: string, title: string, sourceKey: string) {
