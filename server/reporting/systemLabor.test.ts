@@ -72,9 +72,12 @@ function seedPeriod(periodStart: number): void {
   let offset = 1;
   const add = (kind: string, options?: Parameters<typeof insertAudit>[2]) => insertAudit(periodStart + offset++, kind, options);
 
-  add("insights.auto-resolve", { actorSource: "sentinel-scan" }); // auto-fix wins over probe
+  add("insights.auto-resolve", { actorSource: "sentinel-scan" }); // findings-cleared wins over probe
+  add("insights.auto-resolve");
+  add("insights.auto-dismiss");
   add("insights.auto-apply-policy");
   add("incidents.auto-close");
+  add("incidents.auto-resolve");
 
   add("scan:discovery:models");
   add("scan:discovery:models");
@@ -99,6 +102,35 @@ function seedPeriod(periodStart: number): void {
 }
 
 describe("weekly system labor report", () => {
+  test("separates findings housekeeping from real auto-fixes without hiding actions", async () => {
+    const periodStart = Date.UTC(2026, 6, 6);
+    const periodEnd = periodStart + DAY_MS;
+    insertAudit(periodStart + 1, "insights.auto-resolve");
+    insertAudit(periodStart + 2, "insights.auto-resolve");
+    insertAudit(periodStart + 3, "insights.auto-dismiss");
+    insertAudit(periodStart + 4, "insights.auto-apply-policy");
+    insertAudit(periodStart + 5, "incidents.auto-close");
+    insertAudit(periodStart + 6, "incidents.auto-resolve");
+
+    const stats = await withTenant(() => collectSystemLaborStats(periodStart, periodEnd));
+    expect(stats.configured).toBe(true);
+    if (!stats.configured) throw new Error("system labor unavailable");
+
+    expect(stats.categories.slice(0, 2)).toEqual([
+      { label: "Auto-fixes applied", count: 3 },
+      { label: "Findings auto-cleared", count: 3 },
+    ]);
+    expect(stats.totalActions).toBe(6);
+    expect(stats.timeSaved).toMatchObject({
+      configured: true,
+      minutes: 15,
+      assumptions: {
+        "Auto-fixes applied": 5,
+        "Findings auto-cleared": 0,
+      },
+    });
+  });
+
   test("categorizes successful tenant work once, estimates time, and ranks action kinds", async () => {
     const periodStart = Date.UTC(2026, 6, 6);
     const periodEnd = periodStart + DAY_MS;
@@ -110,13 +142,14 @@ describe("weekly system labor report", () => {
 
     expect(stats.categories).toEqual([
       { label: "Auto-fixes applied", count: 3 },
+      { label: "Findings auto-cleared", count: 3 },
       { label: "Probes & scans run", count: 3 },
       { label: "Reports generated", count: 4 },
       { label: "Deploys run", count: 1 },
       { label: "Routing/chain actions", count: 1 },
       { label: "Pipeline actions", count: 2 },
     ]);
-    expect(stats.totalActions).toBe(14);
+    expect(stats.totalActions).toBe(17);
     expect(stats.timeSaved).toEqual({
       configured: true,
       minutes: 102,
@@ -125,13 +158,18 @@ describe("weekly system labor report", () => {
     expect(stats.busiest).toEqual([
       { name: "reports.digest", count: 4 },
       { name: "autopipeline.command", count: 2 },
-      { name: "scan:discovery:models", count: 2 },
+      { name: "insights.auto-resolve", count: 2 },
     ]);
 
     const markdown = renderSystemLaborReport(stats, { start: periodStart, end: periodEnd });
-    expect(markdown).toContain("performed 14 actions on your behalf — an estimated ~1.7 hours");
+    expect(markdown).toContain("performed 17 actions on your behalf");
+    expect(markdown).toContain("weighted assumptions, that represents an estimated ~1.7 hours saved");
+    expect(markdown).toContain("| Auto-fixes applied | 3 |");
+    expect(markdown).toContain("| Findings auto-cleared | 3 |");
     expect(markdown).toContain("| Reports generated | 4 |");
     expect(markdown).toContain("1. `reports.digest` — 4");
+    expect(markdown).toContain("Of these, 3 were findings auto-cleared (housekeeping, not counted toward the time-saved estimate).");
+    expect(markdown).toContain("- Findings auto-cleared: 0 minutes (automated housekeeping — shown as activity, not counted toward time saved)");
     expect(markdown).toContain("Estimated total: 102 minutes (~1.7 hours).");
   });
 
@@ -147,8 +185,11 @@ describe("weekly system labor report", () => {
     expect(stats.totalActions).toBe(0);
     expect(stats.timeSaved).toMatchObject({ configured: true, minutes: 0 });
     expect(stats.busiest).toEqual([]);
-    expect(markdown).toContain("performed 0 actions on your behalf — an estimated ~0 hours");
+    expect(markdown).toContain("performed 0 actions on your behalf");
+    expect(markdown).toContain("weighted assumptions, that represents an estimated ~0 hours saved");
     expect(markdown).toContain("| Auto-fixes applied | 0 |");
+    expect(markdown).toContain("| Findings auto-cleared | 0 |");
+    expect(markdown).toContain("Of these, 0 were findings auto-cleared (housekeeping, not counted toward the time-saved estimate).");
     expect(markdown).toContain("## Time-saved assumptions");
     expect(markdown).toContain("- Reports generated: 15 minutes");
     expect(markdown.toLowerCase()).not.toContain("not configured");

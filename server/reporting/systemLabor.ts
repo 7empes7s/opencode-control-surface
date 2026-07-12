@@ -11,7 +11,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type Configured<T> = ({ configured: true } & T) | { configured: false };
 
-type CategoryKey = "auto-fixes" | "probes-scans" | "reports" | "deploys" | "routing-chains" | "pipeline";
+type CategoryKey = "auto-fixes" | "findings-cleared" | "probes-scans" | "reports" | "deploys" | "routing-chains" | "pipeline";
 
 type CategoryDefinition = {
   key: CategoryKey;
@@ -27,7 +27,13 @@ export const SYSTEM_LABOR_CATEGORIES: readonly CategoryDefinition[] = [
     key: "auto-fixes",
     label: "Auto-fixes applied",
     perActionMinutes: 5,
-    sql: "action_kind LIKE 'insights.auto-%' OR action_kind LIKE 'incidents.auto-close' OR action_kind LIKE 'incidents.auto-resolve'",
+    sql: "action_kind LIKE 'insights.auto-apply%' OR action_kind LIKE 'incidents.auto-close' OR action_kind LIKE 'incidents.auto-resolve'",
+  },
+  {
+    key: "findings-cleared",
+    label: "Findings auto-cleared",
+    perActionMinutes: 0,
+    sql: "action_kind LIKE 'insights.auto-resolve' OR action_kind LIKE 'insights.auto-dismiss'",
   },
   {
     key: "probes-scans",
@@ -143,7 +149,7 @@ function estimatedHours(minutes: number): string {
 
 function reportLead(stats: SystemLaborStats): string {
   if (!stats.configured) return "System labor data is not configured because action_audit is unavailable.";
-  return `This week the admin center performed ${stats.totalActions} actions on your behalf — an estimated ~${estimatedHours(stats.timeSaved.configured ? stats.timeSaved.minutes : 0)} hours you did not have to spend.`;
+  return `This week the admin center performed ${stats.totalActions} actions on your behalf. Based on weighted assumptions, that represents an estimated ~${estimatedHours(stats.timeSaved.configured ? stats.timeSaved.minutes : 0)} hours saved.`;
 }
 
 export function renderSystemLaborReport(stats: SystemLaborStats, period: SystemLaborPeriod): string {
@@ -164,6 +170,8 @@ export function renderSystemLaborReport(stats: SystemLaborStats, period: SystemL
     lines.push("| Category | Actions |", "| --- | ---: |");
     stats.categories.forEach((category) => lines.push(`| ${category.label} | ${category.count} |`));
     lines.push(`| **Total** | **${stats.totalActions}** |`);
+    const findingsCleared = stats.categories.find((category) => category.label === "Findings auto-cleared")?.count ?? 0;
+    lines.push("", `Of these, ${findingsCleared} were findings auto-cleared (housekeeping, not counted toward the time-saved estimate).`);
   }
 
   lines.push("", "## Busiest action kinds");
@@ -173,7 +181,12 @@ export function renderSystemLaborReport(stats: SystemLaborStats, period: SystemL
 
   lines.push("", "## Time-saved assumptions");
   lines.push("This is a conservative estimate, not measured operator time. Minutes assumed per successful action:");
-  SYSTEM_LABOR_CATEGORIES.forEach((category) => lines.push(`- ${category.label}: ${category.perActionMinutes} minutes`));
+  SYSTEM_LABOR_CATEGORIES.forEach((category) => {
+    const note = category.key === "findings-cleared"
+      ? " (automated housekeeping — shown as activity, not counted toward time saved)"
+      : "";
+    lines.push(`- ${category.label}: ${category.perActionMinutes} minutes${note}`);
+  });
   if (stats.configured && stats.timeSaved.configured) {
     lines.push("", `Estimated total: ${stats.timeSaved.minutes} minutes (~${estimatedHours(stats.timeSaved.minutes)} hours).`);
   }
