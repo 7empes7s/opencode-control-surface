@@ -112,7 +112,7 @@ export function ReportsPage() {
   const [templateId, setTemplateId] = useState("daily-pipeline");
   const [range, setRange] = useState<RangePreset>("7d");
   const [running, setRunning] = useState(false);
-  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | "system-labor" | "sla-uptime" | null>(null);
+  const [generatingDigest, setGeneratingDigest] = useState<"digest" | "executive" | "remediation" | "system-labor" | "sla-uptime" | "discovery-posture" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
@@ -132,6 +132,7 @@ export function ReportsPage() {
       ["monthly-remediation", "Monthly Remediation Report"],
       ["weekly-system-labor", "Weekly System Labor Report"],
       ["weekly-sla-uptime", "Weekly SLA / Uptime Report"],
+      ["weekly-discovery-posture", "Weekly Discovery Posture Report"],
     ]);
   }, [templates]);
 
@@ -182,7 +183,7 @@ export function ReportsPage() {
     }
   };
 
-  const generateDigest = async (kind: "digest" | "executive" | "remediation" | "system-labor" | "sla-uptime") => {
+  const generateDigest = async (kind: "digest" | "executive" | "remediation" | "system-labor" | "sla-uptime" | "discovery-posture") => {
     if (!isAuthenticated || generatingDigest) return;
     setGeneratingDigest(kind);
     setMessage(null);
@@ -198,6 +199,8 @@ export function ReportsPage() {
             ? "Generated weekly system labor report."
           : kind === "sla-uptime"
             ? "Generated weekly SLA / uptime report."
+          : kind === "discovery-posture"
+            ? "Generated weekly discovery posture report."
           : "Generated daily operator digest.");
       refresh();
     } catch (err) {
@@ -344,7 +347,7 @@ export function ReportsPage() {
           <FileText size={20} />
           <div>
             <strong>Scheduled summaries</strong>
-            <span>Generate the operator digest, executive, remediation-loop, system-labor, or SLA / uptime report immediately.</span>
+            <span>Generate the operator digest, executive, remediation-loop, system-labor, SLA / uptime, or discovery posture report immediately.</span>
           </div>
         </div>
         <button type="button" className="btn" onClick={() => generateDigest("digest")} disabled={!isAuthenticated || generatingDigest !== null}>
@@ -366,6 +369,10 @@ export function ReportsPage() {
         <button type="button" className="btn" onClick={() => generateDigest("sla-uptime")} disabled={!isAuthenticated || generatingDigest !== null}>
           <Play size={14} />
           {generatingDigest === "sla-uptime" ? "Generating" : "Generate SLA / uptime report"}
+        </button>
+        <button type="button" className="btn" onClick={() => generateDigest("discovery-posture")} disabled={!isAuthenticated || generatingDigest !== null}>
+          <Play size={14} />
+          {generatingDigest === "discovery-posture" ? "Generating" : "Generate discovery posture report"}
         </button>
       </section>
 

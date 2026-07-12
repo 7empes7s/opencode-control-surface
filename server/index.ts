@@ -15,6 +15,7 @@ import { maybeGenerateWeeklyExecutiveReport } from "./reporting/executive.ts";
 import { maybeGenerateMonthlyRemediationReport } from "./reporting/remediation.ts";
 import { maybeGenerateWeeklySystemLaborReport } from "./reporting/systemLabor.ts";
 import { maybeGenerateWeeklySlaUptimeReport } from "./reporting/slaUptime.ts";
+import { maybeGenerateWeeklyDiscoveryPostureReport } from "./reporting/discoveryPosture.ts";
 import { backfillCostEventsOnce } from "./gateway/ledger.ts";
 import { setLaneLimit } from "./orchestrator/lanes.ts";
 import { seedDefaultTenant } from "./tenancy/store.ts";
@@ -219,6 +220,9 @@ export async function startServer(): Promise<{ stop: () => void }> {
     });
     void maybeGenerateWeeklySlaUptimeReport().catch((error) => {
       console.error("[control-surface] weekly SLA uptime report failed", error instanceof Error ? error.message : error);
+    });
+    void maybeGenerateWeeklyDiscoveryPostureReport().catch((error) => {
+      console.error("[control-surface] weekly discovery posture report failed", error instanceof Error ? error.message : error);
     });
   };
   executiveReportTick();
