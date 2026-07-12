@@ -303,6 +303,7 @@ import { generateOperatorDigest } from "../reporting/digest.ts";
 import { generateWeeklyExecutiveReport } from "../reporting/executive.ts";
 import { generateMonthlyRemediationReport } from "../reporting/remediation.ts";
 import { generateWeeklySystemLaborReport } from "../reporting/systemLabor.ts";
+import { generateWeeklySlaUptimeReport } from "../reporting/slaUptime.ts";
 import { tenantSettingsGetHandler, tenantSettingsPutHandler } from "./tenant-settings.ts";
 import { complianceDpaHandler,
   complianceSubprocessorsHandler,
@@ -1933,6 +1934,20 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
     if (denied) return denied;
     try {
       return Response.json(await generateWeeklySystemLaborReport({ force: true }));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return new Response(JSON.stringify({ error: errMsg }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+  if (method === "POST" && pathname === "/api/reports/sla-uptime") {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    try {
+      return Response.json(await generateWeeklySlaUptimeReport({ force: true }));
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       return new Response(JSON.stringify({ error: errMsg }), {
