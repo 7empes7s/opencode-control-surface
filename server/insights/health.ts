@@ -162,6 +162,82 @@ function getBriefingConfigKey(dateKey = getUtcDateKey()): string {
   return `${BRIEFING_CONFIG_PREFIX}${dateKey}`;
 }
 
+function stripReasoning(raw: string): string {
+  let text = String(raw ?? "").replace(
+    /<(think|thinking)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+    "",
+  );
+
+  // An unmatched opener means the model never made it out of reasoning.
+  if (/<(?:think|thinking)\b[^>]*>/i.test(text)) return "";
+  text = text.replace(/<\/(?:think|thinking)\s*>/gi, "");
+
+  const finalChannel = /<\|channel\|>\s*final\s*<\|message\|>/gi;
+  let finalMatch: RegExpExecArray | null;
+  let finalContentStart = -1;
+  while ((finalMatch = finalChannel.exec(text)) !== null) {
+    finalContentStart = finalMatch.index + finalMatch[0].length;
+  }
+  if (finalContentStart >= 0) {
+    text = text.slice(finalContentStart);
+  } else {
+    const analysisChannel = /<\|channel\|>\s*analysis\s*<\|message\|>/i;
+    let analysisMatch = analysisChannel.exec(text);
+    while (analysisMatch) {
+      const messageEnd = analysisMatch.index + analysisMatch[0].length;
+      const endMatch = /<\|(?:end|return)\|>/i.exec(text.slice(messageEnd));
+      if (!endMatch) return "";
+      const endIndex = messageEnd + endMatch.index + endMatch[0].length;
+      const assistantStart = text.lastIndexOf("<|start|>", analysisMatch.index);
+      const envelopeStart = assistantStart >= 0 &&
+          text.slice(assistantStart + "<|start|>".length, analysisMatch.index).trim() === "assistant"
+        ? assistantStart
+        : analysisMatch.index;
+      text = `${text.slice(0, envelopeStart)}${text.slice(endIndex)}`;
+      analysisMatch = analysisChannel.exec(text);
+    }
+  }
+
+  return text
+    .replace(/<\|(?:start|end|return|message|channel|constrain)\|>/gi, "")
+    .trim();
+}
+
+function getBriefingRejectionReason(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return "empty after reasoning removal";
+  if (/^(the user (wants|is asking)|i need to|i should|let me|okay[,.]|first,? i|we need to)/i.test(trimmed)) {
+    return "opens with meta-language";
+  }
+  const promptEcho = [
+    "Key data points",
+    "Admin Health Score:",
+    "Top drivers dragging",
+    "Recent finding history:",
+  ].find((scaffold) => trimmed.toLowerCase().includes(scaffold.toLowerCase()));
+  if (promptEcho) return `echoes prompt scaffolding: ${promptEcho}`;
+  if (!/[.!?]$/.test(trimmed)) return "does not end in terminal punctuation";
+  const sentenceCount = (trimmed.match(/[.!?]+(?=\s|$)/g) ?? []).length;
+  if (sentenceCount < 1 || sentenceCount > 4) {
+    return `violates sentence contract: ${sentenceCount} sentences`;
+  }
+  if (trimmed.length > 600) return `exceeds 600 characters: ${trimmed.length}`;
+  return null;
+}
+
+function isValidBriefing(text: string): boolean {
+  return getBriefingRejectionReason(text) === null;
+}
+
+function recordAdminBriefingRejection(reason: string, raw: string): void {
+  try {
+    writeMetricSample({ source: "health", key: "admin_briefing_rejected", value: 1 });
+  } catch { /* Briefing rejection reporting must never break the admin page. */ }
+  try {
+    console.warn(`[admin-briefing] rejected: ${reason}; preview=${JSON.stringify(String(raw).slice(0, 80))}`);
+  } catch { /* Briefing rejection reporting must never break the admin page. */ }
+}
+
 function parseAdminBriefing(value: string | null | undefined): AdminBriefing | null {
   if (!value) return null;
   try {
@@ -193,7 +269,26 @@ function readPersistedAdminBriefing(dateKey = getUtcDateKey()): AdminBriefing | 
     const row = db.query(
       `SELECT value_json FROM system_configs WHERE key = ?`,
     ).get(getBriefingConfigKey(dateKey)) as { value_json: string } | null;
-    return parseAdminBriefing(row?.value_json);
+    if (!row) return null;
+    const persisted = parseAdminBriefing(row.value_json);
+    if (!persisted) {
+      recordAdminBriefingRejection("malformed persisted briefing", row.value_json);
+      db.query(`DELETE FROM system_configs WHERE key = ?`).run(getBriefingConfigKey(dateKey));
+      return null;
+    }
+    const text = stripReasoning(persisted.text);
+    const rejectionReason = getBriefingRejectionReason(text);
+    if (rejectionReason || !isValidBriefing(text)) {
+      recordAdminBriefingRejection(rejectionReason ?? "invalid persisted briefing", persisted.text);
+      db.query(`DELETE FROM system_configs WHERE key = ?`).run(getBriefingConfigKey(dateKey));
+      return null;
+    }
+    if (text !== persisted.text) {
+      const sanitized = { ...persisted, text };
+      persistAdminBriefing(sanitized);
+      return sanitized;
+    }
+    return persisted;
   } catch {
     return null;
   }
@@ -325,23 +420,29 @@ export async function refreshAdminBriefingIfStale(): Promise<void> {
       context.relatedFindings.length > 0 ? `Related open finding clusters:\n- ${context.relatedFindings.join("\n- ")}` : "Related open finding clusters: none recorded.",
     ].join("\n");
     const res = await complete(BRIEFING_MODEL, [{ role: "user", content: prompt }], {
-      maxTokens: 200,
+      maxTokens: 800,
       timeoutMs: 15_000,
       caller: "admin-briefing",
     });
-    const text = (res.choices?.[0]?.message?.content ?? "").trim();
-    if (text) {
-      briefingCache = {
-        text,
-        model: res.model ?? BRIEFING_MODEL,
-        generatedAt: now,
-        dateKey: getUtcDateKey(now),
-        source: "llm",
-      };
-      persistAdminBriefing(briefingCache);
+    const raw = res.choices?.[0]?.message?.content ?? "";
+    const text = stripReasoning(raw);
+    const rejectionReason = getBriefingRejectionReason(text);
+    if (rejectionReason || !isValidBriefing(text)) {
+      recordAdminBriefingRejection(rejectionReason ?? "invalid briefing", raw);
+      return;
     }
-  } catch {
-    // never block; stale cache or null is fine
+    briefingCache = {
+      text,
+      model: res.model ?? BRIEFING_MODEL,
+      generatedAt: now,
+      dateKey: getUtcDateKey(now),
+      source: "llm",
+    };
+    persistAdminBriefing(briefingCache);
+  } catch (error) {
+    try {
+      console.warn("[admin-briefing] generation failed; using fallback", error);
+    } catch { /* Briefing generation must never break the admin page. */ }
   } finally {
     briefingInFlight = false;
   }
