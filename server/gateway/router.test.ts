@@ -5,14 +5,16 @@ import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import type { CompletionRequest, CompletionResponse } from "./adapters/base.ts";
 import { _resetGatewayConfigCacheForTests } from "./config.ts";
-import { gatewayComplete, resetGatewayRouteOverrideStateForTests } from "./router.ts";
+import { gatewayComplete, getCircuitStates, resetGatewayRouteOverrideStateForTests } from "./router.ts";
 
 type GatewayRow = {
   trace_id: string | null;
+  resolved_model: string;
   success: number;
+  error_class: string | null;
 };
 
-type MockOutcome = "success" | "failure";
+type MockOutcome = "success" | "failure" | "unreachable" | "timeout";
 
 const request: CompletionRequest = {
   model: "ignored-by-gateway",
@@ -24,8 +26,10 @@ let previousDashboardDb: string | undefined;
 let previousDashboardDbPath: string | undefined;
 let previousGatewayConfig: string | undefined;
 let previousFetch: typeof fetch;
+let adapterCalls: Map<string, number>;
 
-function installAdapterMock(outcomes: Record<string, MockOutcome>): void {
+function installAdapterMock(outcomes: Record<string, MockOutcome | MockOutcome[]>): void {
+  adapterCalls = new Map();
   globalThis.fetch = Object.assign(
     async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string"
@@ -38,10 +42,23 @@ function installAdapterMock(outcomes: Record<string, MockOutcome>): void {
       }
 
       const body = JSON.parse(String(init?.body)) as CompletionRequest;
-      const outcome = outcomes[body.model];
-      if (!outcome) throw new Error(`No gateway test outcome for model: ${body.model}`);
+      const configuredOutcome = outcomes[body.model];
+      if (!configuredOutcome) throw new Error(`No gateway test outcome for model: ${body.model}`);
+      const callIndex = adapterCalls.get(body.model) ?? 0;
+      adapterCalls.set(body.model, callIndex + 1);
+      const outcome = Array.isArray(configuredOutcome)
+        ? configuredOutcome[Math.min(callIndex, configuredOutcome.length - 1)]
+        : configuredOutcome;
       if (outcome === "failure") {
         return new Response("synthetic failure", { status: 503 });
+      }
+      if (outcome === "unreachable") {
+        throw new Error("Unable to connect. Is the computer able to access the url?");
+      }
+      if (outcome === "timeout") {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        throw error;
       }
 
       const response: CompletionResponse = {
@@ -65,7 +82,7 @@ function installAdapterMock(outcomes: Record<string, MockOutcome>): void {
 
 function rowsFor(logicalModel: string): GatewayRow[] {
   return getDashboardDb()!.query(`
-    SELECT trace_id, success
+    SELECT trace_id, resolved_model, success, error_class
     FROM gateway_calls
     WHERE logical_model = ?
     ORDER BY id ASC
@@ -113,6 +130,46 @@ models:
   trace-failure-second:
     model: trace-failure-second
     tier: cloud-free
+    fallback_chain: []
+  infra-once:
+    model: infra-once
+    tier: local
+    fallback_chain: []
+  infra-breaker:
+    model: infra-breaker
+    tier: local
+    fallback_chain: []
+  infra-cascade:
+    model: infra-cascade-first
+    tier: local
+    fallback_chain: [infra-cascade-second]
+  infra-cascade-second:
+    model: infra-cascade-second
+    tier: cloud-free
+    fallback_chain: []
+  infra-recover:
+    model: infra-recover
+    tier: local
+    fallback_chain: []
+  model-error:
+    model: model-error-first
+    tier: local
+    fallback_chain: [model-error-second]
+  model-error-second:
+    model: model-error-second
+    tier: cloud-free
+    fallback_chain: []
+  timeout-error:
+    model: timeout-error-first
+    tier: local
+    fallback_chain: [timeout-error-second]
+  timeout-error-second:
+    model: timeout-error-second
+    tier: cloud-free
+    fallback_chain: []
+  infra-trace:
+    model: infra-trace
+    tier: local
     fallback_chain: []
 circuit_breaker:
   failure_threshold: 3
@@ -214,5 +271,107 @@ describe("gatewayComplete trace correlation", () => {
     expect(rows.every((row) => row.success === 0)).toBe(true);
     expect(rows[0].trace_id).not.toBeNull();
     expect(rows[1].trace_id).toBe(rows[0].trace_id);
+  });
+});
+
+describe("gatewayComplete infrastructure failures", () => {
+  test("retries an unreachable gateway once and records one infrastructure failure", async () => {
+    installAdapterMock({ "infra-once": "unreachable" });
+
+    await expect(gatewayComplete("infra-once", request)).rejects.toThrow("Unable to connect");
+
+    expect(adapterCalls.get("infra-once")).toBe(2);
+    expect(rowsFor("infra-once")).toEqual([{
+      trace_id: expect.any(String),
+      resolved_model: "infra-once",
+      success: 0,
+      error_class: "gateway_unreachable",
+    }]);
+  });
+
+  test("does not trip the model circuit breaker for an infrastructure failure", async () => {
+    installAdapterMock({ "infra-breaker": "unreachable" });
+
+    await expect(gatewayComplete("infra-breaker", request)).rejects.toThrow("Unable to connect");
+
+    expect(getCircuitStates()["infra-breaker"]).toEqual({
+      state: "closed",
+      failures: 0,
+      openedAt: null,
+    });
+  });
+
+  test("stops the fallback cascade when the gateway is unreachable", async () => {
+    installAdapterMock({
+      "infra-cascade-first": "unreachable",
+      "infra-cascade-second": "success",
+    });
+
+    await expect(gatewayComplete("infra-cascade", request)).rejects.toThrow("Unable to connect");
+
+    expect(adapterCalls.get("infra-cascade-first")).toBe(2);
+    expect(adapterCalls.get("infra-cascade-second") ?? 0).toBe(0);
+    expect(rowsFor("infra-cascade").map((row) => row.resolved_model)).toEqual(["infra-cascade-first"]);
+  });
+
+  test("returns success when the infrastructure retry recovers", async () => {
+    installAdapterMock({ "infra-recover": ["unreachable", "success"] });
+
+    const result = await gatewayComplete("infra-recover", request);
+
+    expect(result.model).toBe("infra-recover");
+    expect(adapterCalls.get("infra-recover")).toBe(2);
+    expect(rowsFor("infra-recover").map((row) => ({ success: row.success, errorClass: row.error_class }))).toEqual([
+      { success: 1, errorClass: null },
+    ]);
+  });
+
+  test("keeps real model errors on the existing failure and fallback path", async () => {
+    installAdapterMock({
+      "model-error-first": "failure",
+      "model-error-second": "success",
+    });
+
+    const result = await gatewayComplete("model-error", request);
+
+    expect(result.model).toBe("model-error-second");
+    expect(adapterCalls.get("model-error-first")).toBe(1);
+    expect(adapterCalls.get("model-error-second")).toBe(1);
+    expect(rowsFor("model-error").map((row) => ({ success: row.success, errorClass: row.error_class }))).toEqual([
+      { success: 0, errorClass: "unavailable" },
+      { success: 1, errorClass: null },
+    ]);
+    expect(getCircuitStates()["model-error"]?.failures).toBe(1);
+  });
+
+  test("keeps timeouts on the existing failure and fallback path", async () => {
+    installAdapterMock({
+      "timeout-error-first": "timeout",
+      "timeout-error-second": "success",
+    });
+
+    const result = await gatewayComplete("timeout-error", request);
+
+    expect(result.model).toBe("timeout-error-second");
+    expect(adapterCalls.get("timeout-error-first")).toBe(1);
+    expect(adapterCalls.get("timeout-error-second")).toBe(1);
+    expect(rowsFor("timeout-error").map((row) => ({ success: row.success, errorClass: row.error_class }))).toEqual([
+      { success: 0, errorClass: "timeout" },
+      { success: 1, errorClass: null },
+    ]);
+    expect(getCircuitStates()["timeout-error"]?.failures).toBe(1);
+  });
+
+  test("preserves the request trace id on an infrastructure failure", async () => {
+    installAdapterMock({ "infra-trace": "unreachable" });
+
+    await expect(gatewayComplete("infra-trace", request, { traceId: "infra-trace-id" })).rejects.toThrow(
+      "Unable to connect",
+    );
+
+    const rows = rowsFor("infra-trace");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].trace_id).toBe("infra-trace-id");
+    expect(rows[0].error_class).toBe("gateway_unreachable");
   });
 });

@@ -276,6 +276,8 @@ function getAdapter(litellmUrl: string): LiteLLMAdapter {
 
 // ── Core complete() with fallback chain ───────────────────────────────────────
 
+const GATEWAY_INFRA_RETRY_MS = 1500;
+
 export type GatewayCompleteOptions = {
   timeoutMs?: number;
   traceId?: string | null;
@@ -317,7 +319,7 @@ export async function gatewayComplete(
 
   let lastError: Error | null = null;
 
-  for (const modelName of chain) {
+  chainLoop: for (const modelName of chain) {
     const entry = resolveGatewayEntry(modelName);
     if (!isAvailable(modelName)) {
       console.log(`[gateway] skipping ${modelName} (circuit open)`);
@@ -325,59 +327,90 @@ export async function gatewayComplete(
     }
 
     const startMs = Date.now();
-    try {
-      const result = await adapter.complete(
-        { ...req, model: entry.model },
-        opts.timeoutMs ?? 120_000,
-      );
-      const latencyMs = Date.now() - startMs;
-      recordSuccess(modelName);
+    let infraRetryAvailable = true;
+    while (true) {
+      try {
+        const result = await adapter.complete(
+          { ...req, model: entry.model },
+          opts.timeoutMs ?? 120_000,
+        );
+        const latencyMs = Date.now() - startMs;
+        recordSuccess(modelName);
 
-      const costPerM = cfg.costEstimates[entry.tier] ?? { prompt: 0, completion: 0 };
-      const promptT = result.usage?.prompt_tokens ?? null;
-      const completionT = result.usage?.completion_tokens ?? null;
-      const costEst = promptT != null && completionT != null
-        ? (promptT * costPerM.prompt + completionT * costPerM.completion) / 1_000_000
-        : null;
+        const costPerM = cfg.costEstimates[entry.tier] ?? { prompt: 0, completion: 0 };
+        const promptT = result.usage?.prompt_tokens ?? null;
+        const completionT = result.usage?.completion_tokens ?? null;
+        const costEst = promptT != null && completionT != null
+          ? (promptT * costPerM.prompt + completionT * costPerM.completion) / 1_000_000
+          : null;
 
-      writeLedgerEntry({
-        logicalModel,
-        resolvedModel: entry.model,
-        backend: "litellm",
-        tier: entry.tier,
-        promptTokens: promptT,
-        completionTokens: completionT,
-        latencyMs,
-        costEstimateUsd: costEst,
-        success: true,
-        errorClass: null,
-        traceId,
-        caller: opts.caller,
-      });
+        writeLedgerEntry({
+          logicalModel,
+          resolvedModel: entry.model,
+          backend: "litellm",
+          tier: entry.tier,
+          promptTokens: promptT,
+          completionTokens: completionT,
+          latencyMs,
+          costEstimateUsd: costEst,
+          success: true,
+          errorClass: null,
+          traceId,
+          caller: opts.caller,
+        });
 
-      return result;
-    } catch (e) {
-      const latencyMs = Date.now() - startMs;
-      lastError = e instanceof Error ? e : new Error(String(e));
-      const errorClass = classifyError(lastError);
-      recordFailure(modelName);
+        return result;
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (isGatewayUnreachable(lastError)) {
+          if (infraRetryAvailable) {
+            infraRetryAvailable = false;
+            await new Promise((resolve) => setTimeout(resolve, GATEWAY_INFRA_RETRY_MS));
+            continue;
+          }
 
-      writeLedgerEntry({
-        logicalModel,
-        resolvedModel: entry.model,
-        backend: "litellm",
-        tier: entry.tier,
-        promptTokens: null,
-        completionTokens: null,
-        latencyMs,
-        costEstimateUsd: null,
-        success: false,
-        errorClass,
-        traceId,
-        caller: opts.caller,
-      });
+          const latencyMs = Date.now() - startMs;
+          writeLedgerEntry({
+            logicalModel,
+            resolvedModel: entry.model,
+            backend: "litellm",
+            tier: entry.tier,
+            promptTokens: null,
+            completionTokens: null,
+            latencyMs,
+            costEstimateUsd: null,
+            success: false,
+            errorClass: "gateway_unreachable",
+            traceId,
+            caller: opts.caller,
+          });
 
-      console.warn(`[gateway] ${modelName} failed (${errorClass}): ${lastError.message.slice(0, 100)}`);
+          console.warn(`[gateway] ${modelName} failed (gateway_unreachable): ${lastError.message.slice(0, 100)}`);
+          break chainLoop;
+        }
+
+        const latencyMs = Date.now() - startMs;
+        const errorClass = classifyError(lastError);
+        recordFailure(modelName);
+
+        writeLedgerEntry({
+          logicalModel,
+          resolvedModel: entry.model,
+          backend: "litellm",
+          tier: entry.tier,
+          promptTokens: null,
+          completionTokens: null,
+          latencyMs,
+          costEstimateUsd: null,
+          success: false,
+          errorClass,
+          traceId,
+          caller: opts.caller,
+        });
+
+        console.warn(`[gateway] ${modelName} failed (${errorClass}): ${lastError.message.slice(0, 100)}`);
+        break;
+      }
     }
   }
 
@@ -404,6 +437,13 @@ function classifyError(e: Error): string {
   if (msg.includes("503") || msg.includes("unavailable")) return "unavailable";
   if (msg.includes("5")) return "server_error";
   return "unknown";
+}
+
+function isGatewayUnreachable(e: Error): boolean {
+  if (e.name === "AbortError") return false;          // timeout, not infra
+  const m = e.message.toLowerCase();
+  if (m.includes("abort") || m.includes("timeout")) return false;
+  return !/^litellm \d+/.test(m);                      // no "LiteLLM <status>:" ⇒ never reached LiteLLM
 }
 
 // ── Models listing ────────────────────────────────────────────────────────────
