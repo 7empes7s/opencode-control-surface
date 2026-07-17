@@ -79,6 +79,37 @@ function seedEval(logicalName: string, ts: number, value: Record<string, unknown
   `).run(ts, logicalName, JSON.stringify({ ts, ...value }), "mimule");
 }
 
+function seedGatewayCall(input: {
+  logicalModel?: string;
+  resolvedModel: string;
+  backend?: string;
+  success: 0 | 1;
+  errorClass?: string | null;
+  latencyMs?: number | null;
+}): void {
+  getDashboardDb()!.query(`
+    INSERT INTO gateway_calls
+      (ts, logical_model, resolved_model, backend, tier, success, error_class, latency_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Date.now(),
+    input.logicalModel ?? "test-logical-model",
+    input.resolvedModel,
+    input.backend ?? "litellm",
+    "cloud-free",
+    input.success,
+    input.errorClass ?? null,
+    input.latencyMs ?? null,
+  );
+}
+
+async function readRoutingReliability(logicalName: string): Promise<any> {
+  const res = modelLifecycleHandler(logicalName);
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: { routingReliability: any } };
+  return body.data.routingReliability;
+}
+
 test("modelsHandler reserves blocked for quality-policy blocks", async () => {
   writeFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, JSON.stringify({
     checkedAt: 1,
@@ -160,6 +191,80 @@ test("modelLifecycleHandler blocks promotion when eval history is empty", async 
   expect(body.data.evalHistory).toEqual([]);
   expect(body.data.promotionReadiness.gate).toBe("blocked");
   expect(body.data.promotionReadiness.reasons).toContain("insufficient eval history");
+});
+
+test("modelLifecycleHandler reads fallback-target routing reliability from the gateway ledger", async () => {
+  const resolvedModel = "groq-openai-gpt-oss-120b";
+  seedGatewayCall({ resolvedModel, success: 1 });
+  for (let i = 0; i < 67; i += 1) {
+    seedGatewayCall({ resolvedModel, success: 0 });
+  }
+
+  const routingReliability = await readRoutingReliability(resolvedModel);
+  expect(routingReliability).toMatchObject({
+    totalRequests: 68,
+    successCount: 1,
+    fallbackCount: 0,
+    failedCount: 67,
+  });
+});
+
+test("modelLifecycleHandler attributes routing reliability by resolved_model", async () => {
+  seedGatewayCall({ logicalModel: "request-route", resolvedModel: "editorial-heavy", success: 1 });
+  seedGatewayCall({ logicalModel: "editorial-heavy", resolvedModel: "fallback-target", success: 0 });
+
+  const routingReliability = await readRoutingReliability("editorial-heavy");
+  expect(routingReliability).toMatchObject({
+    totalRequests: 1,
+    successCount: 1,
+    failedCount: 0,
+  });
+});
+
+test("modelLifecycleHandler excludes cli-direct accounting rows from routing reliability", async () => {
+  seedGatewayCall({ resolvedModel: "candidate-model", backend: "litellm", success: 1 });
+  seedGatewayCall({ resolvedModel: "candidate-model", backend: "cli-direct", success: 0 });
+
+  const routingReliability = await readRoutingReliability("candidate-model");
+  expect(routingReliability).toMatchObject({
+    totalRequests: 1,
+    successCount: 1,
+    failedCount: 0,
+  });
+});
+
+test("modelLifecycleHandler excludes gateway_unreachable rows from routing reliability", async () => {
+  seedGatewayCall({ resolvedModel: "candidate-model", success: 1 });
+  seedGatewayCall({ resolvedModel: "candidate-model", success: 0, errorClass: "gateway_unreachable" });
+
+  const routingReliability = await readRoutingReliability("candidate-model");
+  expect(routingReliability).toMatchObject({
+    totalRequests: 1,
+    successCount: 1,
+    failedCount: 0,
+  });
+});
+
+test("modelLifecycleHandler returns an honest zero for a model absent from the gateway ledger", async () => {
+  seedGatewayCall({ resolvedModel: "unrelated-model", success: 1 });
+
+  const routingReliability = await readRoutingReliability("never-routed-model");
+  expect(routingReliability).toEqual({
+    totalRequests: 0,
+    successCount: 0,
+    fallbackCount: 0,
+    failedCount: 0,
+    avgLatencyMs: null,
+  });
+});
+
+test("modelLifecycleHandler averages gateway ledger latency for the resolved model", async () => {
+  seedGatewayCall({ resolvedModel: "candidate-model", success: 1, latencyMs: 100 });
+  seedGatewayCall({ resolvedModel: "candidate-model", success: 0, latencyMs: 300 });
+  seedGatewayCall({ resolvedModel: "other-model", success: 1, latencyMs: 1_000 });
+
+  const routingReliability = await readRoutingReliability("candidate-model");
+  expect(routingReliability.avgLatencyMs).toBe(200);
 });
 
 test("modelLifecycleHandler blocks promotion when quality policy blocks the model", async () => {

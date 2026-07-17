@@ -171,22 +171,22 @@ function readRoutingReliability(logicalName: string): {
   failedCount: number;
   avgLatencyMs: number | null;
 } | null {
-  const db = getObservabilityDb();
+  const db = getDashboardDb();
   if (!db) return null;
   try {
     const row = db.query(`
       SELECT
-        COUNT(*) AS totalRequests,
-        SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS successCount,
-        SUM(CASE WHEN status = 'fallback' THEN 1 ELSE 0 END) AS fallbackCount,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
-        AVG(total_latency_ms) AS avgLatencyMs
-      FROM litellm_routing_log
-      WHERE logical_name = ?
+        COUNT(*)                                     AS totalRequests,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successCount,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failedCount,
+        AVG(latency_ms)                              AS avgLatencyMs
+      FROM gateway_calls
+      WHERE resolved_model = ?
+        AND backend != 'cli-direct'
+        AND (error_class IS NULL OR error_class != 'gateway_unreachable')
     `).get(logicalName) as {
       totalRequests: number;
       successCount: number | null;
-      fallbackCount: number | null;
       failedCount: number | null;
       avgLatencyMs: number | null;
     } | null;
@@ -196,7 +196,8 @@ function readRoutingReliability(logicalName: string): {
     return {
       totalRequests: row.totalRequests,
       successCount: row.successCount ?? 0,
-      fallbackCount: row.fallbackCount ?? 0,
+      // Per-hop fallback attribution requires trace_id grouping; do not fabricate it here.
+      fallbackCount: 0,
       failedCount: row.failedCount ?? 0,
       avgLatencyMs: row.avgLatencyMs,
     };
