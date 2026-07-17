@@ -209,6 +209,11 @@ function getBriefingRejectionReason(text: string): string | null {
   if (/^(the user (wants|is asking)|i need to|i should|let me|okay[,.]|first,? i|we need to)/i.test(trimmed)) {
     return "opens with meta-language";
   }
+  if (/^\s*(here('?s| is| are)|sure[,.:]|certainly[,.:]|of course|absolutely[,.:])\b/i.test(trimmed)
+      || /^#{1,6}\s/.test(trimmed)      // leading markdown heading
+      || /^\*\*/.test(trimmed)) {        // leading bold (e.g. "**State of the Stack**")
+    return "opens with a preamble or heading";
+  }
   const promptEcho = [
     "Key data points",
     "Admin Health Score:",

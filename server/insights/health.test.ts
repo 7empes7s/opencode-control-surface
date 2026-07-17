@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,6 +206,74 @@ test("admin briefing rejects prompt scaffolding echoed by the model", async () =
   await refreshAdminBriefingIfStale();
 
   expect(getAdminBriefing().source).toBe("fallback");
+});
+
+test("admin briefing rejects the 07-05 preamble with the preamble reason", async () => {
+  enableTestDb();
+  gatewayResponseText = "Here's a 2-3 sentence State of the Stack briefing for the operator.";
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+
+  try {
+    await refreshAdminBriefingIfStale();
+
+    expect(getAdminBriefing().source).toBe("fallback");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+      "[admin-briefing] rejected: opens with a preamble or heading;",
+    ));
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("admin briefing rejects the 07-10 preamble", async () => {
+  enableTestDb();
+  gatewayResponseText = "Here is a 2-3 sentence \"State of the Stack\" briefing.";
+
+  await refreshAdminBriefingIfStale();
+
+  expect(getAdminBriefing().source).toBe("fallback");
+});
+
+test("admin briefing rejects a leading markdown heading", async () => {
+  enableTestDb();
+  gatewayResponseText = "**State of the Stack**\n\nOverall health is fine.";
+
+  await refreshAdminBriefingIfStale();
+
+  expect(getAdminBriefing().source).toBe("fallback");
+});
+
+test("admin briefing validator still accepts the deterministic fallback", async () => {
+  enableTestDb();
+  const fallback = "State of the stack is stable: Admin Health is 80/100 with 0 critical, 1 high, and 11 medium open findings. Top signal: 1 high-severity finding; 11 medium-severity findings.";
+  gatewayResponseText = fallback;
+
+  await refreshAdminBriefingIfStale();
+
+  expect(getAdminBriefing().source).toBe("llm");
+  expect(getAdminBriefing().text).toBe(fallback);
+});
+
+test("admin briefing validator still accepts a legitimate The stack is opener", async () => {
+  enableTestDb();
+  const good = "The stack is stable on the product side; no critical findings are open.";
+  gatewayResponseText = good;
+
+  await refreshAdminBriefingIfStale();
+
+  expect(getAdminBriefing().source).toBe("llm");
+  expect(getAdminBriefing().text).toBe(good);
+});
+
+test("admin briefing validator still accepts a plain two-sentence briefing", async () => {
+  enableTestDb();
+  const good = "Operations remain stable with no critical findings. The paused pipeline is the main issue to watch.";
+  gatewayResponseText = good;
+
+  await refreshAdminBriefingIfStale();
+
+  expect(getAdminBriefing().source).toBe("llm");
+  expect(getAdminBriefing().text).toBe(good);
 });
 
 test("admin briefing accepts and byte-preserves a good briefing", async () => {
