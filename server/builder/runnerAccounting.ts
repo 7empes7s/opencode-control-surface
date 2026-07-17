@@ -28,6 +28,7 @@ export type RecordRunnerUsageOptions = {
   agentKind: string;
   sessionOrRunId: string;
   detail?: string;
+  traceId?: string | null;
 };
 
 export function hasRunnerUsageForSession(sessionOrRunId: string): boolean {
@@ -103,8 +104,8 @@ export function recordRunnerUsage(opts: RecordRunnerUsageOptions): void {
   try {
     db.query(`
       INSERT INTO gateway_calls
-        (ts, logical_model, resolved_model, backend, tier, cost_estimate_usd, success, caller)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (ts, logical_model, resolved_model, backend, tier, cost_estimate_usd, success, caller, trace_id, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       ts,
       logicalModel,
@@ -114,6 +115,8 @@ export function recordRunnerUsage(opts: RecordRunnerUsageOptions): void {
       null,
       1,
       agentId,
+      opts.traceId ?? null,
+      tenantId,
     );
   } catch (e) {
     console.error("[runner-accounting] gateway_calls insert failed:", e);

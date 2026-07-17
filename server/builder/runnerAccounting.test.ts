@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
+import { withTenantContext } from "../tenancy/middleware.ts";
 import {
   hasRunnerUsageForSession,
   isNonGatewayCliLane,
@@ -40,6 +41,14 @@ afterEach(() => {
 
 function db() {
   return getDashboardDb()!;
+}
+
+async function asTenant(tenantId: string, fn: () => void): Promise<void> {
+  const handler = withTenantContext(async () => {
+    fn();
+    return new Response("ok");
+  });
+  await handler(new Request("http://localhost/test", { headers: { "x-tenant-id": tenantId } }));
 }
 
 describe("isNonGatewayCliLane", () => {
@@ -81,6 +90,58 @@ describe("registryAgentIdForLane", () => {
 });
 
 describe("recordRunnerUsage", () => {
+  test("stamps a supplied trace id on the gateway_calls row", () => {
+    recordRunnerUsage({ agentKind: "gemini", sessionOrRunId: "br_trace", traceId: "t-1" });
+
+    const row = db().query("SELECT trace_id FROM gateway_calls").get() as { trace_id: string | null };
+    expect(row.trace_id).toBe("t-1");
+  });
+
+  test("leaves trace_id null when no trace id is supplied", () => {
+    recordRunnerUsage({ agentKind: "gemini", sessionOrRunId: "br_no_trace" });
+
+    const row = db().query("SELECT trace_id FROM gateway_calls").get() as { trace_id: string | null };
+    expect(row.trace_id).toBeNull();
+  });
+
+  test("stamps the active tenant on gateway_calls and the matching cost_events row", async () => {
+    await asTenant("tenant-r0b", () => {
+      recordRunnerUsage({ agentKind: "codex", sessionOrRunId: "br_tenant" });
+    });
+
+    const gatewayRow = db().query("SELECT tenant_id FROM gateway_calls").get() as { tenant_id: string | null };
+    const costRow = db().query("SELECT tenant_id FROM cost_events").get() as { tenant_id: string | null };
+    expect(gatewayRow.tenant_id).toBe("tenant-r0b");
+    expect(gatewayRow.tenant_id).toBe(costRow.tenant_id);
+  });
+
+  test("keeps dedup behavior unchanged for a repeated sessionOrRunId", () => {
+    recordRunnerUsage({ agentKind: "gemini", sessionOrRunId: "br_trace_dup", traceId: "trace-first" });
+    recordRunnerUsage({ agentKind: "codex", sessionOrRunId: "br_trace_dup", traceId: "trace-second" });
+
+    const costCount = db().query("SELECT COUNT(*) AS n FROM cost_events").get() as { n: number };
+    const gatewayRows = db().query("SELECT trace_id FROM gateway_calls").all() as Array<{ trace_id: string | null }>;
+    expect(costCount.n).toBe(1);
+    expect(gatewayRows).toEqual([{ trace_id: "trace-first" }]);
+  });
+
+  test("builder accounting reuses the stamped pass trace id", () => {
+    const runnerSource = readFileSync(new URL("./runner.ts", import.meta.url), "utf8");
+    expect(runnerSource).toContain("updateBuilderPass(passId, { traceId });");
+    expect(runnerSource).toContain("traceId: currentPass?.traceId ?? run.traceId ?? undefined,");
+
+    const pass = { traceId: "trace-pass-existing" };
+    const run = { traceId: "trace-run-existing" };
+    recordRunnerUsage({
+      agentKind: "claude",
+      sessionOrRunId: "br_builder_trace",
+      traceId: pass.traceId ?? run.traceId ?? undefined,
+    });
+
+    const row = db().query("SELECT trace_id FROM gateway_calls").get() as { trace_id: string | null };
+    expect(row.trace_id).toBe(pass.traceId);
+  });
+
   test("inserts one cost_events row and one gateway_calls row for gemini", () => {
     recordRunnerUsage({ agentKind: "gemini", sessionOrRunId: "br_abc", detail: "pass 1 done" });
 

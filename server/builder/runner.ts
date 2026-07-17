@@ -2325,6 +2325,7 @@ export async function reconcileRunStatus(runId: string): Promise<BuilderRun | nu
           agentKind: passAgent,
           sessionOrRunId: runId,
           detail: `passSeq=${passSeq} exitCode=${exitCode ?? "null"} status=${passStatus} failureClass=${failureClass ?? "none"}`,
+          traceId: currentPass?.traceId ?? run.traceId ?? undefined,
         });
       } catch (e) {
         console.error("[builder] recordRunnerUsage failed:", e);
