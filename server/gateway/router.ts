@@ -287,6 +287,7 @@ export async function gatewayComplete(
   req: CompletionRequest,
   opts: GatewayCompleteOptions = {},
 ): Promise<CompletionResponse> {
+  const traceId = opts.traceId ?? crypto.randomUUID();
   const cfg = loadGatewayConfig();
   const adapter = getAdapter(cfg.litellmUrl);
 
@@ -350,7 +351,7 @@ export async function gatewayComplete(
         costEstimateUsd: costEst,
         success: true,
         errorClass: null,
-        traceId: opts.traceId,
+        traceId,
         caller: opts.caller,
       });
 
@@ -372,7 +373,7 @@ export async function gatewayComplete(
         costEstimateUsd: null,
         success: false,
         errorClass,
-        traceId: opts.traceId,
+        traceId,
         caller: opts.caller,
       });
 
