@@ -300,6 +300,28 @@ export interface RatingBreakdown {
 export type HealthState = "live" | "limited" | "slow" | "degraded" | "dead" | "hang" | "unknown";
 export type HealthBucket = "healthy" | "unhealthy" | "unknown";
 
+export type CredentialHealthStatus =
+  | "valid"
+  | "missing"
+  | "invalid"
+  | "expired"
+  | "revoked"
+  | "quota"
+  | "rate_limited"
+  | "unknown";
+
+export interface CredentialHealthSummary {
+  envName: string;
+  provider: string;
+  status: CredentialHealthStatus;
+  httpCode: number | null;
+  checkedAt: number;
+  sinceStatus: number | null;
+  gatesModels: string[];
+  present: boolean;
+  fresh: boolean;
+}
+
 export interface ModelsDetail {
   models: {
     logicalName: string;
@@ -315,6 +337,8 @@ export interface ModelsDetail {
     healthState?: HealthState;
     healthBucket?: HealthBucket;
     healthReason?: string;
+    credentialHealth?: CredentialHealthSummary;
+    credentialBlocked?: boolean;
     isFree: boolean;
     isPaid: boolean;
     isOpenCode: boolean;
@@ -328,6 +352,7 @@ export interface ModelsDetail {
     ratingBreakdown?: RatingBreakdown | null;
     workloadScores?: WorkloadScores | null;
   }[];
+  credentials: CredentialHealthSummary[];
   cooldowns: { model: string; startedAt: number | null; expiresAt: number; reason?: string }[];
   fallbacks: Record<string, string[]>;
   summary: {

@@ -8,7 +8,15 @@ import { getUserIdForRequest } from '../governance/rbac.ts';
 import { readJsonFileAtomic } from "../lib/atomicJson.ts";
 import { getModelChainSyncPayload } from "../adapters/modelChainSync.ts";
 import { ok } from "./types.ts";
-import { deriveHealthState, type HealthBucket, type HealthSignals, type HealthState } from "./modelHealthState.ts";
+import {
+  annotateCredentialHealthReason,
+  credentialBlocksModel,
+  deriveHealthState,
+  type HealthBucket,
+  type HealthSignals,
+  type HealthState,
+} from "./modelHealthState.ts";
+import { credentialHealthByModel, readCredentialHealth } from "./credentialHealth.ts";
 
 export const PROMOTION_EVAL_SCORE_THRESHOLD = 0.75;
 const PROMOTION_APPROVAL_WORKFLOW_PREFIX = "model-promotion";
@@ -505,11 +513,23 @@ export function modelsHandler(): Response {
     const quality = readModelQuality();
     const reprobeHistory = readModelReprobeHistory();
     const ledgerMap = readModelHealthLedger();
+    const credentials = readCredentialHealth();
+    const credentialsByModel = credentialHealthByModel(credentials);
 
     const healthModels = Array.isArray(health.models) ? health.models : [];
     const roster = buildModelRoster(healthModels, reprobeHistory, ledgerMap);
     const models = roster.map(({ logicalName, healthModel: m }) => {
-      const verdict = deriveHealthState(healthSignalsForModel(logicalName, m, reprobeHistory, ledgerMap));
+      const healthSignals = healthSignalsForModel(logicalName, m, reprobeHistory, ledgerMap);
+      const credentialHealth = credentialsByModel.get(logicalName);
+      const verdict = annotateCredentialHealthReason(
+        deriveHealthState(healthSignals),
+        healthSignals,
+        credentialHealth,
+      );
+      const credentialAnnotation = credentialHealth ? {
+        credentialHealth,
+        credentialBlocked: credentialBlocksModel(credentialHealth),
+      } : {};
 
       if (!m) {
         return {
@@ -526,6 +546,7 @@ export function modelsHandler(): Response {
           healthState: verdict.state,
           healthBucket: verdict.bucket,
           healthReason: verdict.reason,
+          ...credentialAnnotation,
           isFree: false,
           isPaid: false,
           isOpenCode: false,
@@ -580,6 +601,7 @@ export function modelsHandler(): Response {
         healthState: verdict.state,
         healthBucket: verdict.bucket,
         healthReason: verdict.reason,
+        ...credentialAnnotation,
         isFree,
         isPaid,
         isOpenCode,
@@ -630,6 +652,7 @@ export function modelsHandler(): Response {
     return Response.json({
       data: {
         models,
+        credentials,
         cooldowns: [],
         fallbacks: health.fallbacks ?? {},
         summary,
@@ -644,6 +667,7 @@ export function modelsHandler(): Response {
       sourceStatus: { modelHealth: "error" },
       data: {
         models: [],
+        credentials: [],
         cooldowns: [],
         fallbacks: {},
         summary: {

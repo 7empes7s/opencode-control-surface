@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { HealthBucket, HealthState } from "../../server/api/types";
+import type {
+  CredentialHealthStatus,
+  CredentialHealthSummary,
+  HealthBucket,
+  HealthState,
+} from "../../server/api/types";
 import {
   HEALTH_GROUPS,
+  credentialHealthView,
+  credentialStatusGuidance,
   groupVisibleModels,
   healthStateBadge,
   healthSummaryItems,
@@ -146,5 +153,56 @@ describe("models health presentation", () => {
       lead: "Proven route needs recovery:",
       detail: "fix its credential or quota; do not drop its earned history.",
     });
+  });
+
+  test("gives every credential status safe, status-specific guidance", () => {
+    const expected: Record<CredentialHealthStatus, string> = {
+      valid: "no action needed",
+      missing: "Configure",
+      invalid: "Rotate",
+      expired: "Rotate",
+      revoked: "replacement",
+      quota: "Restore",
+      rate_limited: "back off",
+      unknown: "Investigate",
+    };
+
+    for (const [status, phrase] of Object.entries(expected) as Array<[CredentialHealthStatus, string]>) {
+      expect(credentialStatusGuidance(status)).toContain(phrase);
+    }
+  });
+
+  test("credential presentation projects only safe fields and identifies gated models", () => {
+    const checkedAt = Date.UTC(2026, 6, 18, 19, 30, 0);
+    const raw = {
+      envName: "OPENCODE_GO_API_KEY",
+      provider: "opencode-go",
+      status: "expired",
+      httpCode: 401,
+      checkedAt,
+      sinceStatus: checkedAt - 60_000,
+      gatesModels: ["coding-go-minimax-m3", "coding-go-other"],
+      present: true,
+      fresh: true,
+      secretValue: "UI_RAW_SECRET_SENTINEL",
+      providerBody: "UI_RAW_BODY_SENTINEL",
+    } as CredentialHealthSummary & { secretValue: string; providerBody: string };
+
+    const presentation = credentialHealthView(raw, checkedAt + 30 * 60 * 1000);
+    expect(presentation).toEqual({
+      envName: "OPENCODE_GO_API_KEY",
+      status: "expired",
+      statusLabel: "expired",
+      statusColor: "red",
+      freshnessLabel: "fresh",
+      freshnessColor: "green",
+      checkedAge: "30m ago",
+      gatedModelCount: 2,
+      gatedModels: ["coding-go-minimax-m3", "coding-go-other"],
+      guidance: "Rotate the expired credential.",
+    });
+    expect(JSON.stringify(presentation)).not.toContain("UI_RAW_SECRET_SENTINEL");
+    expect(JSON.stringify(presentation)).not.toContain("UI_RAW_BODY_SENTINEL");
+    expect(JSON.stringify(presentation)).not.toContain("opencode-go");
   });
 });

@@ -1,5 +1,33 @@
 import { expect, test } from "bun:test";
-import { deriveHealthState, healthBucket, type HealthSignals, type HealthState } from "./modelHealthState.ts";
+import {
+  annotateCredentialHealthReason,
+  credentialBlocksModel,
+  deriveHealthState,
+  healthBucket,
+  type HealthSignals,
+  type HealthState,
+} from "./modelHealthState.ts";
+import type { CredentialHealthStatus, CredentialHealthSummary } from "./types.ts";
+
+const CHECKED_AT = Date.UTC(2026, 6, 18, 20, 0, 0);
+
+function credential(
+  status: CredentialHealthStatus,
+  overrides: Partial<CredentialHealthSummary> = {},
+): CredentialHealthSummary {
+  return {
+    envName: "OPENCODE_GO_API_KEY",
+    provider: "opencode-go",
+    status,
+    httpCode: status === "quota" ? 402 : status === "valid" ? 200 : 401,
+    checkedAt: CHECKED_AT,
+    sinceStatus: CHECKED_AT - 60_000,
+    gatesModels: ["coding-go-minimax-m3"],
+    present: status !== "missing",
+    fresh: true,
+    ...overrides,
+  };
+}
 
 test("live: a fast successful probe is healthy", () => {
   const verdict = deriveHealthState({ probeCode: 200, probeMs: 1_100, recentCalls: 1_557, recentSuccesses: 1_477 });
@@ -149,4 +177,78 @@ test("healthBucket maps all seven states", () => {
   for (const [state, bucket] of Object.entries(expected) as Array<[HealthState, typeof expected[HealthState]]>) {
     expect(healthBucket(state)).toBe(bucket);
   }
+});
+
+test("fresh credential evidence strengthens only an earned degraded reason", () => {
+  const authSignals: HealthSignals = {
+    allTimeCalls: 526,
+    allTimeSuccesses: 425,
+    recentCalls: 10,
+    recentSuccesses: 0,
+    recentAuthErrors: 10,
+  };
+  const original = deriveHealthState(authSignals);
+
+  for (const status of ["invalid", "expired", "revoked"] as const) {
+    const annotated = annotateCredentialHealthReason(original, authSignals, credential(status));
+    expect(annotated.state).toBe(original.state);
+    expect(annotated.bucket).toBe(original.bucket);
+    expect(annotated.reason).toContain(`OPENCODE_GO_API_KEY) is ${status}`);
+    expect(annotated.reason).toContain("not proof the model is dead");
+    expect(annotated.reason).not.toContain("likely");
+  }
+
+  const quotaSignals: HealthSignals = {
+    probeCode: 402,
+    allTimeCalls: 100,
+    allTimeSuccesses: 80,
+  };
+  const quotaOriginal = deriveHealthState(quotaSignals);
+  const quotaAnnotated = annotateCredentialHealthReason(quotaOriginal, quotaSignals, credential("quota"));
+  expect(quotaAnnotated).toMatchObject({ state: "degraded", bucket: "unhealthy" });
+  expect(quotaAnnotated.reason).toContain("has no quota");
+  expect(quotaAnnotated.reason).toContain("restore provider quota");
+});
+
+test("credential annotation needs matching existing auth or quota evidence", () => {
+  const authSignals: HealthSignals = {
+    allTimeCalls: 100,
+    allTimeSuccesses: 80,
+    recentCalls: 5,
+    recentSuccesses: 0,
+    recentAuthErrors: 5,
+  };
+  const original = deriveHealthState(authSignals);
+
+  expect(annotateCredentialHealthReason(original, authSignals, credential("quota"))).toBe(original);
+  expect(annotateCredentialHealthReason(original, authSignals, credential("expired", { fresh: false }))).toBe(original);
+  for (const status of ["valid", "missing", "rate_limited", "unknown"] as const) {
+    expect(annotateCredentialHealthReason(original, authSignals, credential(status))).toBe(original);
+  }
+});
+
+test("unearned verdicts never change even when their credential is blocked", () => {
+  const signals: HealthSignals = {
+    probeCode: 404,
+    recentCalls: 20,
+    recentSuccesses: 0,
+    recentAuthErrors: 20,
+  };
+  const original = deriveHealthState(signals);
+  const blocked = credential("expired");
+
+  expect(original.state).toBe("dead");
+  expect(annotateCredentialHealthReason(original, signals, blocked)).toBe(original);
+  expect(credentialBlocksModel(blocked)).toBe(true);
+});
+
+test("credentialBlocked is a fresh status-only annotation", () => {
+  for (const status of ["missing", "invalid", "expired", "revoked", "quota"] as const) {
+    expect(credentialBlocksModel(credential(status))).toBe(true);
+  }
+  for (const status of ["valid", "rate_limited", "unknown"] as const) {
+    expect(credentialBlocksModel(credential(status))).toBe(false);
+  }
+  expect(credentialBlocksModel(credential("expired", { fresh: false }))).toBe(false);
+  expect(credentialBlocksModel(null)).toBe(false);
 });

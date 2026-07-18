@@ -1,3 +1,5 @@
+import type { CredentialHealthSummary } from "./types.ts";
+
 const EARNED_MIN_CALLS = 50;
 const EARNED_MIN_RATE = 0.60;
 const DEGRADED_RECENT_FLOOR = 5;
@@ -28,6 +30,14 @@ export interface HealthVerdict {
   bucket: HealthBucket;
   reason: string;
 }
+
+const BLOCKING_CREDENTIAL_STATUSES = new Set([
+  "missing",
+  "invalid",
+  "expired",
+  "revoked",
+  "quota",
+]);
 
 function finiteNonNegative(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -164,4 +174,57 @@ export function healthBucket(state: HealthState): HealthBucket {
   if (state === "live" || state === "limited" || state === "slow") return "healthy";
   if (state === "degraded" || state === "dead" || state === "hang") return "unhealthy";
   return "unknown";
+}
+
+export function credentialBlocksModel(credential: CredentialHealthSummary | null | undefined): boolean {
+  return Boolean(
+    credential?.fresh
+    && BLOCKING_CREDENTIAL_STATUSES.has(credential.status),
+  );
+}
+
+function credentialStatusReason(credential: CredentialHealthSummary): string {
+  const since = new Date(credential.sinceStatus ?? credential.checkedAt).toISOString();
+  const key = credential.envName;
+  switch (credential.status) {
+    case "invalid":
+      return `earned route is down because its key (${key}) is invalid since ${since} — rotate the rejected credential; this is not proof the model is dead`;
+    case "expired":
+      return `earned route is down because its key (${key}) is expired since ${since} — rotate the credential; this is not proof the model is dead`;
+    case "revoked":
+      return `earned route is down because its key (${key}) is revoked since ${since} — issue a replacement credential; this is not proof the model is dead`;
+    case "quota":
+      return `earned route is down because its key (${key}) has no quota since ${since} — restore provider quota; this is not proof the model is dead`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Credential evidence can make an existing degraded reason authoritative, but
+ * it cannot manufacture or reorder a health verdict. Corresponding model-side
+ * evidence is required before even the reason is replaced.
+ */
+export function annotateCredentialHealthReason(
+  current: HealthVerdict,
+  signals: HealthSignals,
+  credential: CredentialHealthSummary | null | undefined,
+): HealthVerdict {
+  if (current.state !== "degraded" || !credential?.fresh) return current;
+
+  const probeCode = finiteNonNegative(signals?.probeCode);
+  const authEvidence = (finiteNonNegative(signals?.recentAuthErrors) ?? 0) > 0
+    || probeCode === 401
+    || probeCode === 403;
+  const quotaEvidence = (finiteNonNegative(signals?.recentRateLimitErrors) ?? 0) > 0
+    || probeCode === 402;
+  const corroborated = credential.status === "quota"
+    ? quotaEvidence
+    : (credential.status === "invalid" || credential.status === "expired" || credential.status === "revoked")
+      ? authEvidence
+      : false;
+  if (!corroborated) return current;
+
+  const reason = credentialStatusReason(credential);
+  return reason ? { ...current, reason } : current;
 }

@@ -11,6 +11,7 @@ let tempDir: string;
 let previousHealthPath: string | undefined;
 let previousQualityPath: string | undefined;
 let previousReprobeStatePath: string | undefined;
+let previousCredentialHealthPath: string | undefined;
 let previousDashboardDb: string | undefined;
 let previousDashboardDbPath: string | undefined;
 let previousOperatorToken: string | undefined;
@@ -21,12 +22,14 @@ beforeEach(() => {
   previousHealthPath = process.env.DASHBOARD_MODEL_HEALTH_PATH;
   previousQualityPath = process.env.DASHBOARD_MODEL_QUALITY_PATH;
   previousReprobeStatePath = process.env.DASHBOARD_REPROBE_STATE_PATH;
+  previousCredentialHealthPath = process.env.DASHBOARD_CREDENTIAL_HEALTH_PATH;
   previousDashboardDb = process.env.DASHBOARD_DB;
   previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
   previousOperatorToken = process.env.OPERATOR_TOKEN;
   process.env.DASHBOARD_MODEL_HEALTH_PATH = join(tempDir, "model-health.json");
   process.env.DASHBOARD_MODEL_QUALITY_PATH = join(tempDir, "model-quality.json");
   process.env.DASHBOARD_REPROBE_STATE_PATH = join(tempDir, "model-fallback-reprobe.json");
+  process.env.DASHBOARD_CREDENTIAL_HEALTH_PATH = join(tempDir, "credential-health.json");
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
@@ -41,6 +44,8 @@ afterEach(() => {
   else process.env.DASHBOARD_MODEL_QUALITY_PATH = previousQualityPath;
   if (previousReprobeStatePath === undefined) delete process.env.DASHBOARD_REPROBE_STATE_PATH;
   else process.env.DASHBOARD_REPROBE_STATE_PATH = previousReprobeStatePath;
+  if (previousCredentialHealthPath === undefined) delete process.env.DASHBOARD_CREDENTIAL_HEALTH_PATH;
+  else process.env.DASHBOARD_CREDENTIAL_HEALTH_PATH = previousCredentialHealthPath;
   if (previousDashboardDb === undefined) delete process.env.DASHBOARD_DB;
   else process.env.DASHBOARD_DB = previousDashboardDb;
   if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
@@ -77,6 +82,41 @@ function writeQuality(logicalName = "candidate-model", entry: Record<string, unk
   }));
 }
 
+function writeCredentialHealth(input: {
+  envName: string;
+  provider: string;
+  status: string;
+  httpCode: number | null;
+  gatesModels: string[];
+  present?: boolean;
+  generatedAt?: number;
+  expiresAt?: number;
+  rawSentinel?: string;
+}): void {
+  const now = Date.now();
+  writeFileSync(process.env.DASHBOARD_CREDENTIAL_HEALTH_PATH!, JSON.stringify({
+    schemaVersion: 1,
+    policyVersion: "credential-observation-v1",
+    runId: "models-api-test-run",
+    generatedAt: input.generatedAt ?? now - 1_000,
+    expiresAt: input.expiresAt ?? now + 60 * 60 * 1000,
+    credentials: {
+      [input.envName]: {
+        provider: input.provider,
+        status: input.status,
+        httpCode: input.httpCode,
+        checkedAt: now - 2_000,
+        sinceStatus: now - 3_000,
+        gatesModels: input.gatesModels,
+        present: input.present ?? input.status !== "missing",
+        secretValue: input.rawSentinel,
+        providerBody: input.rawSentinel,
+      },
+    },
+    rawSentinel: input.rawSentinel,
+  }), { mode: 0o600 });
+}
+
 function seedEval(logicalName: string, ts: number, value: Record<string, unknown>): void {
   getDashboardDb()!.query(`
     INSERT INTO metric_samples (ts, source, key, value_json, tenant_id)
@@ -111,6 +151,7 @@ function seedGatewayCall(input: {
 
 test("modelsHandler returns a reprobe and ledger route absent from model-health as degraded", async () => {
   const logicalName = "coding-go-minimax-m3";
+  const rawSentinel = "DO_NOT_EXPOSE_RAW_CREDENTIAL";
   writeHealth("health-roster-model");
   writeFileSync(process.env.DASHBOARD_REPROBE_STATE_PATH!, JSON.stringify({
     history: {
@@ -128,6 +169,14 @@ test("modelsHandler returns a reprobe and ledger route absent from model-health 
   for (let i = 0; i < 10; i += 1) {
     seedGatewayCall({ resolvedModel: logicalName, success: 0, errorClass: "auth" });
   }
+  writeCredentialHealth({
+    envName: "OPENCODE_GO_API_KEY",
+    provider: "opencode-go",
+    status: "expired",
+    httpCode: 401,
+    gatesModels: [logicalName],
+    rawSentinel,
+  });
 
   const res = modelsHandler();
   expect(res.status).toBe(200);
@@ -144,7 +193,23 @@ test("modelsHandler returns a reprobe and ledger route absent from model-health 
   });
   expect(model.healthState).toBe("degraded");
   expect(model.healthBucket).toBe("unhealthy");
-  expect(model.healthReason).toContain("likely an expired credential");
+  expect(model.healthReason).toContain("OPENCODE_GO_API_KEY) is expired");
+  expect(model.healthReason).toContain("not proof the model is dead");
+  expect(model.credentialBlocked).toBe(true);
+  expect(model.credentialHealth).toEqual({
+    envName: "OPENCODE_GO_API_KEY",
+    provider: "opencode-go",
+    status: "expired",
+    httpCode: 401,
+    checkedAt: expect.any(Number),
+    sinceStatus: expect.any(Number),
+    gatesModels: [logicalName],
+    present: true,
+    fresh: true,
+  });
+  expect(body.data.credentials).toEqual([model.credentialHealth]);
+  expect(body.data.models.find((candidate: any) => candidate.logicalName === "health-roster-model").credentialHealth).toBeUndefined();
+  expect(JSON.stringify(body)).not.toContain(rawSentinel);
   expect(body.data.models.every((candidate: any) => (
     typeof candidate.healthState === "string"
     && typeof candidate.healthBucket === "string"
@@ -161,6 +226,29 @@ test("modelsHandler returns a reprobe and ledger route absent from model-health 
     unknown: 1,
   });
   expect(body.data.summary.healthBucketSummary).toEqual({ healthy: 0, unhealthy: 1, unknown: 1 });
+});
+
+test("modelsHandler ignores stale credential files without changing model state", async () => {
+  const logicalName = "stale-credential-route";
+  writeHealth(logicalName);
+  writeFileSync(process.env.DASHBOARD_REPROBE_STATE_PATH!, JSON.stringify({
+    history: { [logicalName]: { code: 200, streak: 0, ms: 100 } },
+  }));
+  writeCredentialHealth({
+    envName: "STALE_API_KEY",
+    provider: "test-provider",
+    status: "expired",
+    httpCode: 401,
+    gatesModels: [logicalName],
+    generatedAt: Date.now() - 14 * 60 * 60 * 1000,
+    expiresAt: Date.now() + 60 * 60 * 1000,
+  });
+
+  const body = await modelsHandler().json() as { data: any };
+  expect(body.data.credentials).toEqual([]);
+  expect(body.data.models[0].healthState).toBe("live");
+  expect(body.data.models[0].credentialHealth).toBeUndefined();
+  expect(body.data.models[0].credentialBlocked).toBeUndefined();
 });
 
 test("modelsHandler appends observed-only routes deterministically without duplicates", async () => {

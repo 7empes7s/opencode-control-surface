@@ -9,6 +9,7 @@ import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
 import {
+  credentialHealthView,
   groupVisibleModels,
   healthSummaryItems,
   modelHealthFilterText,
@@ -384,6 +385,66 @@ function FallbackChainSyncSection() {
   );
 }
 
+function CredentialsSection({ credentials }: { credentials: ModelsDetail["credentials"] }) {
+  const rows = credentials.map((credential) => credentialHealthView(credential));
+
+  const gatedModels = (models: string[]) => {
+    if (models.length === 0) return <span className="dim">None</span>;
+    if (models.length <= 3) return <span className="credential-model-list">{models.join(", ")}</span>;
+    return (
+      <details className="credential-model-details">
+        <summary>{models.slice(0, 2).join(", ")} +{models.length - 2} more</summary>
+        <div className="credential-model-list">{models.join(", ")}</div>
+      </details>
+    );
+  };
+
+  return (
+    <SectionCard
+      title="Credentials / API keys"
+      defaultOpen={true}
+      right={<span className="models-row-count">{rows.length} fresh observation{rows.length === 1 ? "" : "s"}</span>}
+    >
+      <div className="section-card-body table-wrap">
+        <table className="data-table credential-health-table">
+          <colgroup>
+            <col className="credential-env-col" />
+            <col className="credential-status-col" />
+            <col className="credential-freshness-col" />
+            <col className="credential-checked-col" />
+            <col className="credential-models-col" />
+            <col className="credential-guidance-col" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Environment name</th>
+              <th>Status</th>
+              <th>Freshness</th>
+              <th>Checked</th>
+              <th>Gated models</th>
+              <th>Operator guidance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={6} className="model-health-empty">No fresh credential-health evidence is available.</td></tr>
+            ) : rows.map((credential) => (
+              <tr key={credential.envName}>
+                <td className="mono">{credential.envName}</td>
+                <td><Pill color={credential.statusColor}>{credential.statusLabel}</Pill></td>
+                <td><Pill color={credential.freshnessColor}>{credential.freshnessLabel}</Pill></td>
+                <td className="mono dim">{credential.checkedAge}</td>
+                <td className="mono credential-models-cell">{gatedModels(credential.gatedModels)}</td>
+                <td className="credential-guidance-cell">{credential.guidance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </SectionCard>
+  );
+}
+
 export function ModelsPage() {
   const { data, loading, error, refresh } = useApi<ModelsDetail>("/api/models", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
@@ -540,6 +601,8 @@ export function ModelsPage() {
         {action.error && <span className="action-feedback err">{action.error}</span>}
         {promotionState.success && <span className="action-feedback ok">{promotionState.success}</span>}
       </div>
+
+      <CredentialsSection credentials={d.credentials ?? []} />
 
       {/* All models table */}
       <SectionCard

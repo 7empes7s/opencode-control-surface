@@ -5252,6 +5252,35 @@ body {
   font-family: var(--mono);
   font-size: 10px;
 }
+.credential-health-table {
+  min-width: 1080px;
+  table-layout: fixed;
+}
+.credential-health-table col.credential-env-col { width: 190px; }
+.credential-health-table col.credential-status-col { width: 110px; }
+.credential-health-table col.credential-freshness-col { width: 100px; }
+.credential-health-table col.credential-checked-col { width: 100px; }
+.credential-health-table col.credential-models-col { width: 300px; }
+.credential-health-table col.credential-guidance-col { width: 280px; }
+.credential-health-table td { max-width: none; }
+.credential-models-cell,
+.credential-guidance-cell {
+  vertical-align: top !important;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.credential-model-details summary {
+  min-height: 30px;
+  display: list-item;
+  box-sizing: border-box;
+  padding-block: 6px;
+  color: var(--text);
+  cursor: pointer;
+  list-style-position: inside;
+}
+.credential-model-details[open] summary { margin-bottom: 6px; }
+.credential-model-list { color: var(--text); }
 .models-table {
   table-layout: fixed;
   min-width: 1452px;
@@ -5819,6 +5848,7 @@ body {
   .stat-val { font-size: 22px; }
   .page-title { font-size: 19px; }
   .data-table .btn-sm { min-height: 44px; }
+  .credential-model-details summary { min-height: 44px; }
   .evidence-drawer {
     width: 100vw;
     padding: 14px;
