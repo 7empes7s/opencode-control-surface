@@ -765,9 +765,18 @@ if (method === "GET" && pathname === "/api/stream") {
     if (denied) return denied;
     return setupCompleteHandler(req);
   }
-  if (method === "GET" && pathname === "/api/home") return homeHandler();
-  if (method === "GET" && pathname === "/api/product-health") return productHealthHandler();
-  if (method === "GET" && pathname === "/api/metrics/showcase") return showcaseMetricsHandler();
+  if (method === "GET" && pathname === "/api/home") {
+    if (!checkToken(req)) return unauthorized();
+    return homeHandler();
+  }
+  if (method === "GET" && pathname === "/api/product-health") {
+    if (!checkToken(req)) return unauthorized();
+    return productHealthHandler();
+  }
+  if (method === "GET" && pathname === "/api/metrics/showcase") {
+    if (!checkToken(req)) return unauthorized();
+    return showcaseMetricsHandler();
+  }
   if (method === "GET" && pathname === "/api/events") {
     if (!checkToken(req)) return unauthorized();
     return eventsHandler(url);

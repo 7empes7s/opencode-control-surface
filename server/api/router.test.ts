@@ -81,6 +81,9 @@ describe("router auth gating", () => {
   });
 
   const gatedRoutes = [
+    "/api/home",
+    "/api/product-health",
+    "/api/metrics/showcase",
     "/api/governance/users",
     "/api/data-explorer/tables",
     "/api/litellm/config",
@@ -104,9 +107,6 @@ describe("router auth gating", () => {
     "/api/auth/status",
     "/api/public-status",
     "/api/version",
-    "/api/home",
-    "/api/product-health",
-    "/api/metrics/showcase",
     "/v1/models",
   ];
 

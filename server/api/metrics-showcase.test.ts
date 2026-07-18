@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleApi } from "./router.ts";
 
 function resetRateLimitMap(): void {
@@ -16,13 +16,24 @@ function request(path: string, init: RequestInit = {}): Request {
 }
 
 describe("GET /api/metrics/showcase", () => {
+  let previousOperatorToken: string | undefined;
+
   beforeEach(() => {
     resetRateLimitMap();
+    previousOperatorToken = process.env.OPERATOR_TOKEN;
+    process.env.OPERATOR_TOKEN = "metrics-showcase-test-token";
+  });
+
+  afterEach(() => {
+    if (previousOperatorToken === undefined) delete process.env.OPERATOR_TOKEN;
+    else process.env.OPERATOR_TOKEN = previousOperatorToken;
   });
 
   test("returns 200 with re-framed headline", async () => {
     const response = await handleApi(
-      request("/api/metrics/showcase"),
+      request("/api/metrics/showcase", {
+        headers: { "x-operator-token": "metrics-showcase-test-token" },
+      }),
       new URL("http://127.0.0.1:3000/api/metrics/showcase"),
     );
     expect(response.status).toBe(200);
