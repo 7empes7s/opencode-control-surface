@@ -8,7 +8,18 @@ import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
-import type { ChainDiff, HealthBucket, HealthState, ModelChainSyncDetail, ModelsDetail } from "../../server/api/types";
+import {
+  groupVisibleModels,
+  healthSummaryItems,
+  modelHealthFilterText,
+  modelHealthSortValue,
+  modelHealthView,
+  type ModelHealthPresentation,
+  type ModelsSortKey,
+} from "./modelsHealthView";
+import type { ChainDiff, ModelChainSyncDetail, ModelsDetail } from "../../server/api/types";
+
+export type { ModelsSortKey } from "./modelsHealthView";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -19,50 +30,6 @@ function qualityColor(s: string): string {
   if (s === "blocked") return "red";
   if (s === "degraded" || s === "probation") return "amber";
   return "gray";
-}
-
-function healthStateColor(state: HealthState): string {
-  if (state === "live") return "green";
-  if (state === "limited") return "amber";
-  if (state === "slow") return "blue";
-  if (state === "degraded") return "orange";
-  if (state === "dead") return "red";
-  if (state === "hang") return "maroon";
-  return "gray";
-}
-
-const HEALTH_STATE_SORT_RANK: Record<HealthState, number> = {
-  live: 0,
-  limited: 1,
-  slow: 2,
-  degraded: 3,
-  dead: 4,
-  hang: 5,
-  unknown: 6,
-};
-
-const HEALTH_GROUPS: ReadonlyArray<{
-  bucket: HealthBucket;
-  label: string;
-  states: string;
-}> = [
-  { bucket: "healthy", label: "Healthy", states: "live · limited · slow" },
-  { bucket: "unhealthy", label: "Needs attention", states: "degraded · dead · hang" },
-  { bucket: "unknown", label: "Unobserved", states: "insufficient evidence" },
-];
-
-type ModelRow = ModelsDetail["models"][number];
-
-function modelHealthState(model: ModelRow): HealthState {
-  return model.healthState ?? "unknown";
-}
-
-function modelHealthBucket(model: ModelRow): HealthBucket {
-  return model.healthBucket ?? "unknown";
-}
-
-function modelHealthReason(model: ModelRow): string {
-  return model.healthReason?.trim() || "health evidence is unavailable for this row";
 }
 
 function fmtContextWindow(ctx: number | null): string {
@@ -79,8 +46,6 @@ type Modal =
   | { type: "cooldown-clear"; model: string }
   | { type: "promotion-request"; model: string }
   | { type: "run-check" };
-
-export type ModelsSortKey = "logicalName" | "healthState" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
 
 interface ModelLifecycle {
   logicalName: string;
@@ -170,14 +135,12 @@ function Sparkline({
 
 function ModelLifecyclePanel({
   logicalName,
-  healthState,
-  healthReason,
+  health,
   refreshNonce,
   onRequestPromotion,
 }: {
   logicalName: string;
-  healthState: HealthState;
-  healthReason: string;
+  health: ModelHealthPresentation;
   refreshNonce: number;
   onRequestPromotion: (model: string) => void;
 }) {
@@ -187,13 +150,13 @@ function ModelLifecyclePanel({
     <div className="model-health-evidence">
       <div className="model-health-evidence-main">
         <span className="model-health-evidence-label">Health signal</span>
-        <Pill color={healthStateColor(healthState)}>{healthState}</Pill>
-        <span className="model-health-reason">{healthReason}</span>
+        <Pill color={health.badge.color}>{health.badge.label}</Pill>
+        <span className="model-health-reason">{health.reason}</span>
       </div>
-      {healthState === "degraded" ? (
+      {health.recoveryCallout ? (
         <div className="model-health-recovery" role="note">
           <AlertTriangle size={15} aria-hidden="true" />
-          <span><strong>Proven route needs recovery:</strong> fix its credential or quota; do not drop its earned history.</span>
+          <span><strong>{health.recoveryCallout.lead}</strong> {health.recoveryCallout.detail}</span>
         </div>
       ) : null}
     </div>
@@ -436,27 +399,8 @@ export function ModelsPage() {
   const modelsCtrl = useTableControls<NonNullable<ModelsDetail["models"]>[number], ModelsSortKey>({
     rows: data?.models ?? [],
     pageSize: 25,
-    filterText: (row) => [
-      row.logicalName,
-      row.provider,
-      row.providerType,
-      row.qualityStatus,
-      modelHealthState(row),
-      modelHealthBucket(row),
-      modelHealthReason(row),
-    ].join(" "),
-    sortValue: (row, key) => {
-      switch (key) {
-        case "logicalName": return row.logicalName;
-        case "healthState": return HEALTH_STATE_SORT_RANK[modelHealthState(row)];
-        case "qualityStatus": return row.qualityStatus ?? "";
-        case "provider": return row.provider ?? "";
-        case "contextWindow": return row.contextWindow ?? 0;
-        case "latency": return row.latency ?? Infinity;
-        case "recentFailures": return row.recentFailures ?? 0;
-        default: return "";
-      }
-    },
+    filterText: modelHealthFilterText,
+    sortValue: modelHealthSortValue,
     defaultSort: { key: "logicalName", dir: "asc" },
   });
 
@@ -466,10 +410,7 @@ export function ModelsPage() {
 
   const d = data;
   const s = d.summary;
-  const groupedModels = HEALTH_GROUPS.map((group) => ({
-    ...group,
-    rows: modelsCtrl.rows.filter((model) => modelHealthBucket(model) === group.bucket),
-  })).filter((group) => group.rows.length > 0);
+  const groupedModels = groupVisibleModels(modelsCtrl.rows);
 
   return (
     <div className="dash-page">
@@ -576,9 +517,9 @@ export function ModelsPage() {
 
       <div className="models-summary-bar">
         <div className="models-summary-group" aria-label="Health summary">
-          <Pill color="green">healthy {s.healthBucketSummary.healthy}</Pill>
-          <Pill color="red">needs attention {s.healthBucketSummary.unhealthy}</Pill>
-          <Pill color="gray">unobserved {s.healthBucketSummary.unknown}</Pill>
+          {healthSummaryItems(s.healthBucketSummary).map((item) => (
+            <Pill key={item.bucket} color={item.color}>{item.label} {item.count}</Pill>
+          ))}
         </div>
         <div className="models-summary-group models-summary-inventory" aria-label="Inventory and quality summary">
           <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
@@ -652,13 +593,14 @@ export function ModelsPage() {
                   <th colSpan={14} scope="rowgroup">
                     <div className="model-health-group-heading">
                       <span className="model-health-group-label">{group.label}</span>
-                      <span className="model-health-group-states">{group.states}</span>
+                      <span className="model-health-group-states">{group.statesLabel}</span>
                       <span className="model-health-group-count">{group.rows.length} on this page</span>
                     </div>
                   </th>
                 </tr>
-                {group.rows.map((m) => (
-                  <Fragment key={m.logicalName}>
+                {group.rows.map((m) => {
+                  const health = modelHealthView(m);
+                  return <Fragment key={m.logicalName}>
                     <tr className={expandedModel === m.logicalName ? "model-row expanded" : "model-row"}>
                     <td className={`mono model-name-cell ${m.available ? "available" : "unavailable"}`}>
                       <button
@@ -671,7 +613,7 @@ export function ModelsPage() {
                       </button>
                       <span title={m.logicalName}>{m.logicalName}</span>
                     </td>
-                    <td className="health-col"><Pill color={healthStateColor(modelHealthState(m))}>{modelHealthState(m)}</Pill></td>
+                    <td className="health-col"><Pill color={health.badge.color}>{health.badge.label}</Pill></td>
                     <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
                     <td className="quality-col"><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
                     <td className="actions-col">
@@ -711,16 +653,15 @@ export function ModelsPage() {
                         <td colSpan={14}>
                           <ModelLifecyclePanel
                             logicalName={m.logicalName}
-                            healthState={modelHealthState(m)}
-                            healthReason={modelHealthReason(m)}
+                            health={health}
                             refreshNonce={lifecycleRefreshNonce}
                             onRequestPromotion={(model) => setModal({ type: "promotion-request", model })}
                           />
                         </td>
                       </tr>
                     ) : null}
-                  </Fragment>
-                ))}
+                  </Fragment>;
+                })}
               </tbody>
             ))}
           </table>
