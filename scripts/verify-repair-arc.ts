@@ -22,6 +22,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { extractGetRoutes } from "../e2e/fresh-host/routeInventory.mjs";
 import { DEFAULT_DASHBOARD_DB_PATH } from "../server/db/dashboard.ts";
 import {
   R0_CUTOFF_MS,
@@ -48,17 +49,17 @@ import {
   type WorkRunObservation,
 } from "../server/api/repairArcVerify.ts";
 
-const DEFAULT_EVIDENCE_DIR = "/var/lib/control-surface/repair-arc-evidence";
+export const DEFAULT_EVIDENCE_DIR = "/var/lib/control-surface/repair-arc-evidence";
 const DEFAULT_REPROBE_PATH = "/var/lib/mimule/model-fallback-reprobe.json";
 const DEFAULT_MODEL_HEALTH_PATH = "/var/lib/mimule/model-health.json";
 const DEFAULT_LITELLM_CONFIG_PATH = "/etc/litellm/config.yaml";
 const DEFAULT_GATEWAY_CONFIG_PATH = "/etc/tib-builder/gateway.yaml";
 const SCHEMA_VERSION = 2;
 const COMMAND_TIMEOUT_MS = 30_000;
-const COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+export const COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const HTTP_MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_EVIDENCE_ARTIFACT_BYTES = 5 * 1024 * 1024;
-const MAX_FIXED_INPUT_BYTES = 4 * 1024 * 1024;
+export const MAX_FIXED_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_GLOBAL_EVIDENCE_ARTIFACTS = 4_096;
 const MAX_CANDIDATE_EVIDENCE_ARTIFACTS = 128;
 const WRITER_LOCK_STALE_MS = 15 * 60 * 1_000;
@@ -1182,7 +1183,7 @@ export function readOperatorInput(path: string | undefined): OperatorPayload {
   return value as OperatorPayload;
 }
 
-const VALIDATION_COMMANDS = {
+export const VALIDATION_COMMANDS = {
   focused: [
     "bun", "test",
     "server/gateway/router.test.ts",
@@ -1191,7 +1192,8 @@ const VALIDATION_COMMANDS = {
     "server/api/router.test.ts",
     "server/api/repairArcVerify.test.ts",
     "app/routes/modelsHealthView.test.ts",
-    "--timeout=60000", "--max-concurrency=4", "--reporter=dots",
+    "e2e/fresh-host/routeInventory.test.ts",
+    "--timeout=60000", "--max-concurrency=4",
   ],
   focusedEnv: { DASHBOARD_DB: "1" },
   typecheck: ["bun", "run", "typecheck"],
@@ -1282,6 +1284,169 @@ function failedValidation(commit: string | null, candidateClean: boolean, error:
   };
 }
 
+type ValidationCommandKey = "focused" | "typecheck" | "build" | "freshHost";
+type JunitSuite = { file: string; tests: number; assertions: number; failures: number; testcases: string[] };
+
+function xmlAttributes(source: string): Record<string, string> {
+  return Object.fromEntries([...source.matchAll(/([A-Za-z_][\w:.-]*)="([^"]*)"/g)].map((match) => [match[1]!, match[2]!])) as Record<string, string>;
+}
+
+function junitCounts(bytes: Buffer): { failures: number; errors: number; suites: JunitSuite[] } {
+  const text = bytes.toString("utf8");
+  const top = text.match(/<testsuites\b([^>]*)>/);
+  if (!top) throw new Error("focused JUnit XML has no testsuites root");
+  const root = xmlAttributes(top[1]!);
+  const failures = Number(root.failures ?? "0");
+  const errors = Number(root.errors ?? "0");
+  if (!Number.isInteger(failures) || failures < 0 || !Number.isInteger(errors) || errors < 0) throw new Error("focused JUnit XML counts are malformed");
+  const suites: JunitSuite[] = [];
+  for (const match of text.matchAll(/<testsuite\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testsuite>)/g)) {
+    const attributes = xmlAttributes(match[1]!);
+    const integer = (key: string): number => {
+      const value = Number(attributes[key] ?? "0");
+      if (!Number.isInteger(value) || value < 0) throw new Error("focused JUnit suite counts are malformed");
+      return value;
+    };
+    if (!attributes.file) throw new Error("focused JUnit suite file is missing");
+    suites.push({
+      file: attributes.file,
+      tests: integer("tests"),
+      assertions: integer("assertions"),
+      failures: integer("failures"),
+      testcases: [...(match[2] ?? "").matchAll(/<testcase\b([^>]*)/g)].map((testcase) => xmlAttributes(testcase[1]!).name ?? ""),
+    });
+  }
+  return { failures, errors, suites };
+}
+
+function routeInventoryHash(routes: string[]): string {
+  return createHash("sha256").update(JSON.stringify([...routes].sort())).digest("hex");
+}
+
+function sanitizedProcessEntries(value: unknown): value is Array<{ pid: number; argvSha256: string }> {
+  return Array.isArray(value) && value.every((entry) => !!entry && typeof entry === "object" && !Array.isArray(entry)
+    && exactObjectKeys(entry as Record<string, unknown>, ["pid", "argvSha256"])
+    && Number.isInteger((entry as Record<string, unknown>).pid) && Number((entry as Record<string, unknown>).pid) > 0
+    && isSha256((entry as Record<string, unknown>).argvSha256));
+}
+
+function expectedV3FocusedArgv(argv: unknown): boolean {
+  if (!Array.isArray(argv) || argv.length !== VALIDATION_COMMANDS.focused.length + 2
+    || JSON.stringify(argv.slice(0, VALIDATION_COMMANDS.focused.length)) !== JSON.stringify(VALIDATION_COMMANDS.focused)
+    || argv[argv.length - 2] !== "--reporter=junit") return false;
+  const outfile = argv[argv.length - 1];
+  return typeof outfile === "string" && outfile.startsWith("--reporter-outfile=")
+    && outfile.slice("--reporter-outfile=".length).endsWith(".junit.xml")
+    && !outfile.includes("\0");
+}
+
+function collectValidationManifestV3(
+  manifest: Record<string, unknown>, pointer: ValidationManifestPointer, commit: string | null, now: number,
+  candidateClean: boolean, candidateTree: string | null, receiptRoot: string, routerSourcePath: string, classifierSourcePath: string,
+): ValidationObservation {
+  if (!exactObjectKeys(manifest, ["schemaVersion", "kind", "runId", "candidateCommit", "candidateTree", "recordedAt", "processGuard", "routeInventory", "commands"])
+    || manifest.kind !== "spec45-validation" || !isUuidV4(manifest.runId) || manifest.candidateCommit !== commit
+    || manifest.candidateTree !== candidateTree || typeof commit !== "string" || !/^[a-f0-9]{40}$/i.test(commit)
+    || typeof candidateTree !== "string" || !/^[a-f0-9]{40}$/i.test(candidateTree)
+    || basename(pointer.manifestPath) !== `validation-${commit}-${manifest.runId}.json`
+    || !Number.isInteger(manifest.recordedAt) || (manifest.recordedAt as number) < R0_CUTOFF_MS || (manifest.recordedAt as number) > now) {
+    throw new Error("validation manifest provenance is invalid");
+  }
+  if (!manifest.processGuard || typeof manifest.processGuard !== "object" || Array.isArray(manifest.processGuard)
+    || !exactObjectKeys(manifest.processGuard as Record<string, unknown>, ["before", "after", "forbiddenProcessesSpawned"])) throw new Error("validation process guard is invalid");
+  const guard = manifest.processGuard as Record<string, unknown>;
+  if (!sanitizedProcessEntries(guard.before) || !sanitizedProcessEntries(guard.after) || typeof guard.forbiddenProcessesSpawned !== "boolean") throw new Error("validation process guard is malformed");
+  const before = new Set(guard.before.map((entry) => entry.argvSha256));
+  const spawned = guard.after.some((entry) => !before.has(entry.argvSha256));
+  if (guard.forbiddenProcessesSpawned !== spawned || spawned) throw new Error("validation process guard records forbidden processes");
+  if (!manifest.commands || typeof manifest.commands !== "object" || Array.isArray(manifest.commands)
+    || !exactObjectKeys(manifest.commands as Record<string, unknown>, ["focused", "typecheck", "build", "freshHost"])) throw new Error("validation manifest commands are invalid");
+  const expectedArgv: Record<ValidationCommandKey, string[]> = {
+    focused: VALIDATION_COMMANDS.focused, typecheck: VALIDATION_COMMANDS.typecheck, build: VALIDATION_COMMANDS.build, freshHost: VALIDATION_COMMANDS.freshHost,
+  };
+  const expectedEnv: Record<ValidationCommandKey, Record<string, string>> = { focused: VALIDATION_COMMANDS.focusedEnv, typecheck: {}, build: {}, freshHost: {} };
+  const commands = manifest.commands as Record<ValidationCommandKey, Record<string, unknown>>;
+  const ordered: Record<string, unknown>[] = [];
+  for (const key of ["focused", "typecheck", "build", "freshHost"] as const) {
+    const record = commands[key];
+    const keys = key === "focused"
+      ? ["startedAt", "finishedAt", "argv", "env", "exitCode", "source", "output", "junit"]
+      : key === "freshHost"
+        ? ["startedAt", "finishedAt", "argv", "env", "exitCode", "source", "output", "report"]
+        : ["startedAt", "finishedAt", "argv", "env", "exitCode", "source", "output"];
+    if (!record || !exactObjectKeys(record, keys)
+      || (key === "focused" ? !expectedV3FocusedArgv(record.argv) : JSON.stringify(record.argv) !== JSON.stringify(expectedArgv[key]))
+      || JSON.stringify(record.env) !== JSON.stringify(expectedEnv[key]) || !Number.isInteger(record.startedAt) || !Number.isInteger(record.finishedAt)
+      || (record.startedAt as number) < R0_CUTOFF_MS || (record.finishedAt as number) <= (record.startedAt as number)
+      || (record.finishedAt as number) - (record.startedAt as number) > 60 * 60 * 1_000 || (record.finishedAt as number) > (manifest.recordedAt as number) || record.exitCode !== 0
+      || !record.source || typeof record.source !== "object" || Array.isArray(record.source)
+      || !exactObjectKeys(record.source as Record<string, unknown>, ["head", "tree", "detached", "cleanBefore", "cleanAfter"])
+      || (record.source as Record<string, unknown>).head !== commit || (record.source as Record<string, unknown>).tree !== candidateTree
+      || (record.source as Record<string, unknown>).detached !== true || (record.source as Record<string, unknown>).cleanBefore !== true || (record.source as Record<string, unknown>).cleanAfter !== true
+      || !record.output || typeof record.output !== "object" || Array.isArray(record.output) || !exactObjectKeys(record.output as Record<string, unknown>, ["path", "sha256", "bytes"])) throw new Error(`validation ${key} command provenance is invalid`);
+    const output = record.output as Record<string, unknown>;
+    const outputPath = join(receiptRoot, `validation-${commit}-${manifest.runId}-${key}.log`);
+    if (output.path !== outputPath || !isSha256(output.sha256) || !Number.isInteger(output.bytes) || (output.bytes as number) <= 0 || (output.bytes as number) > COMMAND_MAX_BUFFER_BYTES) throw new Error(`validation ${key} output reference is invalid`);
+    const loaded = readImmutableArtifact(outputPath, output.sha256, receiptRoot, new RegExp(`^validation-${commit}-${manifest.runId}-${key}\\.log$`), COMMAND_MAX_BUFFER_BYTES, `validation ${key} output`);
+    if (loaded.bytes.byteLength !== output.bytes) throw new Error(`validation ${key} output byte count does not match`);
+    ordered.push(record);
+  }
+  if (ordered.some((record, index) => index > 0 && (record.startedAt as number) < (ordered[index - 1]!.finishedAt as number))
+    || (manifest.recordedAt as number) - (commands.freshHost.finishedAt as number) > 10 * 60 * 1_000) throw new Error("validation command windows overlap or are stale");
+  const junit = commands.focused.junit as Record<string, unknown>;
+  const junitPath = join(receiptRoot, `validation-${commit}-${manifest.runId}-focused.junit.xml`);
+  if (!junit || typeof junit !== "object" || Array.isArray(junit) || !exactObjectKeys(junit, ["path", "sha256", "bytes"])
+    || junit.path !== junitPath || !isSha256(junit.sha256) || !Number.isInteger(junit.bytes) || (junit.bytes as number) <= 0 || (junit.bytes as number) > MAX_FIXED_INPUT_BYTES) throw new Error("focused JUnit reference is invalid");
+  const junitData = readImmutableArtifact(junitPath, junit.sha256, receiptRoot, new RegExp(`^validation-${commit}-${manifest.runId}-focused\\.junit\\.xml$`), MAX_FIXED_INPUT_BYTES, "focused JUnit");
+  if (junitData.bytes.byteLength !== junit.bytes) throw new Error("focused JUnit byte count does not match");
+  const parsedJunit = junitCounts(junitData.bytes);
+  if (parsedJunit.failures !== 0 || parsedJunit.errors !== 0 || parsedJunit.suites.length !== 7 || parsedJunit.suites.some((suite) => suite.failures !== 0)) throw new Error("focused JUnit results do not pass");
+  const classifierSuite = parsedJunit.suites.find((suite) => suite.file === "server/gateway/router.test.ts");
+  const uiSuite = parsedJunit.suites.find((suite) => suite.file === "app/routes/modelsHealthView.test.ts");
+  // router.test.ts is the focused classifier-contract suite; its testcase
+  // count is the machine-readable precedence-table count, never log text.
+  const classifierCases = classifierSuite?.testcases.length ?? 0;
+  if (!classifierSuite || !uiSuite || classifierCases < 12 || uiSuite.assertions < 1) throw new Error("focused JUnit required suite counts are insufficient");
+  const fresh = commands.freshHost;
+  const reportRef = fresh.report as Record<string, unknown>;
+  const reportPath = join(receiptRoot, `fresh-host-${commit}-${manifest.runId}.json`);
+  if (!reportRef || typeof reportRef !== "object" || Array.isArray(reportRef) || !exactObjectKeys(reportRef, ["path", "sha256", "bytes"])
+    || reportRef.path !== reportPath || !isSha256(reportRef.sha256) || !Number.isInteger(reportRef.bytes) || (reportRef.bytes as number) <= 0 || (reportRef.bytes as number) > MAX_FIXED_INPUT_BYTES) throw new Error("fresh-host report reference is invalid");
+  const reportData = readImmutableArtifact(reportPath, reportRef.sha256, receiptRoot, new RegExp(`^fresh-host-${commit}-${manifest.runId}\\.json$`), MAX_FIXED_INPUT_BYTES, "fresh-host report");
+  if (reportData.bytes.byteLength !== reportRef.bytes) throw new Error("fresh-host report byte count does not match");
+  const report = safeJsonParse(reportData.bytes.toString("utf8")) as Record<string, unknown>;
+  if (!report || typeof report !== "object" || Array.isArray(report) || !exactObjectKeys(report, ["schemaVersion", "kind", "runId", "candidateCommit", "candidateTree", "generatedAt", "counts", "results"])
+    || report.schemaVersion !== 2 || report.kind !== "fresh-host-api-report" || report.runId !== manifest.runId || report.candidateCommit !== commit || report.candidateTree !== candidateTree
+    || !Number.isInteger(report.generatedAt) || (report.generatedAt as number) < (fresh.startedAt as number) || (report.generatedAt as number) > (fresh.finishedAt as number)
+    || !report.counts || typeof report.counts !== "object" || Array.isArray(report.counts) || !exactObjectKeys(report.counts as Record<string, unknown>, ["HONEST", "LEAK", "CRASH", "ERROR-5xx"]) || !Array.isArray(report.results) || report.results.length < 1) throw new Error("fresh-host report provenance is invalid");
+  const counts = { HONEST: 0, LEAK: 0, CRASH: 0, "ERROR-5xx": 0 };
+  const routes: string[] = [];
+  for (const raw of report.results) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !exactObjectKeys(raw as Record<string, unknown>, ["route", "status", "verdict", "elapsedMs", "detail"])) throw new Error("fresh-host result row is invalid");
+    const row = raw as Record<string, unknown>;
+    if (typeof row.route !== "string" || !row.route.startsWith("/") || row.route.includes("\0") || !Number.isInteger(row.status) || (row.status as number) < 0 || (row.status as number) > 599
+      || !Number.isInteger(row.elapsedMs) || (row.elapsedMs as number) < 0 || typeof row.detail !== "string" || row.detail.length > 1_000 || !Object.hasOwn(counts, String(row.verdict))) throw new Error("fresh-host result row shape is invalid");
+    routes.push(row.route); counts[row.verdict as keyof typeof counts] += 1;
+  }
+  const canonical = ["/", ...extractGetRoutes(readBoundedRegularFile(routerSourcePath, MAX_FIXED_INPUT_BYTES, "candidate API router").toString("utf8"))].sort();
+  const reportedCounts = report.counts as Record<string, unknown>;
+  if (new Set(routes).size !== routes.length || JSON.stringify([...routes].sort()) !== JSON.stringify(canonical)
+    || Object.entries(counts).some(([key, value]) => reportedCounts[key] !== value) || counts.HONEST !== routes.length) throw new Error("fresh-host report counts or route set do not pass");
+  const inventory = manifest.routeInventory as Record<string, unknown>;
+  if (!inventory || typeof inventory !== "object" || Array.isArray(inventory) || !exactObjectKeys(inventory, ["routes", "sha256"])
+    || !Array.isArray(inventory.routes) || !inventory.routes.every((route) => typeof route === "string") || !isSha256(inventory.sha256)
+    || JSON.stringify(inventory.routes) !== JSON.stringify(canonical) || inventory.sha256 !== routeInventoryHash(canonical)) throw new Error("validation route inventory is invalid");
+  const classifierSource = readBoundedRegularFile(classifierSourcePath, MAX_FIXED_INPUT_BYTES, "candidate gateway router").toString("utf8");
+  const sourceVerified = /if \(\/\^litellm 5\\d\\d:\/\.test\(msg\)\) return "server_error";/.test(classifierSource);
+  if (!sourceVerified) throw new Error("anchored classifier source is not present in the candidate router");
+  return { recordedAt: manifest.recordedAt as number, commit, manifestVerified: true, candidateTrackedClean: candidateClean,
+    classifier: { sourceVerified, testsPassed: classifierSuite.failures === 0, cases: classifierCases, evidenceRef: junitPath },
+    bounded: { focusedTestsPassed: true, testFiles: parsedJunit.suites.length, typecheckPassed: true, buildPassed: true, forbiddenProcessesSpawned: false, evidenceRef: join(receiptRoot, `validation-${commit}-${manifest.runId}.json`) },
+    ui: { contractTestsPassed: uiSuite.failures === 0, assertions: uiSuite.assertions, evidenceRef: junitPath },
+    freshHost: { apiOnly: true, total: routes.length, honest: counts.HONEST, leak: counts.LEAK, crash: counts.CRASH, error5xx: counts["ERROR-5xx"], commit, evidenceRef: reportPath },
+  };
+}
+
 export function collectValidationManifest(
   pointer: ValidationManifestPointer | undefined,
   commit: string | null,
@@ -1297,6 +1462,10 @@ export function collectValidationManifest(
     const parsed = readImmutableReceipt(pointer.manifestPath, pointer.manifestSha256, "validation", receiptRoot).value;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("validation manifest must be an object");
     const manifest = parsed as Record<string, unknown>;
+    if (manifest.schemaVersion === 3) {
+      return collectValidationManifestV3(manifest, pointer, commit, now, candidateClean, candidateTree, receiptRoot, routerSourcePath, classifierSourcePath);
+    }
+    if (manifest.schemaVersion !== 2) throw new Error("unsupported validation manifest schema");
     if (!exactObjectKeys(manifest, ["schemaVersion", "kind", "runId", "candidateCommit", "candidateTree", "recordedAt", "commands"])) {
       throw new Error("validation manifest has unknown or missing fields");
     }
@@ -1315,7 +1484,11 @@ export function collectValidationManifest(
     }
     type CommandKey = "focused" | "typecheck" | "build" | "freshHost";
     const expectedArgv: Record<CommandKey, string[]> = {
-      focused: VALIDATION_COMMANDS.focused,
+      focused: [
+        "bun", "test", "server/gateway/router.test.ts", "server/api/modelHealthState.test.ts",
+        "server/api/models.test.ts", "server/api/router.test.ts", "server/api/repairArcVerify.test.ts",
+        "app/routes/modelsHealthView.test.ts", "--timeout=60000", "--max-concurrency=4", "--reporter=dots",
+      ],
       typecheck: VALIDATION_COMMANDS.typecheck,
       build: VALIDATION_COMMANDS.build,
       freshHost: VALIDATION_COMMANDS.freshHost,
@@ -1416,12 +1589,7 @@ export function collectValidationManifest(
     }
     if (new Set(routes).size !== routes.length) throw new Error("fresh-host report contains duplicate routes");
     const routerSource = readBoundedRegularFile(routerSourcePath, MAX_FIXED_INPUT_BYTES, "candidate API router").toString("utf8");
-    const expectedRoutes = new Set<string>(["/"]);
-    const routePattern = /method === "GET" && pathname === "([^"]+)"/g;
-    let match: RegExpExecArray | null;
-    while ((match = routePattern.exec(routerSource))) {
-      if (match[1] !== "/api/stream") expectedRoutes.add(match[1]!);
-    }
+    const expectedRoutes = new Set<string>(["/", ...extractGetRoutes(routerSource)]);
     if (JSON.stringify([...new Set(routes)].sort()) !== JSON.stringify([...expectedRoutes].sort())) {
       throw new Error("fresh-host report route set does not match the candidate router");
     }

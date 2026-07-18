@@ -293,6 +293,48 @@ function validationBundle(options: { omitRoute?: boolean; reportCommit?: string 
   return { receiptRoot, sourceRoot, routerPath, classifierPath, commit, tree, now: startedAt + 5_000, manifest };
 }
 
+function validationBundleV3() {
+  const base = validationBundle();
+  const { receiptRoot, sourceRoot, routerPath, classifierPath, commit, tree, now } = base;
+  const runId = "10000000-0000-4000-8000-000000000003";
+  const startedAt = now - 5_000;
+  const names = [
+    "server/gateway/router.test.ts", "server/api/modelHealthState.test.ts", "server/api/models.test.ts", "server/api/router.test.ts",
+    "server/api/repairArcVerify.test.ts", "app/routes/modelsHealthView.test.ts", "e2e/fresh-host/routeInventory.test.ts",
+  ];
+  const junit = `<testsuites tests="20" assertions="20" failures="0" errors="0">${names.map((file, index) => {
+    const cases = file === "server/gateway/router.test.ts"
+      ? Array.from({ length: 12 }, (_, caseIndex) => `<testcase name="classifyError > case ${caseIndex}" assertions="1"/>`).join("")
+      : "<testcase name=\"passes\" assertions=\"1\"/>";
+    return `<testsuite name="suite-${index}" file="${file}" tests="${file === "server/gateway/router.test.ts" ? 12 : 1}" assertions="${file === "app/routes/modelsHealthView.test.ts" ? 1 : 0}" failures="0">${cases}</testsuite>`;
+  }).join("")}</testsuites>`;
+  const logs = Object.fromEntries((["focused", "typecheck", "build", "freshHost"] as const).map((key) => [
+    key, writeImmutableTestFile(join(receiptRoot, `validation-${commit}-${runId}-${key}.log`), `${key} passed\n`),
+  ])) as Record<"focused" | "typecheck" | "build" | "freshHost", { path: string; sha256: string; bytes: number }>;
+  const junitRef = writeImmutableTestFile(join(receiptRoot, `validation-${commit}-${runId}-focused.junit.xml`), junit);
+  const routes = ["/", "/api/health"];
+  const reportBody = JSON.stringify({ schemaVersion: 2, kind: "fresh-host-api-report", runId, candidateCommit: commit, candidateTree: tree,
+    generatedAt: startedAt + 3_500, counts: { HONEST: 2, LEAK: 0, CRASH: 0, "ERROR-5xx": 0 },
+    results: [{ route: "/", status: 200, verdict: "HONEST", elapsedMs: 1, detail: "" }, { route: "/api/health", status: 200, verdict: "HONEST", elapsedMs: 1, detail: "" }],
+  });
+  const report = writeImmutableTestFile(join(receiptRoot, `fresh-host-${commit}-${runId}.json`), reportBody);
+  const command = (key: "focused" | "typecheck" | "build" | "freshHost", index: number) => ({
+    startedAt: startedAt + index * 1_000, finishedAt: startedAt + (index + 1) * 1_000,
+    argv: key === "focused"
+      ? ["bun", "test", ...names, "--timeout=60000", "--max-concurrency=4", "--reporter=junit", "--reporter-outfile=/tmp/candidate/.v3-focused.junit.xml"]
+      : key === "typecheck" ? ["bun", "run", "typecheck"] : key === "build" ? ["bun", "run", "build"] : ["e2e/fresh-host/run.sh"],
+    env: key === "focused" ? { DASHBOARD_DB: "1" } : {}, exitCode: 0,
+    source: { head: commit, tree, detached: true, cleanBefore: true, cleanAfter: true }, output: logs[key],
+  });
+  const commands = { focused: { ...command("focused", 0), junit: junitRef }, typecheck: command("typecheck", 1), build: command("build", 2), freshHost: { ...command("freshHost", 3), report } };
+  const manifestBody = JSON.stringify({ schemaVersion: 3, kind: "spec45-validation", runId, candidateCommit: commit, candidateTree: tree,
+    recordedAt: startedAt + 4_100, processGuard: { before: [], after: [], forbiddenProcessesSpawned: false },
+    routeInventory: { routes, sha256: sha256(JSON.stringify(routes)) }, commands,
+  });
+  const manifest = writeImmutableTestFile(join(receiptRoot, `validation-${commit}-${runId}.json`), manifestBody);
+  return { ...base, runId, manifest, commands, routes };
+}
+
 test("R0 uses the exact unified cutoff and empty post-cutoff data is pending without NaN", () => {
   const before = gatewayRow({ id: 1, ts: R0_CUTOFF_MS - 1 });
   const checks = evaluateR0([before]);
@@ -1127,6 +1169,42 @@ test("validation schema v2 remains non-authoritative even after its immutable ar
     wrongCandidate.routerPath,
     wrongCandidate.classifierPath,
   )).toMatchObject({ manifestVerified: false });
+});
+
+test("candidate-bound validation schema v3 produces a passing static-validation observation", () => {
+  const bundle = validationBundleV3();
+  const observation = collectValidationManifest(
+    { manifestPath: bundle.manifest.path, manifestSha256: bundle.manifest.sha256 }, bundle.commit, bundle.now, true,
+    bundle.tree, bundle.receiptRoot, bundle.routerPath, bundle.classifierPath,
+  );
+  expect(observation).toMatchObject({ manifestVerified: true, candidateTrackedClean: true, commit: bundle.commit });
+  expect(evaluateValidation(observation, bundle.commit, bundle.now).every((check) => check.verdict === "PASS")).toBeTrue();
+});
+
+test("validation schema v3 rejects provenance, process-guard, and immutable-artifact breaches", () => {
+  const bundle = validationBundleV3();
+  const mutate = (change: (value: Record<string, unknown>) => void) => {
+    const value = JSON.parse(readFileSync(bundle.manifest.path, "utf8")) as Record<string, unknown>;
+    change(value);
+    chmodSync(bundle.manifest.path, 0o644);
+    writeFileSync(bundle.manifest.path, JSON.stringify(value));
+    chmodSync(bundle.manifest.path, 0o444);
+    return { manifestPath: bundle.manifest.path, manifestSha256: sha256(readFileSync(bundle.manifest.path)) };
+  };
+  const wrongCommit = mutate((value) => { value.candidateCommit = "c".repeat(40); });
+  expect(collectValidationManifest(wrongCommit, bundle.commit, bundle.now, true, bundle.tree, bundle.receiptRoot, bundle.routerPath, bundle.classifierPath)?.manifestVerified).toBeFalse();
+  const badGuard = mutate((value) => {
+    value.candidateCommit = bundle.commit;
+    (value.processGuard as Record<string, unknown>).after = [{ pid: 7, argvSha256: "d".repeat(64) }];
+    (value.processGuard as Record<string, unknown>).forbiddenProcessesSpawned = true;
+  });
+  expect(collectValidationManifest(badGuard, bundle.commit, bundle.now, true, bundle.tree, bundle.receiptRoot, bundle.routerPath, bundle.classifierPath)?.manifestError).toContain("process guard");
+  const restoredGuard = mutate((value) => {
+    (value.processGuard as Record<string, unknown>).after = [];
+    (value.processGuard as Record<string, unknown>).forbiddenProcessesSpawned = false;
+  });
+  chmodSync(bundle.commands.focused.output.path as string, 0o644);
+  expect(collectValidationManifest(restoredGuard, bundle.commit, bundle.now, true, bundle.tree, bundle.receiptRoot, bundle.routerPath, bundle.classifierPath)?.manifestError).toContain("immutable");
 });
 
 test("live surface requires an HTML application-shell marker, not status 200 alone", () => {

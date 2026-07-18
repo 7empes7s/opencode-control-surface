@@ -18,6 +18,7 @@
 // Usage: bun run probe.mjs <routerTsPath> <baseUrl> <token> <reportMdPath>
 
 import { readFileSync } from "node:fs";
+import { extractGetRoutes } from "./routeInventory.mjs";
 
 const [routerPath, baseUrl, token, reportPath] = process.argv.slice(2);
 if (!routerPath || !baseUrl || !token || !reportPath) {
@@ -38,16 +39,8 @@ const HONEST_MARKERS = [
 // e.g. "totalPublished":0, "balance":null, "exists":false, "downUnits":[].
 const HONEST_VALUE_RE = /"[A-Za-z0-9_]+"\s*:\s*(0(?![0-9])|null|false|""|\[\]|\{\})/;
 
-function extractRoutes(routerSrc) {
-  const re = /method === "GET" && pathname === "([^"]+)"/g;
-  const routes = new Set();
-  let m;
-  while ((m = re.exec(routerSrc))) routes.add(m[1]);
-  return Array.from(routes).sort();
-}
-
 const routerSrc = readFileSync(routerPath, "utf8");
-let routes = extractRoutes(routerSrc);
+let routes = extractGetRoutes(routerSrc);
 
 // "/" is served outside router.ts (static shell) — always probe it.
 routes.unshift("/");
