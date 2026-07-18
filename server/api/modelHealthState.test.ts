@@ -66,17 +66,20 @@ test("dead: an unproven route at zero percent over twenty recent calls is unheal
   expect(verdict.reason).toContain("46 rate-limits");
 });
 
-test("dead: a hard 400 or 404 probe is dead only without earned history", () => {
+test("dead: a hard 400, 404, or 410 probe is dead only without earned history", () => {
   expect(deriveHealthState({ probeCode: 404, probeMs: 100 }).state).toBe("dead");
+  expect(deriveHealthState({ probeCode: 410, probeMs: 100 }).state).toBe("dead");
   expect(deriveHealthState({ probeCode: 404, probeMs: 100, allTimeCalls: 100, allTimeSuccesses: 80 }).state).toBe("unknown");
 });
 
-test("hang: probe code zero or null needs three consecutive misses", () => {
+test("hang: timeout-like probe codes need three consecutive misses", () => {
   expect(deriveHealthState({ probeCode: 0, probeMs: 30_000, probeStreak: 2 }).state).not.toBe("hang");
   const zeroVerdict = deriveHealthState({ probeCode: 0, probeMs: 30_000, probeStreak: 3 });
   expect(zeroVerdict).toMatchObject({ state: "hang", bucket: "unhealthy" });
   expect(zeroVerdict.reason).toContain("3× consecutive");
   expect(deriveHealthState({ probeCode: null, probeStreak: 3 }).state).toBe("hang");
+  expect(deriveHealthState({ probeCode: 408, probeMs: 20_000, probeStreak: 2 }).state).not.toBe("hang");
+  expect(deriveHealthState({ probeCode: 408, probeMs: 20_000, probeStreak: 3 }).state).toBe("hang");
 });
 
 test("unknown: absent probe and ledger evidence never fabricates liveness", () => {

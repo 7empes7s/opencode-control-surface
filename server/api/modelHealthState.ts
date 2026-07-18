@@ -99,12 +99,12 @@ export function deriveHealthState(signals: HealthSignals): HealthVerdict {
     return verdict("degraded", `${prefix}, now probe ${probeCode} — likely an expired credential or quota`);
   }
 
-  if ((probeCode === 0 || probeCode === null) && probeStreak !== undefined && probeStreak >= HANG_STREAK) {
+  if ((probeCode === 0 || probeCode === 408 || probeCode === null) && probeStreak !== undefined && probeStreak >= HANG_STREAK) {
     const timeoutMs = probeMs !== undefined && probeMs > 0 ? probeMs : SLOW_MS_HI;
     return verdict("hang", `no answer in ${formatSeconds(timeoutMs)}s, ${probeStreak}× consecutive`);
   }
 
-  const hardDeadProbe = probeCode === 400 || probeCode === 404;
+  const hardDeadProbe = probeCode === 400 || probeCode === 404 || probeCode === 410;
   const recentDead = Boolean(recent && recent.calls >= DEAD_RECENT_FLOOR && recent.successes === 0);
   if (!earned && (hardDeadProbe || recentDead)) {
     if (recentDead) {
