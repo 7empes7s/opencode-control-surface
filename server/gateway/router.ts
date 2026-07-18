@@ -429,13 +429,13 @@ export function getGatewayRoutePlanForGatewayAdmin(logicalModel: string): string
   return buildChain(logicalModel);
 }
 
-function classifyError(e: Error): string {
+export function classifyError(e: Error): string {
   const msg = e.message.toLowerCase();
   if (msg.includes("timeout") || msg.includes("abort")) return "timeout";
   if (msg.includes("429") || msg.includes("rate limit")) return "rate_limit";
   if (msg.includes("401") || msg.includes("unauthorized")) return "auth";
   if (msg.includes("503") || msg.includes("unavailable")) return "unavailable";
-  if (msg.includes("5")) return "server_error";
+  if (/^litellm 5\d\d:/.test(msg)) return "server_error";
   return "unknown";
 }
 

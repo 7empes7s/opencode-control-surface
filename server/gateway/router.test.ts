@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import type { CompletionRequest, CompletionResponse } from "./adapters/base.ts";
 import { _resetGatewayConfigCacheForTests } from "./config.ts";
-import { gatewayComplete, getCircuitStates, resetGatewayRouteOverrideStateForTests } from "./router.ts";
+import { classifyError, gatewayComplete, getCircuitStates, resetGatewayRouteOverrideStateForTests } from "./router.ts";
 
 type GatewayRow = {
   trace_id: string | null;
@@ -374,4 +374,27 @@ describe("gatewayComplete infrastructure failures", () => {
     expect(rows[0].trace_id).toBe("infra-trace-id");
     expect(rows[0].error_class).toBe("gateway_unreachable");
   });
+});
+
+describe("classifyError", () => {
+  const cases: Array<[message: string, expected: string]> = [
+    ["LiteLLM 500: internal server error", "server_error"],
+    ["LiteLLM 502: bad gateway", "server_error"],
+    ["LiteLLM 504: upstream gateway error", "server_error"],
+    ["LiteLLM 504: upstream timeout", "timeout"],
+    ["LiteLLM 400: model gpt-5 not found", "unknown"],
+    ["LiteLLM 400: expected 5 candidates", "unknown"],
+    ["LiteLLM 400: expected 500 tokens", "unknown"],
+    ["request failed after 1500ms", "unknown"],
+    ["LiteLLM 429: rate limited", "rate_limit"],
+    ["LiteLLM 401: unauthorized", "auth"],
+    ["LiteLLM 503: service unavailable", "unavailable"],
+    ["The operation was aborted", "timeout"],
+  ];
+
+  for (const [message, expected] of cases) {
+    test(`${message} -> ${expected}`, () => {
+      expect(classifyError(new Error(message))).toBe(expected);
+    });
+  }
 });
