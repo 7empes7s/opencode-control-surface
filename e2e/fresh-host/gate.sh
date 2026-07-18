@@ -9,8 +9,7 @@
 #
 # Exits non-zero if:
 #   - REPORT.json shows any CRASH or ERROR-5xx verdict for any route, or
-#   - REPORT.json shows any LEAK beyond the one documented open leak
-#     (/api/actions/catalog, vastInstance/vastBalance source-status keys), or
+#   - REPORT.json shows any LEAK verdict for any route, or
 #   - the fresh-host-ui Playwright project reports any failing spec.
 #
 # The one previously-documented KNOWN/ACCEPTED finding (fake-green "0 success"
@@ -55,10 +54,12 @@ if [ ! -f "$REPORT_JSON" ]; then
   GATE_FAIL=1
   CRASH_COUNT="?"
   ERR5XX_COUNT="?"
-  UNEXPECTED_LEAKS=""
+  LEAK_COUNT="?"
+  LEAKS=""
 else
   CRASH_COUNT=$(jq -r '.counts.CRASH // 0' "$REPORT_JSON")
   ERR5XX_COUNT=$(jq -r '.counts["ERROR-5xx"] // 0' "$REPORT_JSON")
+  LEAK_COUNT=$(jq -r '.counts.LEAK // 0' "$REPORT_JSON")
 
   if [ "$CRASH_COUNT" != "0" ]; then
     echo "[gate.sh] FAIL: $CRASH_COUNT CRASH verdict(s) in REPORT.json"
@@ -69,24 +70,15 @@ else
     GATE_FAIL=1
   fi
 
-  # Any LEAK not matching the one documented/accepted open leak
-  # (/api/actions/catalog, needle "vast" only -- vastInstance/vastBalance
-  # source-status keys) is a NEW leak and fails the gate.
-  UNEXPECTED_LEAKS=$(jq -r '
+  LEAKS=$(jq -r '
     .results[]
     | select(.verdict == "LEAK")
-    | select(
-        (.route == "/api/actions/catalog")
-        and (.detail | test("\"needle\":\"vast\""))
-        and ((.detail | test("newsbites|mimoun|openclaw|paperclip|techinsiderbytes")) | not)
-        | not
-      )
     | "\(.route)\t\(.detail)"
   ' "$REPORT_JSON")
 
-  if [ -n "$UNEXPECTED_LEAKS" ]; then
-    echo "[gate.sh] FAIL: unexpected LEAK verdict(s) beyond the documented /api/actions/catalog vast leak:"
-    echo "$UNEXPECTED_LEAKS"
+  if [ "$LEAK_COUNT" != "0" ]; then
+    echo "[gate.sh] FAIL: $LEAK_COUNT LEAK verdict(s) in REPORT.json:"
+    echo "$LEAKS"
     GATE_FAIL=1
   fi
 fi
@@ -184,7 +176,7 @@ fi
 echo "[gate.sh] REPORT.md updated with ## UI audit section: $REPORT_MD"
 
 echo "[gate.sh] === summary ==="
-echo "[gate.sh] API probe: CRASH=${CRASH_COUNT} ERROR-5xx=${ERR5XX_COUNT} unexpected-LEAK=$([ -n "$UNEXPECTED_LEAKS" ] && echo yes || echo no)"
+echo "[gate.sh] API probe: CRASH=${CRASH_COUNT} ERROR-5xx=${ERR5XX_COUNT} LEAK=${LEAK_COUNT}"
 echo "[gate.sh] UI audit: total=${UI_TOTAL} pass=${UI_PASS} fail=${UI_FAIL} unexpected=${UNEXPECTED_COUNT:-0}"
 
 if [ "$GATE_FAIL" != "0" ]; then

@@ -735,6 +735,15 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   return actions;
 }
 
+export function omitAbsentVastSourceStatuses(
+  sources: Record<string, "ok" | "error">,
+  values: { vastInstance: unknown; vastBalance: unknown },
+): void {
+  for (const name of ["vastInstance", "vastBalance"] as const) {
+    if (values[name] === null && sources[name] === "ok") delete sources[name];
+  }
+}
+
 async function settled<T>(sources: Record<string, "ok" | "error">, name: string, fn: () => Promise<T> | T): Promise<T | undefined> {
   try {
     const value = await fn();
@@ -813,6 +822,8 @@ export async function actionCatalogHandler(url: URL): Promise<Response> {
     settled(sources, "vastInstance", getVastInstance),
     settled(sources, "vastBalance", getVastAccount),
   ]);
+
+  omitAbsentVastSourceStatuses(sources, { vastInstance, vastBalance });
 
   const actions = buildActionCatalog({
     services,

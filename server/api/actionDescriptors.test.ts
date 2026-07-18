@@ -12,12 +12,54 @@ import {
 } from "../gateway/router.ts";
 import { testTenantContext } from "../tenancy/context.ts";
 import { tenantStore } from "../tenancy/middleware.ts";
-import { actionId, buildActionCatalog } from "./actionDescriptors.ts";
+import { actionId, buildActionCatalog, omitAbsentVastSourceStatuses } from "./actionDescriptors.ts";
 
 test("action ids are stable and safe for lookup", () => {
   expect(actionId("start-job", "service", "NewsBites Autopipeline", "restart now")).toBe(
     "start-job:service:newsbites-autopipeline:restart-now",
   );
+});
+
+test("absent Vast data is omitted from successful source status without hiding source errors", () => {
+  const sources: Record<string, "ok" | "error"> = {
+    services: "ok",
+    vastInstance: "ok",
+    vastBalance: "error",
+  };
+
+  omitAbsentVastSourceStatuses(sources, {
+    vastInstance: null,
+    vastBalance: null,
+  });
+
+  expect(sources).toEqual({
+    services: "ok",
+    vastBalance: "error",
+  });
+
+  const presentSources: Record<string, "ok" | "error"> = {
+    vastInstance: "ok",
+    vastBalance: "ok",
+  };
+  omitAbsentVastSourceStatuses(presentSources, {
+    vastInstance: {
+      id: "instance-1",
+      status: "running",
+      gpu: "RTX 3090",
+      vcpus: 8,
+      ramGb: 32,
+      diskGb: 100,
+      hourlyRate: 0.2,
+      ip: "127.0.0.1",
+      sshPort: 22,
+    },
+    vastBalance: { balance: 1, credit: 2, runwayHours: 15 },
+  });
+
+  expect(presentSources).toEqual({
+    vastInstance: "ok",
+    vastBalance: "ok",
+  });
 });
 
 test("catalog emits seven low-risk no-confirm discovery scan descriptors", () => {
