@@ -8,6 +8,7 @@ import { getUserIdForRequest } from '../governance/rbac.ts';
 import { readJsonFileAtomic } from "../lib/atomicJson.ts";
 import { getModelChainSyncPayload } from "../adapters/modelChainSync.ts";
 import { ok } from "./types.ts";
+import { deriveHealthState, type HealthBucket, type HealthSignals, type HealthState } from "./modelHealthState.ts";
 
 export const PROMOTION_EVAL_SCORE_THRESHOLD = 0.75;
 const PROMOTION_APPROVAL_WORKFLOW_PREFIX = "model-promotion";
@@ -62,6 +63,202 @@ function detectIsOpenCode(modelName: string): boolean {
 
 function modelHealthPath(): string {
   return process.env.DASHBOARD_MODEL_HEALTH_PATH || '/var/lib/mimule/model-health.json';
+}
+
+function reprobeStatePath(): string {
+  return process.env.DASHBOARD_REPROBE_STATE_PATH || '/var/lib/mimule/model-fallback-reprobe.json';
+}
+
+type ModelProbeHistoryEntry = { code?: number | null; streak?: number | null; since?: number | null; ms?: number | null };
+type ModelProbeHistory = Record<string, ModelProbeHistoryEntry>;
+type ModelLedgerHealth = Required<Pick<HealthSignals,
+  | "recentCalls"
+  | "recentSuccesses"
+  | "recentAuthErrors"
+  | "recentRateLimitErrors"
+  | "recentAvgLatencyMs"
+  | "allTimeCalls"
+  | "allTimeSuccesses"
+>>;
+type ModelRosterEntry = { logicalName: string; healthModel: Record<string, any> | null };
+
+function optionalProbeNumber(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value === "number") return value;
+  return undefined;
+}
+
+function readModelReprobeHistory(): ModelProbeHistory {
+  const raw = readJsonFileAtomic<unknown>(reprobeStatePath(), { fallback: {} });
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const history = (raw as { history?: unknown }).history;
+  if (!history || typeof history !== "object" || Array.isArray(history)) return {};
+
+  const normalized: ModelProbeHistory = {};
+  for (const [logicalName, value] of Object.entries(history)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    normalized[logicalName] = {
+      code: optionalProbeNumber(entry.code),
+      streak: optionalProbeNumber(entry.streak),
+      since: optionalProbeNumber(entry.since),
+      ms: optionalProbeNumber(entry.ms),
+    };
+  }
+  return normalized;
+}
+
+function readModelHealthLedger(): Map<string, ModelLedgerHealth> | null {
+  const db = getDashboardDb();
+  if (!db) return null;
+  try {
+    const cut7d = Date.now() - 7 * 86400 * 1000;
+    const recentRows = db.query<{
+      m: string;
+      n: number;
+      ok: number | null;
+      auth: number | null;
+      rl: number | null;
+      avg_ms: number | null;
+    }, [number]>(`
+      SELECT resolved_model AS m,
+        COUNT(*) AS n,
+        SUM(success) AS ok,
+        SUM(CASE WHEN error_class = 'auth' THEN 1 ELSE 0 END) AS auth,
+        SUM(CASE WHEN error_class = 'rate_limit' THEN 1 ELSE 0 END) AS rl,
+        AVG(latency_ms) AS avg_ms
+      FROM gateway_calls
+      WHERE ts >= ?
+        AND backend != 'cli-direct'
+        AND (error_class IS NULL OR error_class != 'gateway_unreachable')
+      GROUP BY resolved_model
+    `).all(cut7d);
+    const allTimeRows = db.query<{
+      m: string;
+      n: number;
+      ok: number | null;
+    }, []>(`
+      SELECT resolved_model AS m,
+        COUNT(*) AS n,
+        SUM(success) AS ok
+      FROM gateway_calls
+      WHERE backend != 'cli-direct'
+        AND (error_class IS NULL OR error_class != 'gateway_unreachable')
+      GROUP BY resolved_model
+    `).all();
+
+    const ledger = new Map<string, ModelLedgerHealth>();
+    for (const row of allTimeRows) {
+      if (typeof row.m !== "string" || row.m.length === 0) continue;
+      ledger.set(row.m, {
+        allTimeCalls: row.n,
+        allTimeSuccesses: row.ok ?? 0,
+        recentCalls: 0,
+        recentSuccesses: 0,
+        recentAuthErrors: 0,
+        recentRateLimitErrors: 0,
+        recentAvgLatencyMs: null,
+      });
+    }
+    for (const row of recentRows) {
+      if (typeof row.m !== "string" || row.m.length === 0) continue;
+      const existing = ledger.get(row.m) ?? {
+        allTimeCalls: 0,
+        allTimeSuccesses: 0,
+        recentCalls: 0,
+        recentSuccesses: 0,
+        recentAuthErrors: 0,
+        recentRateLimitErrors: 0,
+        recentAvgLatencyMs: null,
+      };
+      ledger.set(row.m, {
+        ...existing,
+        recentCalls: row.n,
+        recentSuccesses: row.ok ?? 0,
+        recentAuthErrors: row.auth ?? 0,
+        recentRateLimitErrors: row.rl ?? 0,
+        recentAvgLatencyMs: row.avg_ms,
+      });
+    }
+
+    return ledger;
+  } catch {
+    return null;
+  }
+}
+
+function modelLedgerKeys(logicalName: string, healthModel: Record<string, any> | null): string[] {
+  if (!healthModel) return [logicalName];
+  const primary = [healthModel.resolvedModel, healthModel.modelId, logicalName]
+    .find((value): value is string => typeof value === "string" && value.length > 0) ?? logicalName;
+  return primary === logicalName ? [logicalName] : [primary, logicalName];
+}
+
+function ledgerForModel(
+  logicalName: string,
+  healthModel: Record<string, any> | null,
+  ledgerMap: Map<string, ModelLedgerHealth> | null,
+): ModelLedgerHealth | null {
+  if (!ledgerMap) return null;
+  for (const key of modelLedgerKeys(logicalName, healthModel)) {
+    const ledger = ledgerMap.get(key);
+    if (ledger) return ledger;
+  }
+  return null;
+}
+
+function healthSignalsForModel(
+  logicalName: string,
+  healthModel: Record<string, any> | null,
+  reprobeHistory: ModelProbeHistory,
+  ledgerMap: Map<string, ModelLedgerHealth> | null,
+): HealthSignals {
+  const probe = reprobeHistory[logicalName];
+  const ledger = ledgerForModel(logicalName, healthModel, ledgerMap);
+  return {
+    probeCode: probe?.code,
+    probeMs: probe?.ms,
+    probeStreak: probe?.streak,
+    ...(ledger ?? {}),
+    available: typeof healthModel?.available === "boolean" ? healthModel.available : null,
+  };
+}
+
+function buildModelRoster(
+  healthModels: Array<Record<string, any>>,
+  reprobeHistory: ModelProbeHistory,
+  ledgerMap: Map<string, ModelLedgerHealth> | null,
+): ModelRosterEntry[] {
+  const roster: ModelRosterEntry[] = [];
+  const seen = new Set<string>();
+  const claimedLedgerKeys = new Set<string>();
+
+  // Preserve model-health ordering and metadata for established API rows. If a
+  // malformed file repeats a logical name, the first authoritative row wins.
+  for (const healthModel of healthModels) {
+    if (!healthModel || typeof healthModel !== "object" || Array.isArray(healthModel)) continue;
+    const logicalName = healthModel.logicalName;
+    if (typeof logicalName !== "string" || logicalName.length === 0 || seen.has(logicalName)) continue;
+    seen.add(logicalName);
+    for (const key of modelLedgerKeys(logicalName, healthModel)) claimedLedgerKeys.add(key);
+    roster.push({ logicalName, healthModel });
+  }
+
+  // Reprobe and ledger routes are both real observations even when the slower
+  // model-health inventory has not learned about them yet. Append those names
+  // in a stable order so pagination and rendering do not jump between reads.
+  const observedOnly = new Set<string>();
+  for (const logicalName of Object.keys(reprobeHistory)) {
+    if (logicalName.length > 0 && !seen.has(logicalName)) observedOnly.add(logicalName);
+  }
+  for (const logicalName of ledgerMap?.keys() ?? []) {
+    if (logicalName.length > 0 && !seen.has(logicalName) && !claimedLedgerKeys.has(logicalName)) observedOnly.add(logicalName);
+  }
+
+  for (const logicalName of [...observedOnly].sort()) {
+    roster.push({ logicalName, healthModel: null });
+  }
+  return roster;
 }
 
 function computeQualityStatus(available: boolean, hasError: boolean): "healthy" | "probation" | "degraded" | "blocked" | "unknown" {
@@ -290,7 +487,7 @@ function computePromotionReadiness(input: {
 
 export function modelsHandler(): Response {
   try {
-    const health = readJsonFileAtomic<{
+    type ModelHealthStateFile = {
       models?: Array<Record<string, any>>;
       bestCloudHeavy?: string | null;
       bestCloudFast?: string | null;
@@ -300,10 +497,55 @@ export function modelsHandler(): Response {
       lastQuickCheckAt?: number;
       newModelsAdded?: string[];
       fallbacks?: Record<string, string[]>;
-    }>(modelHealthPath(), { fallback: {} });
+    };
+    const rawHealth = readJsonFileAtomic<unknown>(modelHealthPath(), { fallback: {} });
+    const health: ModelHealthStateFile = rawHealth && typeof rawHealth === "object" && !Array.isArray(rawHealth)
+      ? rawHealth as ModelHealthStateFile
+      : {};
     const quality = readModelQuality();
+    const reprobeHistory = readModelReprobeHistory();
+    const ledgerMap = readModelHealthLedger();
 
-    const models = (health.models ?? []).map((m: any) => {
+    const healthModels = Array.isArray(health.models) ? health.models : [];
+    const roster = buildModelRoster(healthModels, reprobeHistory, ledgerMap);
+    const models = roster.map(({ logicalName, healthModel: m }) => {
+      const verdict = deriveHealthState(healthSignalsForModel(logicalName, m, reprobeHistory, ledgerMap));
+
+      if (!m) {
+        return {
+          logicalName,
+          provider: "unknown",
+          capability: "unknown",
+          available: false,
+          latency: null,
+          jsonOk: false,
+          checkedAt: 0,
+          qualityStatus: "unknown",
+          recentFailures: 0,
+          consecutiveGarbage: 0,
+          healthState: verdict.state,
+          healthBucket: verdict.bucket,
+          healthReason: verdict.reason,
+          isFree: false,
+          isPaid: false,
+          isOpenCode: false,
+          isCli: false,
+          providerType: "other" as const,
+          contextWindow: null,
+          params: null,
+          resolvedModel: logicalName,
+          tier: "unknown",
+          pricingTier: "unknown",
+          rating100: null,
+          ratingBreakdown: null,
+          workloadScores: null,
+          errorCount: 0,
+          lastError: null,
+          uptime: "—",
+          latencyMs: null,
+        };
+      }
+
       const qualityEntry = getModelQualityEntry(quality, m.logicalName, m.modelId);
       const providerType = detectProviderType(m.logicalName, m.provider);
       const hasExplicitFree = m.modelId?.includes('free') || m.logicalName?.includes('free');
@@ -324,7 +566,6 @@ export function modelsHandler(): Response {
         : typeof qualityEntry?.recentFailures === "number"
           ? qualityEntry.recentFailures
           : hasError ? 1 : 0;
-
       return {
         logicalName: m.logicalName,
         provider: m.provider,
@@ -336,6 +577,9 @@ export function modelsHandler(): Response {
         qualityStatus,
         recentFailures,
         consecutiveGarbage: Number(qualityEntry?.consecutiveGarbage ?? 0),
+        healthState: verdict.state,
+        healthBucket: verdict.bucket,
+        healthReason: verdict.reason,
         isFree,
         isPaid,
         isOpenCode,
@@ -361,6 +605,14 @@ export function modelsHandler(): Response {
       if (model.qualityStatus === "probation") acc.probation += 1;
       return acc;
     }, { blocked: 0, degraded: 0, probation: 0 });
+    const healthStateSummary = models.reduce((acc: Record<HealthState, number>, model) => {
+      acc[model.healthState] += 1;
+      return acc;
+    }, { live: 0, limited: 0, slow: 0, degraded: 0, dead: 0, hang: 0, unknown: 0 });
+    const healthBucketSummary = models.reduce((acc: Record<HealthBucket, number>, model) => {
+      acc[model.healthBucket] += 1;
+      return acc;
+    }, { healthy: 0, unhealthy: 0, unknown: 0 });
 
     const summary = {
       bestCloudHeavy: health.bestCloudHeavy ?? null,
@@ -368,6 +620,8 @@ export function modelsHandler(): Response {
       bestLocal: health.bestLocal ?? null,
       availableByCapability: health.availableByCapability ?? { heavy: 0, medium: 0, light: 0 },
       qualitySummary,
+      healthStateSummary,
+      healthBucketSummary,
       lastFullCheckAgo: Date.now() - (health.lastFullCheckAt ?? 0),
       lastQuickCheckAgo: Date.now() - (health.lastQuickCheckAt ?? 0),
       newModelsAdded: health.newModelsAdded ?? [],
@@ -398,6 +652,8 @@ export function modelsHandler(): Response {
           bestLocal: null,
           availableByCapability: { heavy: 0, medium: 0, light: 0 },
           qualitySummary: { blocked: 0, degraded: 0, probation: 0 },
+          healthStateSummary: { live: 0, limited: 0, slow: 0, degraded: 0, dead: 0, hang: 0, unknown: 0 },
+          healthBucketSummary: { healthy: 0, unhealthy: 0, unknown: 0 },
           lastFullCheckAgo: 0,
           lastQuickCheckAgo: 0,
           newModelsAdded: [],

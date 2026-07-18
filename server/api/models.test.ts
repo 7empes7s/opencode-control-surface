@@ -10,6 +10,7 @@ import { modelLifecycleHandler, modelsHandler } from "./models.ts";
 let tempDir: string;
 let previousHealthPath: string | undefined;
 let previousQualityPath: string | undefined;
+let previousReprobeStatePath: string | undefined;
 let previousDashboardDb: string | undefined;
 let previousDashboardDbPath: string | undefined;
 let previousOperatorToken: string | undefined;
@@ -19,11 +20,13 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "models-api-"));
   previousHealthPath = process.env.DASHBOARD_MODEL_HEALTH_PATH;
   previousQualityPath = process.env.DASHBOARD_MODEL_QUALITY_PATH;
+  previousReprobeStatePath = process.env.DASHBOARD_REPROBE_STATE_PATH;
   previousDashboardDb = process.env.DASHBOARD_DB;
   previousDashboardDbPath = process.env.DASHBOARD_DB_PATH;
   previousOperatorToken = process.env.OPERATOR_TOKEN;
   process.env.DASHBOARD_MODEL_HEALTH_PATH = join(tempDir, "model-health.json");
   process.env.DASHBOARD_MODEL_QUALITY_PATH = join(tempDir, "model-quality.json");
+  process.env.DASHBOARD_REPROBE_STATE_PATH = join(tempDir, "model-fallback-reprobe.json");
   process.env.DASHBOARD_DB = "1";
   process.env.DASHBOARD_DB_PATH = join(tempDir, "dashboard.sqlite");
   process.env.OPERATOR_TOKEN = "test-token";
@@ -36,6 +39,8 @@ afterEach(() => {
   else process.env.DASHBOARD_MODEL_HEALTH_PATH = previousHealthPath;
   if (previousQualityPath === undefined) delete process.env.DASHBOARD_MODEL_QUALITY_PATH;
   else process.env.DASHBOARD_MODEL_QUALITY_PATH = previousQualityPath;
+  if (previousReprobeStatePath === undefined) delete process.env.DASHBOARD_REPROBE_STATE_PATH;
+  else process.env.DASHBOARD_REPROBE_STATE_PATH = previousReprobeStatePath;
   if (previousDashboardDb === undefined) delete process.env.DASHBOARD_DB;
   else process.env.DASHBOARD_DB = previousDashboardDb;
   if (previousDashboardDbPath === undefined) delete process.env.DASHBOARD_DB_PATH;
@@ -80,6 +85,7 @@ function seedEval(logicalName: string, ts: number, value: Record<string, unknown
 }
 
 function seedGatewayCall(input: {
+  ts?: number;
   logicalModel?: string;
   resolvedModel: string;
   backend?: string;
@@ -92,7 +98,7 @@ function seedGatewayCall(input: {
       (ts, logical_model, resolved_model, backend, tier, success, error_class, latency_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    Date.now(),
+    input.ts ?? Date.now(),
     input.logicalModel ?? "test-logical-model",
     input.resolvedModel,
     input.backend ?? "litellm",
@@ -102,6 +108,208 @@ function seedGatewayCall(input: {
     input.latencyMs ?? null,
   );
 }
+
+test("modelsHandler returns a reprobe and ledger route absent from model-health as degraded", async () => {
+  const logicalName = "coding-go-minimax-m3";
+  writeHealth("health-roster-model");
+  writeFileSync(process.env.DASHBOARD_REPROBE_STATE_PATH!, JSON.stringify({
+    history: {
+      [logicalName]: { code: 402, streak: 7, since: 1_784_312_381, ms: 849 },
+    },
+  }));
+  const oldTs = Date.now() - 8 * 86400 * 1000;
+
+  for (let i = 0; i < 425; i += 1) {
+    seedGatewayCall({ ts: oldTs, resolvedModel: logicalName, success: 1 });
+  }
+  for (let i = 0; i < 91; i += 1) {
+    seedGatewayCall({ ts: oldTs, resolvedModel: logicalName, success: 0, errorClass: "other" });
+  }
+  for (let i = 0; i < 10; i += 1) {
+    seedGatewayCall({ resolvedModel: logicalName, success: 0, errorClass: "auth" });
+  }
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+  const model = body.data.models.find((candidate: any) => candidate.logicalName === logicalName);
+
+  expect(model).toMatchObject({
+    logicalName,
+    provider: "unknown",
+    capability: "unknown",
+    available: false,
+    qualityStatus: "unknown",
+    resolvedModel: logicalName,
+  });
+  expect(model.healthState).toBe("degraded");
+  expect(model.healthBucket).toBe("unhealthy");
+  expect(model.healthReason).toContain("likely an expired credential");
+  expect(body.data.models.every((candidate: any) => (
+    typeof candidate.healthState === "string"
+    && typeof candidate.healthBucket === "string"
+    && typeof candidate.healthReason === "string"
+    && candidate.healthReason.length > 0
+  ))).toBe(true);
+  expect(body.data.summary.healthStateSummary).toEqual({
+    live: 0,
+    limited: 0,
+    slow: 0,
+    degraded: 1,
+    dead: 0,
+    hang: 0,
+    unknown: 1,
+  });
+  expect(body.data.summary.healthBucketSummary).toEqual({ healthy: 0, unhealthy: 1, unknown: 1 });
+});
+
+test("modelsHandler appends observed-only routes deterministically without duplicates", async () => {
+  writeFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, JSON.stringify({
+    models: [
+      { logicalName: "health-z", provider: "test", available: true },
+      { logicalName: "health-a", provider: "test", available: false },
+    ],
+  }));
+  writeFileSync(process.env.DASHBOARD_REPROBE_STATE_PATH!, JSON.stringify({
+    history: {
+      "reprobe-z": { code: 500, streak: 1, since: 100, ms: 20 },
+      "health-a": { code: 500, streak: 1, since: 100, ms: 20 },
+      "reprobe-a": { code: 500, streak: 1, since: 100, ms: 20 },
+    },
+  }));
+  seedGatewayCall({ resolvedModel: "ledger-b", success: 1 });
+  seedGatewayCall({ resolvedModel: "health-a", success: 1 });
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+
+  expect(body.data.models.map((model: any) => model.logicalName)).toEqual([
+    "health-z",
+    "health-a",
+    "ledger-b",
+    "reprobe-a",
+    "reprobe-z",
+  ]);
+  expect(body.data.models.filter((model: any) => model.logicalName === "health-a")).toHaveLength(1);
+  expect(body.data.models.find((model: any) => model.logicalName === "ledger-b")).toMatchObject({
+    provider: "unknown",
+    available: false,
+    qualityStatus: "unknown",
+    healthState: "live",
+    healthBucket: "healthy",
+  });
+  expect(body.data.models.find((model: any) => model.logicalName === "reprobe-z")).toMatchObject({
+    provider: "unknown",
+    healthState: "unknown",
+  });
+});
+
+test("modelsHandler prefers resolved or modelId ledger evidence and does not duplicate its key", async () => {
+  const logicalName = "alias-model";
+  const modelId = `provider/${logicalName}`;
+  writeHealth(logicalName);
+  for (let i = 0; i < 3; i += 1) {
+    seedGatewayCall({ resolvedModel: modelId, success: 1, latencyMs: 100 });
+  }
+  for (let i = 0; i < 20; i += 1) {
+    seedGatewayCall({ resolvedModel: logicalName, success: 0, errorClass: "other" });
+  }
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+
+  expect(body.data.models.map((model: any) => model.logicalName)).toEqual([logicalName]);
+  expect(body.data.models[0]).toMatchObject({
+    resolvedModel: modelId,
+    healthState: "live",
+    healthBucket: "healthy",
+  });
+  expect(body.data.models[0].healthReason).toContain("3/3");
+});
+
+test("modelsHandler excludes cli-direct rows from health classification", async () => {
+  const logicalName = "cli-only-model";
+  writeHealth(logicalName);
+  for (let i = 0; i < 3; i += 1) {
+    seedGatewayCall({ resolvedModel: logicalName, backend: "cli-direct", success: 1 });
+  }
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+  const model = body.data.models.find((candidate: any) => candidate.logicalName === logicalName);
+
+  expect(model.healthState).toBe("unknown");
+});
+
+test("modelsHandler excludes gateway_unreachable rows from health classification", async () => {
+  const logicalName = "gateway-bounce-model";
+  writeHealth(logicalName);
+  for (let i = 0; i < 20; i += 1) {
+    seedGatewayCall({ resolvedModel: logicalName, success: 0, errorClass: "gateway_unreachable" });
+  }
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+  const model = body.data.models.find((candidate: any) => candidate.logicalName === logicalName);
+
+  expect(model.healthState).toBe("unknown");
+});
+
+test("modelsHandler returns unknown health on a fresh host without reprobe or ledger evidence", async () => {
+  writeFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, JSON.stringify({
+    models: [
+      { logicalName: "fresh-a", provider: "test", available: true },
+      { logicalName: "fresh-b", provider: "test", available: false },
+    ],
+  }));
+  closeDashboardDb();
+  process.env.DASHBOARD_DB = "0";
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+
+  expect(body.data.models.map((model: any) => model.healthState)).toEqual(["unknown", "unknown"]);
+  expect(body.data.models.map((model: any) => model.healthBucket)).toEqual(["unknown", "unknown"]);
+  expect(body.data.models.every((model: any) => model.healthReason.includes("no probe entry and no ledger calls"))).toBe(true);
+  expect(body.data.summary.healthStateSummary).toEqual({
+    live: 0,
+    limited: 0,
+    slow: 0,
+    degraded: 0,
+    dead: 0,
+    hang: 0,
+    unknown: 2,
+  });
+  expect(body.data.summary.healthBucketSummary).toEqual({ healthy: 0, unhealthy: 0, unknown: 2 });
+});
+
+test("modelsHandler skips malformed health and reprobe entries without returning a 500", async () => {
+  writeFileSync(process.env.DASHBOARD_MODEL_HEALTH_PATH!, JSON.stringify({
+    models: [null, "bad-row", { logicalName: "valid-row", provider: "test", available: true }],
+  }));
+  writeFileSync(process.env.DASHBOARD_REPROBE_STATE_PATH!, JSON.stringify({
+    history: {
+      "bad-route": "not-an-entry",
+      "valid-row": { code: "200", ms: Number.NaN, streak: -1 },
+    },
+  }));
+  closeDashboardDb();
+  process.env.DASHBOARD_DB = "0";
+
+  const res = modelsHandler();
+  expect(res.status).toBe(200);
+  const body = await res.json() as { data: any };
+  expect(body.data.models.map((model: any) => model.logicalName)).toEqual(["valid-row"]);
+  expect(body.data.models[0]).toMatchObject({
+    healthState: "unknown",
+    healthBucket: "unknown",
+  });
+});
 
 async function readRoutingReliability(logicalName: string): Promise<any> {
   const res = modelLifecycleHandler(logicalName);
