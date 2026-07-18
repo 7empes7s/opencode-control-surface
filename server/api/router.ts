@@ -516,6 +516,7 @@ let currentSseConnections = 0;
 
 // ── Read endpoints ─────────────────────────────────────────────────────────
 if (method === "GET" && pathname === "/api/stream") {
+  if (!checkToken(req)) return unauthorized();
   if (currentSseConnections >= MAX_SSE_CONNECTIONS) {
     return new Response(JSON.stringify({ error: "too many concurrent SSE connections" }), {
       status: 429,

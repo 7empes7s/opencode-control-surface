@@ -127,6 +127,20 @@ describe("router auth gating", () => {
     }
   });
 
+  test("gates the home-data SSE stream while allowing authenticated clients", async () => {
+    const path = "/api/stream";
+    const anonymousResponse = await handleApi(request(path), new URL(`http://127.0.0.1:3000${path}`));
+    expect(anonymousResponse.status).toBe(401);
+
+    const authenticatedResponse = await handleApi(
+      request(path, { headers: { "x-operator-token": "test-token" } }),
+      new URL(`http://127.0.0.1:3000${path}`),
+    );
+    expect(authenticatedResponse.status).toBe(200);
+    expect(authenticatedResponse.headers.get("content-type")).toContain("text/event-stream");
+    await authenticatedResponse.body?.cancel();
+  });
+
   test("lets machine-surface handlers authenticate operator tokens", async () => {
     for (const path of machineSurfaceRoutes) {
       const anonymousResponse = await handleApi(request(path), new URL(`http://127.0.0.1:3000${path}`));
