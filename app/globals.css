@@ -36,6 +36,10 @@
   --red:     oklch(66% 0.185  22);      /* readable on dark, not screaming */
   --red-dim: oklch(24% 0.060  22);
 
+  /* ── Model health: recovery orange + sustained-failure maroon ─────────── */
+  --health-orange: oklch(68% 0.158 38);
+  --health-maroon: oklch(54% 0.128 18);
+
   /* ── Informational blue ─────────────────────────────────────────────────── */
   --blue:    oklch(68% 0.130 240);      /* calm blue for info/links */
 
@@ -73,6 +77,8 @@
   --amber-warn-dim: oklch(90% 0.028 52);
   --red:        oklch(42%  0.185  22);
   --red-dim:    oklch(90%  0.028  22);
+  --health-orange: oklch(43% 0.158 38);
+  --health-maroon: oklch(34% 0.128 18);
   --blue:       oklch(40%  0.130 240);
 }
 
@@ -1184,6 +1190,8 @@ body {
 .pill.amber { background: color-mix(in oklch, var(--amber-warn) 10%, transparent); color: var(--amber-warn); border: 1px solid color-mix(in oklch, var(--amber-warn) 28%, transparent); }
 .pill.gray { background: color-mix(in oklch, white 4%, transparent); color: var(--text-dim); border: 1px solid var(--border); }
 .pill.blue { background: color-mix(in oklch, var(--blue) 10%, transparent); color: var(--blue); border: 1px solid color-mix(in oklch, var(--blue) 28%, transparent); }
+.pill.orange { background: color-mix(in oklch, var(--health-orange) 10%, transparent); color: var(--health-orange); border: 1px solid color-mix(in oklch, var(--health-orange) 30%, transparent); }
+.pill.maroon { background: color-mix(in oklch, var(--health-maroon) 12%, transparent); color: var(--health-maroon); border: 1px solid color-mix(in oklch, var(--health-maroon) 36%, transparent); }
 
 /* ── Service strip / svc-pill ──────────────────────────────────────────── */
 
@@ -5212,11 +5220,44 @@ body {
 .sse-dot.disconnected { background: var(--amber-warn); animation: none; opacity: 0.65; }
 
 /* ── Models lifecycle / GRC ────────────────────────────────────────────── */
+.models-stat-value {
+  margin-top: 2px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.models-stat-value.accent { color: var(--accent); }
+.models-stat-value.dim { color: var(--text-dim); }
+.models-summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+.models-summary-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.models-summary-inventory {
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.models-action-bar { margin-bottom: 16px; }
+.models-row-count {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+}
 .models-table {
   table-layout: fixed;
-  min-width: 1340px;
+  min-width: 1452px;
 }
-.models-table col.name-col { width: 300px; }
+.models-table col.name-col { width: 286px; }
+.models-table col.health-col { width: 112px; }
 .models-table col.cap-col { width: 98px; }
 .models-table col.quality-col { width: 112px; }
 .models-table col.actions-col { width: 132px; }
@@ -5240,6 +5281,58 @@ body {
 .models-table td.actions-col > div {
   flex-wrap: wrap;
 }
+.model-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.models-table .model-health-group-row th {
+  padding: 7px 14px;
+  color: var(--text-dim);
+  background: color-mix(in oklch, var(--bg-raised) 78%, var(--bg-panel));
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.models-table tbody:first-of-type .model-health-group-row th { border-top: none; }
+.model-health-group-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.model-health-group-label {
+  color: var(--text-bright);
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+.model-health-group-healthy .model-health-group-label { color: var(--green); }
+.model-health-group-unhealthy .model-health-group-label { color: var(--red); }
+.model-health-group-states {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-health-group-count {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.model-health-empty {
+  padding: 24px 14px !important;
+  color: var(--text-dim);
+  text-align: center;
+}
 .model-pricing-cell {
   display: flex;
   align-items: center;
@@ -5259,6 +5352,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.model-name-cell.available { color: var(--text-bright); }
+.model-name-cell.unavailable { color: var(--text-dim); }
 .model-expand-btn {
   width: 30px;
   height: 30px;
@@ -5284,6 +5379,49 @@ body {
   padding: 16px;
   border-top: 1px solid var(--border);
 }
+.model-health-evidence {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--bg-panel) 72%, transparent);
+}
+.model-health-evidence-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.model-health-evidence-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.model-health-reason {
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.model-health-recovery {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklch, var(--health-orange) 34%, transparent);
+  border-radius: 5px;
+  background: color-mix(in oklch, var(--health-orange) 8%, transparent);
+  color: var(--health-orange);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.model-health-recovery svg { flex: 0 0 auto; margin-top: 1px; }
+.model-health-recovery strong { color: inherit; }
 .model-lifecycle-grid {
   display: grid;
   grid-template-columns: minmax(280px, 1.2fr) minmax(240px, 0.9fr) minmax(280px, 1fr);
@@ -5697,11 +5835,36 @@ body {
   .models-col-provider, .models-col-latency, .models-col-json, .models-col-failures { display: none; }
 
   /* Models table: give name col more room, shrink actions col */
-  .models-table .name-col  { width: 38%; }
-  .models-table .cap-col   { width: 18%; }
-  .models-table .quality-col { width: 23%; }
+  .models-summary-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .models-summary-inventory {
+    padding-left: 0;
+    border-left: none;
+  }
+  .models-table .name-col  { width: 39%; }
+  .models-table .health-col { width: 24%; }
+  .models-table .cap-col   { width: 16%; }
   .models-table .actions-col { width: 21%; }
+  .models-table col.quality-col,
+  .models-table th.quality-col,
+  .models-table td.quality-col {
+    display: none;
+  }
+  .model-health-group-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 3px 8px;
+  }
+  .model-health-group-count { width: 100%; margin-left: 0; }
   .model-lifecycle-panel { padding: 12px; }
+  .model-health-evidence-main {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .model-health-reason { flex: 1 1 100%; }
   .model-lifecycle-grid,
   .model-lifecycle-charts,
   .model-lifecycle-unavailable {

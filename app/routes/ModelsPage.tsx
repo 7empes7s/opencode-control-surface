@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, Copy, GitBranch, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Copy, GitBranch, ShieldCheck } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { authFetch } from "../lib/authFetch";
@@ -8,7 +8,7 @@ import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
-import type { ChainDiff, ModelChainSyncDetail, ModelsDetail } from "../../server/api/types";
+import type { ChainDiff, HealthBucket, HealthState, ModelChainSyncDetail, ModelsDetail } from "../../server/api/types";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
   return <span className={`pill ${color}`}>{children}</span>;
@@ -19,6 +19,50 @@ function qualityColor(s: string): string {
   if (s === "blocked") return "red";
   if (s === "degraded" || s === "probation") return "amber";
   return "gray";
+}
+
+function healthStateColor(state: HealthState): string {
+  if (state === "live") return "green";
+  if (state === "limited") return "amber";
+  if (state === "slow") return "blue";
+  if (state === "degraded") return "orange";
+  if (state === "dead") return "red";
+  if (state === "hang") return "maroon";
+  return "gray";
+}
+
+const HEALTH_STATE_SORT_RANK: Record<HealthState, number> = {
+  live: 0,
+  limited: 1,
+  slow: 2,
+  degraded: 3,
+  dead: 4,
+  hang: 5,
+  unknown: 6,
+};
+
+const HEALTH_GROUPS: ReadonlyArray<{
+  bucket: HealthBucket;
+  label: string;
+  states: string;
+}> = [
+  { bucket: "healthy", label: "Healthy", states: "live · limited · slow" },
+  { bucket: "unhealthy", label: "Needs attention", states: "degraded · dead · hang" },
+  { bucket: "unknown", label: "Unobserved", states: "insufficient evidence" },
+];
+
+type ModelRow = ModelsDetail["models"][number];
+
+function modelHealthState(model: ModelRow): HealthState {
+  return model.healthState ?? "unknown";
+}
+
+function modelHealthBucket(model: ModelRow): HealthBucket {
+  return model.healthBucket ?? "unknown";
+}
+
+function modelHealthReason(model: ModelRow): string {
+  return model.healthReason?.trim() || "health evidence is unavailable for this row";
 }
 
 function fmtContextWindow(ctx: number | null): string {
@@ -36,7 +80,7 @@ type Modal =
   | { type: "promotion-request"; model: string }
   | { type: "run-check" };
 
-export type ModelsSortKey = "logicalName" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
+export type ModelsSortKey = "logicalName" | "healthState" | "qualityStatus" | "provider" | "contextWindow" | "latency" | "recentFailures";
 
 interface ModelLifecycle {
   logicalName: string;
@@ -126,33 +170,55 @@ function Sparkline({
 
 function ModelLifecyclePanel({
   logicalName,
+  healthState,
+  healthReason,
   refreshNonce,
   onRequestPromotion,
 }: {
   logicalName: string;
+  healthState: HealthState;
+  healthReason: string;
   refreshNonce: number;
   onRequestPromotion: (model: string) => void;
 }) {
   const { data, loading, error, refresh } = useApi<ModelLifecycle>(`/api/models/${encodeURIComponent(logicalName)}/lifecycle?refresh=${refreshNonce}`, 0);
 
+  const healthEvidence = (
+    <div className="model-health-evidence">
+      <div className="model-health-evidence-main">
+        <span className="model-health-evidence-label">Health signal</span>
+        <Pill color={healthStateColor(healthState)}>{healthState}</Pill>
+        <span className="model-health-reason">{healthReason}</span>
+      </div>
+      {healthState === "degraded" ? (
+        <div className="model-health-recovery" role="note">
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span><strong>Proven route needs recovery:</strong> fix its credential or quota; do not drop its earned history.</span>
+        </div>
+      ) : null}
+    </div>
+  );
+
   if (loading && !data) {
-    return <div className="model-lifecycle-panel"><div className="loading-dim">Loading model lifecycle…</div></div>;
+    return <div className="model-lifecycle-panel">{healthEvidence}<div className="loading-dim">Loading model lifecycle…</div></div>;
   }
   if (error && !data) {
     return (
       <div className="model-lifecycle-panel">
+        {healthEvidence}
         <div className="loading-dim error">Lifecycle did not load: {error}</div>
         <button className="btn btn-sm btn-ghost model-lifecycle-action" onClick={refresh}>Retry</button>
       </div>
     );
   }
-  if (!data) return null;
+  if (!data) return <div className="model-lifecycle-panel">{healthEvidence}</div>;
 
   const gate = data.promotionReadiness.gate;
   const approval = data.approval;
 
   return (
     <div className="model-lifecycle-panel">
+      {healthEvidence}
       <div className="model-lifecycle-grid">
         <section className="model-lifecycle-section">
           <div className="model-lifecycle-title"><GitBranch size={15} /> Evaluation timeline</div>
@@ -370,10 +436,19 @@ export function ModelsPage() {
   const modelsCtrl = useTableControls<NonNullable<ModelsDetail["models"]>[number], ModelsSortKey>({
     rows: data?.models ?? [],
     pageSize: 25,
-    filterText: (row) => [row.logicalName, row.provider, row.providerType, row.qualityStatus].join(" "),
+    filterText: (row) => [
+      row.logicalName,
+      row.provider,
+      row.providerType,
+      row.qualityStatus,
+      modelHealthState(row),
+      modelHealthBucket(row),
+      modelHealthReason(row),
+    ].join(" "),
     sortValue: (row, key) => {
       switch (key) {
         case "logicalName": return row.logicalName;
+        case "healthState": return HEALTH_STATE_SORT_RANK[modelHealthState(row)];
         case "qualityStatus": return row.qualityStatus ?? "";
         case "provider": return row.provider ?? "";
         case "contextWindow": return row.contextWindow ?? 0;
@@ -391,6 +466,10 @@ export function ModelsPage() {
 
   const d = data;
   const s = d.summary;
+  const groupedModels = HEALTH_GROUPS.map((group) => ({
+    ...group,
+    rows: modelsCtrl.rows.filter((model) => modelHealthBucket(model) === group.bucket),
+  })).filter((group) => group.rows.length > 0);
 
   return (
     <div className="dash-page">
@@ -399,23 +478,23 @@ export function ModelsPage() {
         <div className="stat-row">
           <div className="stat-item">
             <div className="stat-lbl">best heavy</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)", marginTop: 2 }}>{s.bestCloudHeavy ?? "—"}</div>
+            <div className="models-stat-value accent">{s.bestCloudHeavy ?? "—"}</div>
           </div>
           <div className="stat-item">
             <div className="stat-lbl">best fast</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)", marginTop: 2 }}>{s.bestCloudFast ?? "—"}</div>
+            <div className="models-stat-value">{s.bestCloudFast ?? "—"}</div>
           </div>
           <div className="stat-item">
             <div className="stat-lbl">best local</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)", marginTop: 2 }}>{s.bestLocal ?? "—"}</div>
+            <div className="models-stat-value">{s.bestLocal ?? "—"}</div>
           </div>
           <div className="stat-item">
             <div className="stat-lbl">full check</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: 2 }}>{fmtAge(s.lastFullCheckAgo)}</div>
+            <div className="models-stat-value dim">{fmtAge(s.lastFullCheckAgo)}</div>
           </div>
           <div className="stat-item">
             <div className="stat-lbl">quick check</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", marginTop: 2 }}>{fmtAge(s.lastQuickCheckAgo)}</div>
+            <div className="models-stat-value dim">{fmtAge(s.lastQuickCheckAgo)}</div>
           </div>
         </div>
       </div>
@@ -495,18 +574,24 @@ export function ModelsPage() {
         />
       )}
 
-      {/* Quality summary */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
-        <Pill color="gray">medium {s.availableByCapability.medium}</Pill>
-        <Pill color="gray">light {s.availableByCapability.light}</Pill>
-        {s.qualitySummary.blocked > 0 && <Pill color="red">blocked {s.qualitySummary.blocked}</Pill>}
-        {s.qualitySummary.degraded > 0 && <Pill color="amber">degraded {s.qualitySummary.degraded}</Pill>}
-        {s.qualitySummary.probation > 0 && <Pill color="amber">probation {s.qualitySummary.probation}</Pill>}
-        {s.newModelsAdded.length > 0 && <Pill color="green">+{s.newModelsAdded.length} new</Pill>}
+      <div className="models-summary-bar">
+        <div className="models-summary-group" aria-label="Health summary">
+          <Pill color="green">healthy {s.healthBucketSummary.healthy}</Pill>
+          <Pill color="red">needs attention {s.healthBucketSummary.unhealthy}</Pill>
+          <Pill color="gray">unobserved {s.healthBucketSummary.unknown}</Pill>
+        </div>
+        <div className="models-summary-group models-summary-inventory" aria-label="Inventory and quality summary">
+          <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
+          <Pill color="gray">medium {s.availableByCapability.medium}</Pill>
+          <Pill color="gray">light {s.availableByCapability.light}</Pill>
+          {s.qualitySummary.blocked > 0 && <Pill color="red">blocked {s.qualitySummary.blocked}</Pill>}
+          {s.qualitySummary.degraded > 0 && <Pill color="amber">degraded {s.qualitySummary.degraded}</Pill>}
+          {s.qualitySummary.probation > 0 && <Pill color="amber">probation {s.qualitySummary.probation}</Pill>}
+          {s.newModelsAdded.length > 0 && <Pill color="green">+{s.newModelsAdded.length} new</Pill>}
+        </div>
       </div>
 
-      <div className="action-bar" style={{ marginBottom: 16 }}>
+      <div className="action-bar models-action-bar">
         <button className="btn btn-ghost" onClick={() => setModal({ type: "run-check" })}>
           Run health check
         </button>
@@ -520,13 +605,14 @@ export function ModelsPage() {
         title="all models"
         id="current"
         defaultOpen={true}
-        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{modelsCtrl.filteredCount} of {data.models.length} shown</span>}
+        right={<span className="models-row-count">{modelsCtrl.rows.length} on page · {modelsCtrl.filteredCount} match</span>}
       >
         <div className="section-card-body table-wrap">
-          <TableControls {...modelsCtrl.controlsProps} searchPlaceholder="Filter models..." />
+          <TableControls {...modelsCtrl.controlsProps} searchPlaceholder="Filter by model, provider, or health..." />
           <table className="data-table models-table">
             <colgroup>
               <col className="name-col" />
+              <col className="health-col" />
               <col className="cap-col" />
               <col className="quality-col" />
               <col className="actions-col" />
@@ -541,21 +627,40 @@ export function ModelsPage() {
               <col className="fails-col" />
             </colgroup>
             <thead><tr>
-              <th {...modelsCtrl.sortHeaderProps("logicalName")} className="name-col">Logical model <span className="sortable-th-arrow">{modelsCtrl.sort.key === "logicalName" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("logicalName")} className={`name-col ${modelsCtrl.sortHeaderProps("logicalName").className}`}>Logical model <span className="sortable-th-arrow">{modelsCtrl.sort.key === "logicalName" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("healthState")} className={`health-col ${modelsCtrl.sortHeaderProps("healthState").className}`}>Health <span className="sortable-th-arrow">{modelsCtrl.sort.key === "healthState" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
               <th className="cap-col">Capability</th>
-              <th {...modelsCtrl.sortHeaderProps("qualityStatus")} className="quality-col">Quality <span className="sortable-th-arrow">{modelsCtrl.sort.key === "qualityStatus" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("qualityStatus")} className={`quality-col ${modelsCtrl.sortHeaderProps("qualityStatus").className}`}>Quality <span className="sortable-th-arrow">{modelsCtrl.sort.key === "qualityStatus" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
               <th className="actions-col">Actions</th>
               <th className="price-col">Pricing</th><th className="type-col">Type</th><th className="cli-col">CLI</th>
-              <th {...modelsCtrl.sortHeaderProps("provider")} className="models-col-provider provider-col">provider <span className="sortable-th-arrow">{modelsCtrl.sort.key === "provider" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th {...modelsCtrl.sortHeaderProps("contextWindow")} className="ctx-col">Context <span className="sortable-th-arrow">{modelsCtrl.sort.key === "contextWindow" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th className="rating-col">Rating</th><th {...modelsCtrl.sortHeaderProps("latency")} className="latency-col models-col-latency">Latency <span className="sortable-th-arrow">{modelsCtrl.sort.key === "latency" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-              <th className="models-col-json">JSON</th><th {...modelsCtrl.sortHeaderProps("recentFailures")} className="models-col-failures">Failures <span className="sortable-th-arrow">{modelsCtrl.sort.key === "recentFailures" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("provider")} className={`models-col-provider provider-col ${modelsCtrl.sortHeaderProps("provider").className}`}>provider <span className="sortable-th-arrow">{modelsCtrl.sort.key === "provider" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th {...modelsCtrl.sortHeaderProps("contextWindow")} className={`ctx-col ${modelsCtrl.sortHeaderProps("contextWindow").className}`}>Context <span className="sortable-th-arrow">{modelsCtrl.sort.key === "contextWindow" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="rating-col">Rating</th><th {...modelsCtrl.sortHeaderProps("latency")} className={`latency-col models-col-latency ${modelsCtrl.sortHeaderProps("latency").className}`}>Latency <span className="sortable-th-arrow">{modelsCtrl.sort.key === "latency" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+              <th className="models-col-json">JSON</th><th {...modelsCtrl.sortHeaderProps("recentFailures")} className={`models-col-failures ${modelsCtrl.sortHeaderProps("recentFailures").className}`}>Failures <span className="sortable-th-arrow">{modelsCtrl.sort.key === "recentFailures" ? (modelsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
             </tr></thead>
-            <tbody>
-              {modelsCtrl.rows.map((m) => (
-                <Fragment key={m.logicalName}>
-                  <tr className={expandedModel === m.logicalName ? "model-row expanded" : "model-row"}>
-                    <td className="mono model-name-cell" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>
+            {modelsCtrl.rows.length === 0 ? (
+              <tbody>
+                <tr>
+                  <td className="model-health-empty" colSpan={14}>
+                    {modelsCtrl.query.trim() ? "No models match this filter." : "No model evidence is available yet."}
+                  </td>
+                </tr>
+              </tbody>
+            ) : groupedModels.map((group) => (
+              <tbody key={group.bucket} className={`model-health-group model-health-group-${group.bucket}`}>
+                <tr className="model-health-group-row">
+                  <th colSpan={14} scope="rowgroup">
+                    <div className="model-health-group-heading">
+                      <span className="model-health-group-label">{group.label}</span>
+                      <span className="model-health-group-states">{group.states}</span>
+                      <span className="model-health-group-count">{group.rows.length} on this page</span>
+                    </div>
+                  </th>
+                </tr>
+                {group.rows.map((m) => (
+                  <Fragment key={m.logicalName}>
+                    <tr className={expandedModel === m.logicalName ? "model-row expanded" : "model-row"}>
+                    <td className={`mono model-name-cell ${m.available ? "available" : "unavailable"}`}>
                       <button
                         className="model-expand-btn"
                         onClick={() => setExpandedModel(expandedModel === m.logicalName ? null : m.logicalName)}
@@ -566,10 +671,11 @@ export function ModelsPage() {
                       </button>
                       <span title={m.logicalName}>{m.logicalName}</span>
                     </td>
+                    <td className="health-col"><Pill color={healthStateColor(modelHealthState(m))}>{modelHealthState(m)}</Pill></td>
                     <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
-                    <td><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
+                    <td className="quality-col"><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
                     <td className="actions-col">
-                      <div style={{ display: "flex", gap: 4 }}>
+                      <div className="model-row-actions">
                         {m.qualityStatus === "blocked" ? (
                           <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
                         ) : m.qualityStatus === "probation" ? (
@@ -599,21 +705,24 @@ export function ModelsPage() {
                     <td className="mono dim models-col-failures">
                       {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
                     </td>
-                  </tr>
-                  {expandedModel === m.logicalName ? (
-                    <tr className="model-lifecycle-row">
-                      <td colSpan={13}>
-                        <ModelLifecyclePanel
-                          logicalName={m.logicalName}
-                          refreshNonce={lifecycleRefreshNonce}
-                          onRequestPromotion={(model) => setModal({ type: "promotion-request", model })}
-                        />
-                      </td>
                     </tr>
-                  ) : null}
-                </Fragment>
-              ))}
-            </tbody>
+                    {expandedModel === m.logicalName ? (
+                      <tr className="model-lifecycle-row">
+                        <td colSpan={14}>
+                          <ModelLifecyclePanel
+                            logicalName={m.logicalName}
+                            healthState={modelHealthState(m)}
+                            healthReason={modelHealthReason(m)}
+                            refreshNonce={lifecycleRefreshNonce}
+                            onRequestPromotion={(model) => setModal({ type: "promotion-request", model })}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                ))}
+              </tbody>
+            ))}
           </table>
         </div>
       </SectionCard>

@@ -297,6 +297,9 @@ export interface RatingBreakdown {
   components: Record<string, { score: number; weight: number; contribution: number }>;
 }
 
+export type HealthState = "live" | "limited" | "slow" | "degraded" | "dead" | "hang" | "unknown";
+export type HealthBucket = "healthy" | "unhealthy" | "unknown";
+
 export interface ModelsDetail {
   models: {
     logicalName: string;
@@ -309,6 +312,9 @@ export interface ModelsDetail {
     qualityStatus: string;
     recentFailures: number;
     consecutiveGarbage: number;
+    healthState?: HealthState;
+    healthBucket?: HealthBucket;
+    healthReason?: string;
     isFree: boolean;
     isPaid: boolean;
     isOpenCode: boolean;
@@ -330,6 +336,8 @@ export interface ModelsDetail {
     bestLocal: string | null;
     availableByCapability: { heavy: number; medium: number; light: number };
     qualitySummary: { blocked: number; degraded: number; probation: number };
+    healthStateSummary: Record<HealthState, number>;
+    healthBucketSummary: Record<HealthBucket, number>;
     lastFullCheckAgo: number;
     lastQuickCheckAgo: number;
     newModelsAdded: string[];
