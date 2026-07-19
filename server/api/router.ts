@@ -256,6 +256,7 @@ import {
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
 import { agentSessionDetailHandler, agentSessionEventsHandler, agentSessionRunsHandler, agentSessionsListHandler } from "./agentSessions.ts";
+import { terminalSessionCreateHandler, terminalSessionStopHandler, terminalSessionsListHandler } from "./terminalSessions.ts";
 import {
   orchestratorSignalsListHandler,
   orchestratorSignalEmitHandler,
@@ -672,6 +673,19 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && agentSessionDetailMatch) {
     if (!checkToken(req)) return unauthorized();
     return agentSessionDetailHandler(decodeURIComponent(agentSessionDetailMatch[1]));
+  }
+  if (method === "GET" && pathname === "/api/terminal/sessions") {
+    if (!checkToken(req)) return unauthorized();
+    return terminalSessionsListHandler();
+  }
+  if (method === "POST" && pathname === "/api/terminal/sessions") {
+    if (!checkToken(req)) return unauthorized();
+    return terminalSessionCreateHandler(req);
+  }
+  const terminalSessionStopMatch = pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/stop$/);
+  if (method === "POST" && terminalSessionStopMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return terminalSessionStopHandler(decodeURIComponent(terminalSessionStopMatch[1]));
   }
   if (method === "GET" && pathname === "/api/agent-registry") {
     if (!checkToken(req)) return unauthorized();

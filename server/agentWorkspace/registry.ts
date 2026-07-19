@@ -818,3 +818,20 @@ export function listInternalVisibilityReceipts(): Array<{
     return { harness: item.harness, adapterSessionId: item.adapter_session_id, reason: item.reason, source: item.source, recordedAt: item.recorded_at };
   });
 }
+
+export function releaseWriterLeaseOfType(input: {
+  resourceType: "repository" | "worktree";
+  resourceKey: string;
+  sessionId: string;
+  fenceEpoch: number;
+  now?: number;
+}): boolean {
+  const now = input.now ?? Date.now();
+  const result = getDb().query(`
+    UPDATE leases
+    SET status = 'released', released_at = ?, expires_at = ?, revision = revision + 1
+    WHERE resource_type = ? AND resource_key = ?
+      AND holder_session_id = ? AND fence_epoch = ? AND status = 'active'
+  `).run(now, now, input.resourceType, canonicalLeaseKey(input.resourceKey), input.sessionId, input.fenceEpoch);
+  return result.changes === 1;
+}
