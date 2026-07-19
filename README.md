@@ -177,7 +177,7 @@ Do not put real credentials in command history, documentation, issue text, scree
 The current release has separate routes for OpenCode, Codex, Claude, Gemini, and Terminal.
 
 - Each agent page uses its own server adapter and session store.
-- OpenCode has a protected proxy for its server API.
+- The Control Surface’s OpenCode adapter uses a protected proxy, but a separately verified raw-upstream bypass still requires production containment. Exact exposure coordinates are kept in private operational evidence.
 - Codex, Claude, and Gemini expose session lifecycle and streaming endpoints.
 - The Terminal page uses xterm in the browser and a Bun WebSocket on the server.
 - The terminal server currently attaches clients to one configured tmux session. It is persistent across browser disconnects, but it is not yet a true multi-session terminal manager.
@@ -199,7 +199,7 @@ The proposal combines Terminal, Codex, OpenCode, Claude, and Gemini into one per
 - Markdown, JSONL, and telemetry exports built from redacted evidence;
 - the same session registry and lifecycle operations in both GUI and CLI.
 
-The first planned delivery slice is a server-side visibility invariant for OpenCode probe sessions. Internal test sessions must be excluded before serialization from normal lists, counts, search, recents, restored state, notifications, and analytics. Hiding is not deletion: audit evidence remains available only through an explicit root diagnostic path. Until that slice and its tests ship, this behavior must not be described as complete.
+The first planned delivery slice is containment of the raw OpenCode upstream outside the authenticated Control Surface. Only after that gate passes can the server-side visibility invariant be trusted: internal test sessions must then be excluded before serialization from normal lists, counts, search, recents, restored state, notifications, and analytics. Hiding is not deletion; audit evidence remains available only through an explicit root diagnostic path. Until containment and visibility tests both pass, “hidden forever” must not be described as complete.
 
 ## Quick start
 
