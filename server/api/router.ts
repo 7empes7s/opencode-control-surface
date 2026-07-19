@@ -33,6 +33,7 @@ import {
   clearForceRoute,
 } from "./models.ts";
 import { newsBitesHandler } from "./newsbites.ts";
+import { knowHandler } from "./know.ts";
 import { deleteArticleHandler, articleDossierPathHandler, refreshArticleImageHandler, uploadArticleImageHandler } from "./newsbites-actions.ts";
 import { infraHandler } from "./infra.ts";
 import {
@@ -254,6 +255,7 @@ import {
 } from "./discovery.ts";
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
+import { agentSessionDetailHandler, agentSessionEventsHandler, agentSessionRunsHandler, agentSessionsListHandler } from "./agentSessions.ts";
 import {
   orchestratorSignalsListHandler,
   orchestratorSignalEmitHandler,
@@ -652,6 +654,25 @@ if (method === "GET" && pathname === "/api/stream") {
     if (!checkToken(req)) return unauthorized();
     return promptsHandler(req, url);
   }
+  if (method === "GET" && pathname === "/api/agent-sessions") {
+    if (!checkToken(req)) return unauthorized();
+    return agentSessionsListHandler(url);
+  }
+  const agentSessionEventsMatch = pathname.match(/^\/api\/agent-sessions\/([^/]+)\/events$/);
+  if (method === "GET" && agentSessionEventsMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return agentSessionEventsHandler(decodeURIComponent(agentSessionEventsMatch[1]), url);
+  }
+  const agentSessionRunsMatch = pathname.match(/^\/api\/agent-sessions\/([^/]+)\/runs$/);
+  if (method === "GET" && agentSessionRunsMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return agentSessionRunsHandler(decodeURIComponent(agentSessionRunsMatch[1]));
+  }
+  const agentSessionDetailMatch = pathname.match(/^\/api\/agent-sessions\/([^/]+)$/);
+  if (method === "GET" && agentSessionDetailMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return agentSessionDetailHandler(decodeURIComponent(agentSessionDetailMatch[1]));
+  }
   if (method === "GET" && pathname === "/api/agent-registry") {
     if (!checkToken(req)) return unauthorized();
     return agentRegistryListHandler(req);
@@ -824,6 +845,10 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/newsbites") {
     if (!checkToken(req)) return unauthorized();
     return newsBitesHandler();
+  }
+  if (method === "GET" && pathname === "/api/know") {
+    if (!checkToken(req)) return unauthorized();
+    return knowHandler();
   }
   if (method === "GET" && pathname === "/api/version") {
     if (shouldRefreshCache()) {

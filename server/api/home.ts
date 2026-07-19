@@ -5,7 +5,7 @@ import { getModelHealth } from "../adapters/models.ts";
 import { getDoctorStats } from "../adapters/doctor.ts";
 import { getArticles, buildNewsBitesWidget, isSiteReachable } from "../adapters/newsbites.ts";
 import { getVastInstanceState, getVastAccount } from "../adapters/vast.ts";
-import { getOpenCodeSessionSummary } from "../adapters/opencode.ts";
+import { getOpenCodeOperationalSummary, getOpenCodeSessionSummary } from "../adapters/opencode.ts";
 import { runHomeSampler } from "../db/sampler.ts";
 import { ok, type ApiEnvelope, type HomeData, type SourceStatus } from "./types.ts";
 
@@ -79,16 +79,33 @@ export async function homeHandler(): Promise<Response> {
 }
 
 async function getHomeDataForRequest(): Promise<HomeBuildResult> {
+  let base: HomeBuildResult;
   if (cachedHome && Date.now() - cachedHome.ts < HOME_CACHE_MS) {
-    return cachedHome.value;
-  }
-  if (cachedHome && homeBuildInFlight) {
-    return {
+    base = cachedHome.value;
+  } else if (cachedHome && homeBuildInFlight) {
+    base = {
       data: cachedHome.value.data,
       sources: { ...cachedHome.value.sources, cache: "stale" },
     };
+  } else {
+    base = await buildHomeData();
   }
-  return buildHomeData();
+
+  const opencode = await settled(getOpenCodeSessionSummary);
+  return {
+    data: {
+      ...base.data,
+      opencode: opencode.ok
+        ? {
+            reachable: opencode.value.reachable,
+            sessionCount: opencode.value.sessionCount,
+            active24h: opencode.value.active24h,
+            latestUpdatedAt: opencode.value.latestUpdatedAt,
+          }
+        : { reachable: false, sessionCount: null, active24h: null, latestUpdatedAt: null },
+    },
+    sources: { ...base.sources, opencode: opencode.ok ? "ok" : "error" },
+  };
 }
 
 export async function buildHomeData(): Promise<HomeBuildResult> {
@@ -119,7 +136,7 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
       settled(isSiteReachable),
       settled(getVastInstanceState),
       settled(getVastAccount),
-      settled(getOpenCodeSessionSummary),
+      settled(getOpenCodeOperationalSummary),
     ]);
 
   sources.services = services.ok ? "ok" : "error";
@@ -275,9 +292,9 @@ async function buildHomeDataUncached(): Promise<HomeBuildResult> {
     opencode: opencode.ok
       ? {
           reachable: opencode.value.reachable,
-          sessionCount: opencode.value.sessionCount,
-          active24h: opencode.value.active24h,
-          latestUpdatedAt: opencode.value.latestUpdatedAt,
+          sessionCount: null,
+          active24h: null,
+          latestUpdatedAt: null,
         }
       : { reachable: false, sessionCount: null, active24h: null, latestUpdatedAt: null },
   };

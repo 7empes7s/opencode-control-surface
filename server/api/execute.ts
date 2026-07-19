@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createJob, writeActionAudit } from "../db/writer.ts";
-import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, newsBitesDeployAvailable, runDiskReclaim, runInfraTimerRun, runSingleModelProbe, startNewsBitesDeployJob } from "./actions.ts";
+import { ALLOWED_SERVICES, ALLOWED_CONTAINERS, ALLOWED_TIMERS, newsBitesDeployAvailable, runDiskReclaim, runInfraTimerRun, runKnowValidation, runSingleModelProbe, startNewsBitesDeployJob } from "./actions.ts";
 import { selectHealthiestGatewayModel } from "./gateway.ts";
 import { clearGatewayRouteOverrideForGatewayAdmin, setGatewayRouteOverrideForGatewayAdmin } from "../gateway/router.ts";
 import { loadGatewayConfig, resolveModel } from "../gateway/config.ts";
@@ -71,7 +71,7 @@ export function parseActionId(actionId: string): ParsedActionId | null {
   };
 }
 
-function getEnforcement(kind: string, targetType: string): { confirm: boolean; reasonRequired: boolean } {
+function getEnforcement(kind: string, targetType: string, targetId: string): { confirm: boolean; reasonRequired: boolean } {
   if (kind === "rotate" && targetType === "gateway-key") return { confirm: true, reasonRequired: true };
   if (kind === "pin" && targetType === "gateway-route") return { confirm: true, reasonRequired: true };
   if (kind === "regen") return { confirm: true, reasonRequired: true };
@@ -87,6 +87,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   // A NewsBites deploy restarts the live site, so it requires explicit
   // confirmation and operator context. run:backup:now remains no-confirm.
   if (kind === "run" && targetType === "newsbites") return { confirm: true, reasonRequired: true };
+  if (kind === "run" && targetType === "know" && targetId === "build") return { confirm: true, reasonRequired: true };
   // Other run actions are low-risk job-backed dispatches (currently only
   // run:backup:now) with no confirm/reason requirement.
   if (kind === "run") return { confirm: false, reasonRequired: false };
@@ -101,7 +102,7 @@ function getEnforcement(kind: string, targetType: string): { confirm: boolean; r
   return { confirm: false, reasonRequired: false };
 }
 
-function getRisk(kind: string, targetType: string, suffix?: string): "low" | "medium" | "high" {
+function getRisk(kind: string, targetType: string, targetId: string, suffix?: string): "low" | "medium" | "high" {
   if (kind === "rotate" && targetType === "gateway-key") return "medium";
   if (kind === "pin") return "low";
   if (kind === "regen") return "medium";
@@ -112,6 +113,7 @@ function getRisk(kind: string, targetType: string, suffix?: string): "low" | "me
   if (kind === "clear-cooldown") return "low";
   if (kind === "reclaim") return "medium";
   if (kind === "run" && targetType === "newsbites") return "medium";
+  if (kind === "run" && targetType === "know") return targetId === "build" ? "medium" : "low";
   if (kind === "run") return "low";
   if (kind === "mutate-policy") {
     if (targetType === "autoapply") return "medium";
@@ -155,7 +157,7 @@ export function writeExecutedActionAudit(
     actionId,
     targetType,
     targetId,
-    risk: getRisk(kind, targetType, suffix),
+    risk: getRisk(kind, targetType, targetId, suffix),
     reason,
     request: { actionId, confirmed, params, batchId, ...(runbookRunId ? { runbookRunId } : {}) },
     resultStatus: result.ok ? "success" : "failed",
@@ -611,6 +613,48 @@ if (kind === "start-job" && targetType === "doctor" && targetId === "scan") {
     };
   }
 
+  if (kind === "run" && targetType === "know") {
+    const timerByTarget: Record<string, string> = {
+      "refresh-health": "know-health",
+      "refresh-ops": "know-ops",
+      doctor: "know-doctor",
+    };
+    const timer = timerByTarget[targetId];
+    if (timer) {
+      if (!ALLOWED_TIMERS.includes(timer)) {
+        return { ok: false, error: "Know timer is not in the manual-run allowlist", code: "ALLOWLIST" };
+      }
+      const jobId = randomUUID();
+      createJob({
+        id: jobId,
+        kind: `know-${targetId}`,
+        targetType: "know",
+        targetId,
+        command: `systemctl start --no-block ${timer}.service`,
+        request: body,
+      });
+      void runInfraTimerRun(jobId, timer, body.reason);
+      return { ok: true, action: "run", jobId, message: `Know ${targetId.replace(/-/g, " ")} started` };
+    }
+    if (targetId === "typecheck" || targetId === "build") {
+      const jobId = randomUUID();
+      const command = targetId === "typecheck"
+        ? "cd /opt/know/web && npm run typecheck"
+        : "cd /opt/know/web && npm run build";
+      createJob({
+        id: jobId,
+        kind: `know-${targetId}`,
+        targetType: "know",
+        targetId,
+        command,
+        request: body,
+      });
+      void runKnowValidation(jobId, targetId, body.reason);
+      return { ok: true, action: "run", jobId, message: `Know ${targetId} started` };
+    }
+    return { ok: false, error: "unknown run:know target: " + targetId, code: "NOT_FOUND" };
+  }
+
   if (kind === "mutate-policy" && targetType === "model") {
     if (!suffix || !["block", "unblock", "probation-clear", "cooldown-clear"].includes(suffix)) {
       return { ok: false, error: "invalid mutate-policy suffix", code: "BAD_REQUEST" };
@@ -1052,7 +1096,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
   }
 
   const { kind, targetType, targetId, suffix } = parsed;
-  const enforcement = getEnforcement(kind, targetType);
+  const enforcement = getEnforcement(kind, targetType, targetId);
 
   if (enforcement.confirm && confirmed !== true) {
     writeActionAudit({
@@ -1060,7 +1104,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       actionId,
       targetType,
       targetId,
-      risk: getRisk(kind, targetType, suffix),
+      risk: getRisk(kind, targetType, targetId, suffix),
       reason,
       request: { actionId, confirmed, params, batchId },
       resultStatus: "failed",
@@ -1078,7 +1122,7 @@ export async function executeActionHandler(req: Request): Promise<Response> {
       actionId,
       targetType,
       targetId,
-      risk: getRisk(kind, targetType, suffix),
+      risk: getRisk(kind, targetType, targetId, suffix),
       reason,
       request: { actionId, confirmed, params, batchId },
       resultStatus: "failed",

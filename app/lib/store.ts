@@ -375,7 +375,6 @@ export const useStore = create<State>((set, get) => {
 
       const reply = action === "allow" ? "once" : "reject";
       const ok =
-        await apiPostJsonOk(`/permission/${id}/reply`, { reply }) ||
         await apiPostJsonOk(`/session/${activeSession.id}/permissions/${id}`, { response: reply }) ||
         await apiPostJsonOk(`/session/${activeSession.id}/permission/${id}`, { action });
 

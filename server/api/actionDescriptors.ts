@@ -698,6 +698,64 @@ function addDiskReclaimAndBackupActions(actions: ActionDescriptor[]): void {
   }
 }
 
+function addKnowActions(actions: ActionDescriptor[]): void {
+  const artifactActions = [
+    { targetId: "refresh-health", label: "Refresh health", timer: "know-health", artifact: "/var/lib/mimule/know-health.json" },
+    { targetId: "refresh-ops", label: "Refresh operations", timer: "know-ops", artifact: "/var/lib/mimule/know-ops.json" },
+    { targetId: "doctor", label: "Run doctor", timer: "know-doctor", artifact: "/var/lib/mimule/know-doctor.json" },
+  ] as const;
+  for (const item of artifactActions) {
+    actions.push(descriptor({
+      label: item.label,
+      kind: "run",
+      targetType: "know",
+      targetId: item.targetId,
+      risk: "low",
+      evidenceRefs: [
+        commandEvidence("Bounded timer", `systemctl start --no-block ${item.timer}.service`),
+        fileEvidence("Sanitized artifact", item.artifact),
+        apiEvidence("Know detail", "/api/know"),
+      ],
+      impactPreview: `Enqueue the existing ${item.timer} one-shot and refresh its sanitized artifact.`,
+      rollbackHint: "No rollback needed; this only requests one additional read-only health snapshot.",
+      expectedDurationMs: 5_000,
+      jobKind: `know-${item.targetId}`,
+      sourceRoute: "/know",
+      requiresOnline: true,
+    }));
+  }
+
+  actions.push(descriptor({
+    label: "Run typecheck",
+    kind: "run",
+    targetType: "know",
+    targetId: "typecheck",
+    risk: "low",
+    evidenceRefs: [commandEvidence("Fixed validation", "cd /opt/know/web && npm run typecheck")],
+    impactPreview: "Run Know's TypeScript validation without changing or deploying the application.",
+    rollbackHint: "No rollback needed; typecheck is read-only.",
+    expectedDurationMs: 120_000,
+    jobKind: "know-typecheck",
+    sourceRoute: "/know",
+  }));
+
+  actions.push(descriptor({
+    label: "Verify production build",
+    kind: "run",
+    targetType: "know",
+    targetId: "build",
+    risk: "medium",
+    confirm: true,
+    reasonRequired: true,
+    evidenceRefs: [commandEvidence("Fixed validation", "cd /opt/know/web && npm run build")],
+    impactPreview: "Create a local Know production build for verification. This does not restart or deploy Know.",
+    rollbackHint: "No live rollback is needed; the action does not deploy or restart the service.",
+    expectedDurationMs: 180_000,
+    jobKind: "know-build",
+    sourceRoute: "/know",
+  }));
+}
+
 function addDiscoveryScanActions(actions: ActionDescriptor[]): void {
   for (const source of Object.keys(DISCOVERY_SOURCES)) {
     actions.push(descriptor({
@@ -731,6 +789,7 @@ export function buildActionCatalog(input: CatalogInputs): ActionDescriptor[] {
   addDoctorActions(actions, input.doctorEntries);
   addVastAndGpuActions(actions, input);
   addDiskReclaimAndBackupActions(actions);
+  addKnowActions(actions);
   addDiscoveryScanActions(actions);
   return actions;
 }

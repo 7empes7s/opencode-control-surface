@@ -15,6 +15,10 @@ const CRITICAL_SERVICES_SEEDS = [
   "control-surface",
   "vast-tunnel",
   "cloudflared",
+  "know-web",
+  "know-health",
+  "know-ops",
+  "know-doctor",
 ];
 
 const DOCKER_CONTAINERS_SEEDS = ["openclaw_gateway", "paperclip", "paperclip_db", "goblin_game"];
@@ -173,6 +177,10 @@ const KNOWN_TIMERS_SEEDS = [
   "morning-brief",
   "mimule-backup",
   "vast-watchdog",
+  "know-health",
+  "know-ops",
+  "know-doctor",
+  "know-push-streak",
 ];
 
 function buildTimerNames(): string[] {

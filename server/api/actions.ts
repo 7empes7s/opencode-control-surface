@@ -28,6 +28,7 @@ export function newsBitesDeployAvailable(): boolean {
 export const ALLOWED_SERVICES = [
   "newsbites", "newsbites-autopipeline", "litellm", "opencode-server",
   "control-surface", "vast-tunnel", "cloudflared",
+  "know-web", "know-health", "know-ops", "know-doctor",
 ];
 export const ALLOWED_CONTAINERS = ["openclaw_gateway", "paperclip", "goblin_game"];
 export const ALLOWED_TIMERS = [
@@ -38,6 +39,9 @@ export const ALLOWED_TIMERS = [
   "newsbites-brief",
   "morning-brief",
   "vast-watchdog",
+  "know-health",
+  "know-ops",
+  "know-doctor",
 ];
 
 function json(body: unknown, status = 200): Response {
@@ -1265,6 +1269,48 @@ export async function runInfraTimerRun(jobId: string, timer: string, reason: str
     rollbackHint: "Inspect the service journal and wait for the next timer cycle if the manual run fails.",
     error: success ? undefined : failureReason,
     jobId,
+  });
+}
+
+const KNOW_ROOT = "/opt/know/web";
+const KNOW_VALIDATION_COMMANDS = {
+  typecheck: `cd ${KNOW_ROOT} && npm run typecheck`,
+  build: `cd ${KNOW_ROOT} && npm run build`,
+} as const;
+
+export type KnowValidationTarget = keyof typeof KNOW_VALIDATION_COMMANDS;
+
+/** Run one fixed, read-only Know validation as a durable Control Surface job. */
+export async function runKnowValidation(
+  jobId: string,
+  target: KnowValidationTarget,
+  reason: string | undefined,
+): Promise<void> {
+  // Yield before the synchronous runner so the API can return the durable job id.
+  await Promise.resolve();
+  const envName = target === "typecheck" ? "DASHBOARD_KNOW_TYPECHECK_CMD" : "DASHBOARD_KNOW_BUILD_CMD";
+  const command = process.env[envName]?.trim() || KNOW_VALIDATION_COMMANDS[target];
+  const result = runShell(command, { timeout: target === "build" ? 180_000 : 120_000 });
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").slice(-64_000);
+  updateJobOutput(jobId, output);
+  finishJob(jobId, result.ok ? "success" : "failed", {
+    output,
+    exitCode: result.ok ? 0 : 1,
+    error: result.ok ? undefined : result.error ?? `${target} failed`,
+  });
+  audit({
+    actionKind: "know.validation.finished",
+    actionId: `run:know:${target}`,
+    targetType: "know",
+    targetId: target,
+    risk: target === "build" ? "medium" : "low",
+    reason,
+    request: { target },
+    result: result.ok ? `Know ${target} passed` : `Know ${target} failed`,
+    resultStatus: result.ok ? "success" : "failed",
+    jobId,
+    evidence: [{ label: "Know validation", kind: "command", ref: KNOW_VALIDATION_COMMANDS[target] }],
+    error: result.ok ? undefined : result.error ?? `${target} failed`,
   });
 }
 

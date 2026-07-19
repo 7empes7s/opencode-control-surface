@@ -117,6 +117,17 @@ describe("router auth gating", () => {
     }
   });
 
+  test("gates the first-class Know detail route", async () => {
+    const path = "/api/know";
+    const anonymousResponse = await handleApi(request(path), new URL(`http://127.0.0.1:3000${path}`));
+    expect(anonymousResponse.status).toBe(401);
+    const authenticatedResponse = await handleApi(
+      request(path, { headers: { "x-operator-token": "test-token" } }),
+      new URL(`http://127.0.0.1:3000${path}`),
+    );
+    expect(authenticatedResponse.status).toBe(200);
+  });
+
   test("allows valid operator-token requests through newly gated routes", async () => {
     for (const path of gatedRoutes) {
       const response = await handleApi(

@@ -12,7 +12,9 @@
     "check": "NODE_OPTIONS=--max-old-space-size=4096 bun run typecheck && NODE_OPTIONS=--max-old-space-size=4096 bun run build",
     "test:e2e": "playwright test",
     "build:binary": "bun run build && BUILD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo dev) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) bun build --compile --target=bun-linux-x64 --outfile=dist/tib-builder server/main.ts",
-    "build:docker": "docker build -t tib-builder:latest ."
+    "build:docker": "docker build -t tib-builder:latest .",
+    "agent-sessions:audit": "bun scripts/agent-session-audit.ts --include-internal",
+    "agent-sessions:snapshot-opencode": "bun scripts/snapshot-opencode-legacy-sessions.ts"
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.0.0",

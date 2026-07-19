@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DASHBOARD_SCHEMA_VERSION,
   closeDashboardDb,
   getDashboardDb,
   initDashboardDb,
@@ -53,6 +54,12 @@ const expectedTables = [
   "prompts",
   "webhooks",
   "webhook_deliveries",
+  "agent_sessions",
+  "agent_runs",
+  "agent_events",
+  "visibility_receipts",
+  "artifacts",
+  "leases",
 ];
 
 let tempDir: string;
@@ -101,7 +108,7 @@ function registerDashboardDbTests(): void {
     }
 
     const version = getDashboardDb()!.query("SELECT version FROM schema_version").get() as { version: number };
-    expect(version.version).toBe(10);
+    expect(version.version).toBe(DASHBOARD_SCHEMA_VERSION);
   });
 
   test("migration tolerates historical v5 and v6 schema_version rows", () => {
@@ -143,7 +150,7 @@ function registerDashboardDbTests(): void {
     expect(db).not.toBeNull();
 
     const versions = getDashboardDb()!.query("SELECT version FROM schema_version ORDER BY version").all() as Array<{ version: number }>;
-    expect(versions.map((row) => row.version)).toEqual([10]);
+    expect(versions.map((row) => row.version)).toEqual([DASHBOARD_SCHEMA_VERSION]);
     const columns = getDashboardDb()!.query("PRAGMA table_info(insights)").all() as Array<{ name: string }>;
     expect(columns.some((column) => column.name === "resolved_at")).toBe(true);
   });

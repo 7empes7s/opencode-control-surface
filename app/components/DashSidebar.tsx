@@ -68,6 +68,7 @@ const NAV_ICONS: Record<string, typeof LayoutGrid> = {
   "/models": Cpu,
   "/cost": TrendingUp,
   "/newsbites": Newspaper,
+  "/know": Sparkles,
   "/infra": Server,
   "/incidents": AlertTriangle,
   "/jobs": ClipboardList,

@@ -1,6 +1,4 @@
 import { handleApi } from "./api/router.ts";
-import { checkToken } from "./api/actions.ts";
-import { normalizeWorkspace } from "./api/workspaces.ts";
 import { initDashboardDb } from "./db/dashboard.ts";
 import { initObservabilityDb } from "./db/observability.ts";
 import { startIngestor } from "./db/ingestor.ts";
@@ -29,8 +27,10 @@ import {
   terminalWebSocketHandlers,
   type TerminalSocketData,
 } from "./terminal/session.ts";
+import { handleOpenCodeProxy } from "./agentWorkspace/opencodeProxy.ts";
+import { startOpenCodeEventSpool } from "./agentWorkspace/opencodeEventSpool.ts";
+import { importLegacyAgentSessions, markUnreconciledAgentRunsStale, seedLegacyOpenCodeVisibilityReceipts } from "./agentWorkspace/registry.ts";
 
-const OPENCODE_URL = process.env.OPENCODE_SERVER_URL || "http://localhost:4096";
 const DIST_PATH = new URL("../dist", import.meta.url).pathname;
 
 const MIME: Record<string, string> = {
@@ -83,70 +83,6 @@ async function serveStatic(pathname: string): Promise<Response> {
   return new Response("Not found", { status: 404 });
 }
 
-async function proxyOpenCode(req: Request, pathname: string, search: string): Promise<Response> {
-  const targetPath = pathname.replace(/^\/opencode-api/, "") || "/";
-  const targetUrl = `${OPENCODE_URL}${targetPath}${search}`;
-
-  const proxyHeaders = new Headers(req.headers);
-  proxyHeaders.delete("host");
-  proxyHeaders.delete("content-length");
-
-  // Buffer the request body once. Forwarding the raw `req.body` ReadableStream to
-  // Bun's fetch hangs POSTs that carry a body (e.g. /session/:id/message), which is
-  // why chat messages "never even queued". Buffering to an ArrayBuffer is safe here —
-  // these are small JSON payloads, not large uploads.
-  let body: BodyInit | undefined;
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    const raw = await req.arrayBuffer();
-    if (req.method === "POST" && targetPath === "/session") {
-      let payload: Record<string, unknown>;
-      try {
-        payload = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>;
-      } catch {
-        return new Response(JSON.stringify({ error: "invalid json" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      const workspace = normalizeWorkspace(typeof payload.directory === "string" ? payload.directory : undefined);
-      if (workspace.ok === false) {
-        return new Response(JSON.stringify({ error: workspace.error }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      payload.directory = workspace.path;
-      body = JSON.stringify(payload);
-      proxyHeaders.set("content-type", "application/json");
-    } else {
-      body = raw;
-    }
-  }
-
-  try {
-    const resp = await fetch(targetUrl, {
-      method: req.method,
-      headers: proxyHeaders,
-      body,
-    } as RequestInit);
-
-    const headers = new Headers(resp.headers);
-    headers.delete("content-encoding");
-    headers.delete("content-length");
-    headers.delete("transfer-encoding");
-
-    return new Response(resp.body, {
-      status: resp.status,
-      headers,
-    });
-  } catch {
-    return new Response(JSON.stringify({ error: "OpenCode server unavailable" }), {
-      status: 502,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-}
-
 export async function startServer(): Promise<{ stop: () => void }> {
   const dashboardDb = initDashboardDb();
   const observabilityDb = initObservabilityDb();
@@ -157,6 +93,16 @@ export async function startServer(): Promise<{ stop: () => void }> {
     console.log("[control-surface] observability SQLite initialized");
   }
   if (dashboardDb) {
+    const seededReceipts = seedLegacyOpenCodeVisibilityReceipts();
+    if (seededReceipts > 0) {
+      console.log(`[agent-workspace] imported ${seededReceipts} immutable OpenCode visibility receipts`);
+    }
+    const importedSessions = importLegacyAgentSessions();
+    if (Object.values(importedSessions).some((count) => count > 0)) {
+      console.log(`[agent-workspace] imported legacy visible sessions ${JSON.stringify(importedSessions)}`);
+    }
+    const staleRuns = markUnreconciledAgentRunsStale();
+    if (staleRuns > 0) console.warn(`[agent-workspace] marked ${staleRuns} unreconciled runs stale after restart`);
     seedPlaybooks(dashboardDb);
     setLaneLimit("builder-passes", 3);
     seedDefaultTenant();
@@ -193,6 +139,8 @@ export async function startServer(): Promise<{ stop: () => void }> {
       console.warn("[control-surface] echo skill auto-install failed:", e);
     }
   }
+
+  const opencodeEventSpool = dashboardDb ? startOpenCodeEventSpool() : null;
 
   const ingestor = startIngestor();
   if (ingestor) {
@@ -236,6 +184,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
     builderReconciler?.stop();
     clearInterval(executiveReportTimer);
     stopInsightsScanScheduler();
+    opencodeEventSpool?.stop();
     process.exit(0);
   };
   process.once("SIGTERM", shutdown);
@@ -248,6 +197,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
       builderReconciler?.stop();
       clearInterval(executiveReportTimer);
       stopInsightsScanScheduler();
+      opencodeEventSpool?.stop();
     },
   };
 }
@@ -334,13 +284,7 @@ const server = Bun.serve<TerminalSocketData>({
     }
 
     if (pathname.startsWith("/opencode-api")) {
-      if (!checkToken(req)) {
-        return new Response(JSON.stringify({ error: "unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return proxyOpenCode(req, pathname, search);
+      return handleOpenCodeProxy(req, pathname, search);
     }
 
     if (pathname === "/models") {

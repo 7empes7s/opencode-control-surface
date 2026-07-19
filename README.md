@@ -44,6 +44,7 @@ The repository contains a React operator interface and a Bun server. Major imple
 | Traces and Audit | Correlate Builder spans, gateway attempts, action history, validation artifacts, and exportable evidence |
 | Operations | Inspect infrastructure, scheduled work, jobs, channels, reports, content health, and connected product services |
 | Platform | Support projects, tenants, marketplace skills, feature flags, licensing, onboarding, telemetry consent, and compliance views |
+| Know | First-class authenticated workspace for the independent Know product: sanitized health, operations, **email & delivery** (transport/readiness, 13-scenario template coverage, story-email opt-in and live-story eligibility, delivery-outcome state), models, workflow, and doctor — read-only aggregates only, with governed refresh/typecheck/build actions and observe-only push-streak visibility. Never reads NewsBites state or Know database rows |
 
 Some pages depend on services or files outside this repository. A page may therefore be fully implemented but show a degraded state when LiteLLM, OpenCode, a model-health artifact, a database, or another adapter is unavailable. That distinction is intentional.
 

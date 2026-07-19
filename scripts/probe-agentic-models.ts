@@ -53,10 +53,20 @@ function probe(model: string): { verified: boolean; latencyMs: number | null; no
   const marker = `AGOK_${Math.random().toString(36).slice(2, 8)}`;
   const started = Date.now();
   try {
-    const r = spawnSync("/bin/bash", ["-c",
-      `XDG_CONFIG_HOME=${BUILDER_XDG} timeout ${PROBE_TIMEOUT_S} opencode run --dir ${dir} --dangerously-skip-permissions --model ${model} ` +
-      `"Create a file named probe.txt containing exactly ${marker} using your write tool, then stop." 2>&1`,
-    ], { encoding: "utf8", timeout: (PROBE_TIMEOUT_S + 10) * 1000, maxBuffer: 8 * 1024 * 1024 });
+    const r = spawnSync("timeout", [
+      String(PROBE_TIMEOUT_S),
+      "opencode", "run",
+      "--dir", dir,
+      "--dangerously-skip-permissions",
+      "--model", model,
+      "--title", `__mimule_probe_v1__:agentic-model:${model}`,
+      `Create a file named probe.txt containing exactly ${marker} using your write tool, then stop.`,
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: BUILDER_XDG },
+      timeout: (PROBE_TIMEOUT_S + 10) * 1000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
     const latencyMs = Date.now() - started;
     const f = join(dir, "probe.txt");
     const wrote = existsSync(f) && readFileSync(f, "utf8").includes(marker);

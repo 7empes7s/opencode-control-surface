@@ -7,6 +7,7 @@ import { AutopipelinePage } from "./routes/AutopipelinePage";
 import { DoctorPage } from "./routes/DoctorPage";
 import { ModelsPage } from "./routes/ModelsPage";
 import { NewsBitesPage } from "./routes/NewsBitesPage";
+import { KnowPage } from "./routes/KnowPage";
 import { InfraPage } from "./routes/InfraPage";
 import { IncidentsPage } from "./routes/IncidentsPage";
 import { OpenCodeRoute } from "./routes/OpenCodeRoute";
@@ -181,6 +182,9 @@ export function App() {
         </Route>
         <Route path="/newsbites">
           <DashLayout><NewsBitesPage /></DashLayout>
+        </Route>
+        <Route path="/know">
+          <DashLayout><KnowPage /></DashLayout>
         </Route>
         <Route path="/infra">
           <DashLayout><InfraPage /></DashLayout>

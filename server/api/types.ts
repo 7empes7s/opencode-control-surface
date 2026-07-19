@@ -416,6 +416,87 @@ export interface NewsBitesDetail {
   };
 }
 
+export interface KnowArtifactStatus {
+  state: "ok" | "missing" | "malformed";
+  modifiedAt: string | null;
+  ageSeconds: number | null;
+  stale: boolean;
+}
+
+export interface KnowDetail {
+  identity: {
+    id: "know";
+    label: string;
+    root: string;
+    service: string;
+    defaultPlan: string | null;
+    publicUrl: string | null;
+    localUrl: string | null;
+  };
+  health: {
+    artifact: KnowArtifactStatus;
+    ok: boolean | null;
+    score: number | null;
+    total: number | null;
+    failed: number | null;
+    checkedAt: string | null;
+  };
+  operations: {
+    artifact: KnowArtifactStatus;
+    stories: { total: number | null; live: number | null; drafts: number | null; artComplete: boolean | null };
+    database: { reachable: boolean | null; schemaVersion: number | null; accounts: number | null; events: number | null; pushSubscriptions: number | null };
+    capabilities: { reachable: boolean | null; magicLink: boolean | null; push: boolean | null };
+  };
+  email: {
+    /** True when the Know ops artifact carried a sanitized email block. */
+    available: boolean;
+    configured: boolean | null;
+    transport: "microsoft365-oauth" | "smtp-legacy" | "unconfigured" | null;
+    readiness: "ready" | "partial" | "unconfigured" | null;
+    templates: {
+      total: number | null;
+      scenarios: string[];
+      htmlCoverage: number | null;
+      textCoverage: number | null;
+      complete: boolean | null;
+    };
+    storyDelivery: {
+      preferenceAvailable: boolean | null;
+      optedIn: number | null;
+      liveEligible: number | null;
+      /** Whether Know persists delivery outcomes yet ("absent" = per-send only, not aggregated). */
+      deliveryLog: "present" | "absent" | null;
+      totals: { delivered: number | null; unavailable: number | null; failed: number | null };
+      last: { status: string | null; at: string | null } | null;
+    };
+  };
+  models: {
+    configuredStageModels: Record<string, string>;
+    logicalModels: Array<{ name: string; observed: boolean | null; available: boolean | null; capability: string | null; latencyMs: number | null; rating100: number | null; lastTestedAt: string | null }>;
+    warning: string | null;
+  };
+  workflow: { stages: string[]; dossiers: number | null; filesByStage: Record<string, number>; agentRuns: number | null; latestModifiedAt: string | null };
+  doctor: {
+    artifact: KnowArtifactStatus;
+    ok: boolean | null;
+    status: string | null;
+    counts: { pass: number | null; warn: number | null; fail: number | null };
+    findings: Array<{ id: string; status: string; summary: string; remediation: string | null }>;
+  };
+  runtime: {
+    reachable: boolean;
+    status: number | null;
+    checkedAt: string;
+    stories: Record<string, unknown>;
+    database: Record<string, unknown>;
+  };
+  units: {
+    services: ServicePill[];
+    timers: Array<{ name: string; active: boolean; lastTrigger: string | null; nextElapse: string | null; lastResult: string | null; observeOnly: boolean }>;
+  };
+  boundaries: { owns: string[]; neverReads: string[] };
+}
+
 export interface IncidentsDetail {
   entries: {
     ts: number;

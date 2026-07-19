@@ -9,6 +9,9 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { WORKSPACE_ROOTS } from "./workspaces.ts";
+import { getCurrentAuthenticatedUser } from "../auth/session.ts";
+import { resolveRole } from "../governance/rbac.ts";
+import { listAgentSessions } from "../agentWorkspace/registry.ts";
 
 type AgentId = "claude" | "codex" | "opencode" | "gemini";
 type DiscoveryStatus = "ok" | "missing" | "degraded" | "error";
@@ -648,7 +651,6 @@ async function buildDiscovery(): Promise<DiscoveryData> {
   const opencodeVersion = await probe(OPENCODE_BIN, ["-v"], 5000, 1200);
   const opencodeHelp = await probe(OPENCODE_BIN, ["--help"], 5000, 6000);
   const opencodeMcp = await probe(OPENCODE_BIN, ["mcp", "list"], 8000, 6000);
-  const opencodeSessions = await probe(OPENCODE_BIN, ["session", "list", "--format", "json", "--max-count", "10"], 8000, 8000);
   const opencodeAgents = await probe(OPENCODE_BIN, ["agent", "list"], 10_000, 120_000);
   const opencodeModels = await probe(OPENCODE_BIN, ["models"], 10_000, 8000);
   const opencodeStats = await probe(OPENCODE_BIN, ["stats", "--days", "7", "--models", "10"], 10_000, 8000);
@@ -659,14 +661,6 @@ async function buildDiscovery(): Promise<DiscoveryData> {
     ...parseCliCommands(opencodeHelp.stdout ?? "", "OpenCode CLI", "opencode"),
     ...parseCliCommands(geminiHelp.stdout ?? "", "Gemini CLI", "gemini"),
   ];
-
-  let openCodeSessionItems: unknown[] = [];
-  if (opencodeSessions.status === "ok" && opencodeSessions.stdout) {
-    try {
-      const parsed = JSON.parse(opencodeSessions.stdout) as unknown;
-      if (Array.isArray(parsed)) openCodeSessionItems = parsed;
-    } catch {}
-  }
 
   const opencodeAgentNames = parseOpenCodeAgentNames(opencodeAgents.stdout ?? "");
 
@@ -690,10 +684,10 @@ async function buildDiscovery(): Promise<DiscoveryData> {
       claudeSessions: sessionSummary(CLAUDE_STATE),
       codexSessions: sessionSummary(CODEX_STATE),
       opencodeSessions: {
-        count: openCodeSessionItems.length,
-        items: openCodeSessionItems,
-        status: opencodeSessions.status,
-        evidence: opencodeSessions.evidence,
+        count: 0,
+        items: [],
+        status: opencodeVersion.status,
+        evidence: "Request-scoped session inventory is applied after the operational cache.",
       },
       opencodeAgents: {
         count: opencodeAgentNames.length,
@@ -726,6 +720,32 @@ async function getDiscovery(): Promise<DiscoveryData> {
   const data = await buildDiscovery();
   discoveryCache = { at: Date.now(), data };
   return data;
+}
+
+function withScopedOpenCodeSessions(data: DiscoveryData): DiscoveryData {
+  const user = getCurrentAuthenticatedUser();
+  const sessions = user ? listAgentSessions({
+    tenantId: user.tenantId,
+    userId: user.userId,
+    role: resolveRole(user),
+  }, "opencode") : [];
+  return {
+    ...data,
+    runtime: {
+      ...data.runtime,
+      opencodeSessions: {
+        ...data.runtime.opencodeSessions,
+        count: sessions.length,
+        items: sessions.map((session) => ({
+          id: session.adapterSessionId,
+          title: session.title,
+          directory: session.workspaceRoot,
+          updatedAt: session.updatedAt,
+          status: session.status,
+        })),
+      },
+    },
+  };
 }
 
 export async function agentsSkillsHandler(url: URL): Promise<Response> {
@@ -787,7 +807,7 @@ export function agentsQuickPromptsHandler(url: URL): Response {
 }
 
 export async function agentsDiscoveryHandler(): Promise<Response> {
-  const data = await getDiscovery();
+  const data = withScopedOpenCodeSessions(await getDiscovery());
   return json({
     generatedAt: new Date().toISOString(),
     ...data,
@@ -795,9 +815,10 @@ export async function agentsDiscoveryHandler(): Promise<Response> {
 }
 
 export async function agentsSummaryHandler(): Promise<Response> {
-  const data = discoveryCache && Date.now() - discoveryCache.at < CACHE_MS
+  const cached = discoveryCache && Date.now() - discoveryCache.at < CACHE_MS
     ? summaryFrom(discoveryCache.data)
     : buildCheapSummary();
+  const data = withScopedOpenCodeSessions(cached);
   const countFor = (agent: AgentId) => ({
     skills: filterAgent(data.skills, agent).length,
     commands: filterAgent(data.commands, agent).length,

@@ -566,6 +566,7 @@ for name, path in AGENTS:
         t0 = time.time()
         if name == "opencode":
             res = subprocess.run([OPENCODE, "run", "--model", "opencode/nemotron-3-ultra-free",
+                                   "--title", "__mimule_probe_v1__:product-sentinel-liveness",
                                    "Reply with exactly: OK"],
                                   timeout=90, capture_output=True, text=True)
         elif name == "gemini":

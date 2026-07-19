@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { computeSlaDueAt } from "../reasoner/sla.ts";
 
 export const DEFAULT_DASHBOARD_DB_PATH = "/var/lib/control-surface/dashboard.sqlite";
-export const DASHBOARD_SCHEMA_VERSION = 10;
+export const DASHBOARD_SCHEMA_VERSION = 12;
 
 // Single source of truth for the seed tenant's id/name — the first-run setup
 // flow (server/api/setup.ts) computes "has this tenant been renamed yet?" by
@@ -57,15 +57,25 @@ export function initDashboardDb(options: InitDashboardDbOptions = {}): Database 
   closeDashboardDb();
 
   let db: Database | null = null;
+  const previousUmask = process.umask(0o077);
 
   try {
-    const dbDir = dirname(dbPath);
-    mkdirSync(dbDir, { recursive: true });
-    chmodSync(dbDir, 0o750);
+    const isInMemory = dbPath === ":memory:";
+    if (!isInMemory) {
+      const dbDir = dirname(dbPath);
+      mkdirSync(dbDir, { recursive: true });
+      chmodSync(dbDir, 0o750);
+    }
 
     db = new Database(dbPath);
+    if (!isInMemory) chmodSync(dbPath, 0o600);
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec("PRAGMA busy_timeout = 5000;");
+    if (!isInMemory) {
+      for (const sqlitePath of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+        if (existsSync(sqlitePath)) chmodSync(sqlitePath, 0o600);
+      }
+    }
     migrateDashboardDb(db);
 
     dashboardDb = db;
@@ -84,6 +94,8 @@ export function initDashboardDb(options: InitDashboardDbOptions = {}): Database 
     }
     closeDashboardDb();
     return null;
+  } finally {
+    process.umask(previousUmask);
   }
 }
 
@@ -278,6 +290,150 @@ function migrateDashboardDb(db: Database): void {
       ended_at INTEGER,
       summary TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      harness TEXT NOT NULL,
+      adapter_session_id TEXT NOT NULL,
+      adapter_version TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'private'
+        CHECK (visibility IN ('private', 'tenant')),
+      acl_json TEXT NOT NULL DEFAULT '[]',
+      required_role TEXT NOT NULL DEFAULT 'viewer'
+        CHECK (required_role IN ('viewer', 'auditor', 'operator', 'owner')),
+      repository_root TEXT,
+      workspace_root TEXT,
+      isolation_mode TEXT NOT NULL DEFAULT 'shared-checkout',
+      access_mode TEXT NOT NULL DEFAULT 'writer'
+        CHECK (access_mode IN ('reader', 'writer')),
+      requested_config_json TEXT NOT NULL DEFAULT '{}',
+      effective_config_json TEXT NOT NULL DEFAULT '{}',
+      internal INTEGER NOT NULL DEFAULT 0 CHECK (internal IN (0, 1)),
+      registry_revision INTEGER NOT NULL DEFAULT 1,
+      event_sequence INTEGER NOT NULL DEFAULT 0,
+      trace_id TEXT,
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      archived_at INTEGER,
+      UNIQUE (harness, adapter_session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_tenant_owner_updated
+      ON agent_sessions (tenant_id, owner_user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace_status
+      ON agent_sessions (workspace_root, status);
+
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      adapter_run_id TEXT,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      requested_config_json TEXT NOT NULL DEFAULT '{}',
+      effective_config_json TEXT NOT NULL DEFAULT '{}',
+      supervisor_json TEXT NOT NULL DEFAULT '{}',
+      registry_revision INTEGER NOT NULL DEFAULT 1,
+      event_sequence INTEGER NOT NULL DEFAULT 0,
+      trace_id TEXT,
+      created_at INTEGER NOT NULL,
+      started_at INTEGER,
+      finished_at INTEGER,
+      error TEXT,
+      UNIQUE (tenant_id, idempotency_key),
+      FOREIGN KEY (session_id) REFERENCES agent_sessions(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_session_created
+      ON agent_runs (session_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT,
+      tenant_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_sha256 TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE (session_id, sequence),
+      FOREIGN KEY (session_id) REFERENCES agent_sessions(id),
+      FOREIGN KEY (run_id) REFERENCES agent_runs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_events_session_sequence
+      ON agent_events (session_id, sequence);
+
+    CREATE TABLE IF NOT EXISTS visibility_receipts (
+      id TEXT PRIMARY KEY,
+      harness TEXT NOT NULL,
+      adapter_session_id TEXT NOT NULL,
+      classification TEXT NOT NULL CHECK (classification = 'internal'),
+      reason TEXT NOT NULL,
+      source TEXT NOT NULL,
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      recorded_at INTEGER NOT NULL,
+      UNIQUE (harness, adapter_session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_visibility_receipts_harness_session
+      ON visibility_receipts (harness, adapter_session_id);
+
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT,
+      tenant_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      path TEXT NOT NULL,
+      sha256 TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES agent_sessions(id),
+      FOREIGN KEY (run_id) REFERENCES agent_runs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifacts_session_created
+      ON artifacts (session_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS leases (
+      resource_type TEXT NOT NULL,
+      resource_key TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      holder_session_id TEXT,
+      holder_user_id TEXT,
+      mode TEXT NOT NULL DEFAULT 'writer' CHECK (mode IN ('reader', 'writer')),
+      status TEXT NOT NULL DEFAULT 'released' CHECK (status IN ('active', 'released', 'expired')),
+      fence_epoch INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL DEFAULT 0,
+      acquired_at INTEGER,
+      expires_at INTEGER,
+      released_at INTEGER,
+      PRIMARY KEY (resource_type, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_leases_tenant_holder
+      ON leases (tenant_id, holder_session_id, status);
+
+    CREATE TRIGGER IF NOT EXISTS trg_visibility_receipts_immutable_update
+    BEFORE UPDATE ON visibility_receipts
+    BEGIN
+      SELECT RAISE(ABORT, 'visibility receipts are immutable');
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_visibility_receipts_immutable_delete
+    BEFORE DELETE ON visibility_receipts
+    BEGIN
+      SELECT RAISE(ABORT, 'visibility receipts are immutable');
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_agent_sessions_internal_immutable
+    BEFORE UPDATE OF internal ON agent_sessions
+    WHEN OLD.internal = 1 AND NEW.internal = 0
+    BEGIN
+      SELECT RAISE(ABORT, 'internal session classification is immutable');
+    END;
 
     CREATE TABLE IF NOT EXISTS notification_rules (
       id INTEGER PRIMARY KEY,

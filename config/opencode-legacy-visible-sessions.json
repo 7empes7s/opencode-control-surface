@@ -1,0 +1,624 @@
+{
+  "schemaVersion": 1,
+  "migrationId": "agent-workspace-slice1-opencode-visible-import-20260719",
+  "expectedCount": 77,
+  "sortedIdsSha256": "514ed9545a61b9699cff4a723742714e530bf89899261130689299f21a35a238",
+  "sessions": [
+    {
+      "id": "ses_1015a5703ffe6HyHm9QkttMSXc",
+      "title": "Greeting",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1782388730108,
+      "updatedAt": 1782388735274
+    },
+    {
+      "id": "ses_1015b4cc9ffeHZwLX3Q0XQYqEn",
+      "title": "Greeting",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1782388667190,
+      "updatedAt": 1782388681311
+    },
+    {
+      "id": "ses_129ec44b2ffembiBHlcOPb7MXp",
+      "title": "Create probe.txt with HELLO123",
+      "directory": "/tmp/og_cs-gateway_coding-go-minimax-m3",
+      "version": "1.4.11",
+      "createdAt": 1781708077901,
+      "updatedAt": 1781708096649
+    },
+    {
+      "id": "ses_129f33248fferpBMjC03Sbw3aX",
+      "title": "Create probe.txt with HELLO123",
+      "directory": "/tmp/ogtest2",
+      "version": "1.4.11",
+      "createdAt": 1781707623863,
+      "updatedAt": 1781707628958
+    },
+    {
+      "id": "ses_129f37cecffew9XGVeQR7PIoYj",
+      "title": "New session - 2026-06-17T14:46:44.755Z",
+      "directory": "/tmp/pa_opencode-go_mimo-v2_5-pro",
+      "version": "1.4.11",
+      "createdAt": 1781707604755,
+      "updatedAt": 1781707612553
+    },
+    {
+      "id": "ses_12a099144ffe44XhJI1PFptBC3",
+      "title": "New session - 2026-06-17T14:22:37.762Z",
+      "directory": "/tmp/ag_opencode_glm-5_1",
+      "version": "1.4.11",
+      "createdAt": 1781706157762,
+      "updatedAt": 1781706160006
+    },
+    {
+      "id": "ses_12a09cf44ffeY5yi2ve4bxIcn2",
+      "title": "New session - 2026-06-17T14:22:21.883Z",
+      "directory": "/tmp/ag_opencode_kimi-k2_6",
+      "version": "1.4.11",
+      "createdAt": 1781706141883,
+      "updatedAt": 1781706149849
+    },
+    {
+      "id": "ses_12a0b3ad5ffepZ2bSWxc1QdLE4",
+      "title": "New session - 2026-06-17T14:20:48.811Z",
+      "directory": "/tmp/ag_openrouter_qwen_qwen3-coder_free",
+      "version": "1.4.11",
+      "createdAt": 1781706048811,
+      "updatedAt": 1781706049556
+    },
+    {
+      "id": "ses_12a0bb8a1ffezaX7ehbnjUjc1x",
+      "title": "New session - 2026-06-17T14:20:16.606Z",
+      "directory": "/tmp/agtest",
+      "version": "1.4.11",
+      "createdAt": 1781706016606,
+      "updatedAt": 1781706017693
+    },
+    {
+      "id": "ses_12d4e7276ffe6nI5DkHSRmJwXL",
+      "title": "Create ok.txt containing WORKS",
+      "directory": "/root/oc_def",
+      "version": "1.4.11",
+      "createdAt": 1781651312009,
+      "updatedAt": 1781651318803
+    },
+    {
+      "id": "ses_12d4fee36ffeIkeL2wJBz9V6Kz",
+      "title": "New session - 2026-06-16T23:06:54.794Z",
+      "directory": "/root/oc_qc",
+      "version": "1.4.11",
+      "createdAt": 1781651214794,
+      "updatedAt": 1781651215553
+    },
+    {
+      "id": "ses_12d5442d4ffeY3CEkb67A0Zpt3",
+      "title": "New session - 2026-06-16T23:02:10.987Z",
+      "directory": "/root/octest2",
+      "version": "1.4.11",
+      "createdAt": 1781650930987,
+      "updatedAt": 1781650931594
+    },
+    {
+      "id": "ses_12d569bd1ffegSfIqWj2R6LZeC",
+      "title": "New session - 2026-06-16T22:59:37.134Z",
+      "directory": "/root/octest",
+      "version": "1.4.11",
+      "createdAt": 1781650777134,
+      "updatedAt": 1781650777746
+    },
+    {
+      "id": "ses_12d58c365ffeNkt1KCawxayxvW",
+      "title": "New session - 2026-06-16T22:57:15.930Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781650635930,
+      "updatedAt": 1781650645551
+    },
+    {
+      "id": "ses_12d5b820cffeKYHxNRKqnNwUYi",
+      "title": "New session - 2026-06-16T22:54:16.051Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781650456051,
+      "updatedAt": 1781650466589
+    },
+    {
+      "id": "ses_12d5fd414ffe0HuJMX2t7N5z0z",
+      "title": "New session - 2026-06-16T22:49:32.907Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781650172907,
+      "updatedAt": 1781650177700
+    },
+    {
+      "id": "ses_12d7416d6ffewvqZ4EzPjjXfR9",
+      "title": "New session - 2026-06-16T22:27:25.097Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781648845097,
+      "updatedAt": 1781648848617
+    },
+    {
+      "id": "ses_12d742abaffeVA37N6XVDROzWg",
+      "title": "New session - 2026-06-16T22:27:20.005Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781648840005,
+      "updatedAt": 1781648843680
+    },
+    {
+      "id": "ses_12d753ca2ffeB0mpleP7wvHTZf",
+      "title": "PONG-CC reply",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781648769886,
+      "updatedAt": 1781648833568
+    },
+    {
+      "id": "ses_12d7589a0ffeOLzEvT2QQLG18p",
+      "title": "New session - 2026-06-16T22:25:50.175Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781648750175,
+      "updatedAt": 1781648753933
+    },
+    {
+      "id": "ses_12d8284eeffexasQAZ3FBzLqBn",
+      "title": "New session - 2026-06-16T22:11:39.409Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647899409,
+      "updatedAt": 1781647902998
+    },
+    {
+      "id": "ses_12d829c30ffegQrzVFGXSADTAc",
+      "title": "New session - 2026-06-16T22:11:33.455Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647893455,
+      "updatedAt": 1781647897289
+    },
+    {
+      "id": "ses_12d82b30affeKYnif6L72hpjsZ",
+      "title": "New session - 2026-06-16T22:11:27.605Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647887605,
+      "updatedAt": 1781647891433
+    },
+    {
+      "id": "ses_12d84350fffecH9a4IqCCdd8cx",
+      "title": "New session - 2026-06-16T22:09:48.784Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647788784,
+      "updatedAt": 1781647792544
+    },
+    {
+      "id": "ses_12d85bc13ffejRi6o2QZqwPyTT",
+      "title": "New session - 2026-06-16T22:08:08.685Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647688685,
+      "updatedAt": 1781647692432
+    },
+    {
+      "id": "ses_12d873822ffeZqYR6YF2qDyWSA",
+      "title": "New session - 2026-06-16T22:06:31.389Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781647591389,
+      "updatedAt": 1781647604235
+    },
+    {
+      "id": "ses_133fa34b7ffeo4hcV8pfTnKDOf",
+      "title": "New session - 2026-06-15T16:03:12.328Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781539392328,
+      "updatedAt": 1781539392559
+    },
+    {
+      "id": "ses_133fa7735ffexdGqsLUc88aLly",
+      "title": "New session - 2026-06-15T16:02:55.306Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781539375306,
+      "updatedAt": 1781539391187
+    },
+    {
+      "id": "ses_135311d86ffeoFZR2tK6sT0uxf",
+      "title": "New session - 2026-06-15T10:23:36.570Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781519016570,
+      "updatedAt": 1781519037529
+    },
+    {
+      "id": "ses_146a3f108ffeQr0pM4ssgvS59l",
+      "title": "Creating ok.txt with \"OK\"",
+      "directory": "/tmp/lane-test",
+      "version": "1.4.11",
+      "createdAt": 1781226278647,
+      "updatedAt": 1781226286836
+    },
+    {
+      "id": "ses_1472a4f03ffeTzkdCH9VLVfqFO",
+      "title": "Slugify util with bun tests",
+      "directory": "/tmp/mt-governed4",
+      "version": "1.4.11",
+      "createdAt": 1781217472764,
+      "updatedAt": 1781217497314
+    },
+    {
+      "id": "ses_147344b63ffenF2Stc8khF92Eo",
+      "title": "Slugify util with bun tests",
+      "directory": "/tmp/mt-governed3",
+      "version": "1.4.11",
+      "createdAt": 1781216818332,
+      "updatedAt": 1781216824724
+    },
+    {
+      "id": "ses_1473cd4e7ffelswvmGU7qfE9nS",
+      "title": "New session - 2026-06-11T22:17:38.841Z",
+      "directory": "/tmp/mt-governed2",
+      "version": "1.4.11",
+      "createdAt": 1781216258841,
+      "updatedAt": 1781216264303
+    },
+    {
+      "id": "ses_1481275afffeIMXdyTiRsbE119",
+      "title": "Slugify util with bun tests",
+      "directory": "/tmp/mt-go-full",
+      "version": "1.4.11",
+      "createdAt": 1781202258512,
+      "updatedAt": 1781202278632
+    },
+    {
+      "id": "ses_14819b822ffeKSFl5yMl8riwti",
+      "title": "Creating hello.ts with typed greeting function",
+      "directory": "/tmp/mt-go",
+      "version": "1.4.11",
+      "createdAt": 1781201782749,
+      "updatedAt": 1781201790122
+    },
+    {
+      "id": "ses_1485f434effeP0JwYVr6NPZ9lK",
+      "title": "New session - 2026-06-11T17:00:25.138Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781197225138,
+      "updatedAt": 1781197235302
+    },
+    {
+      "id": "ses_14868dff5ffeh2zdaCMXKogckM",
+      "title": "New session - 2026-06-11T16:49:55.210Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1781196595210,
+      "updatedAt": 1781197430730
+    },
+    {
+      "id": "ses_149786db4ffe8GxVTlcQhVqsZS",
+      "title": "New session - 2026-06-11T11:53:18.668Z",
+      "directory": "/tmp/mt2-github-copilot-gemini-3-flash-preview",
+      "version": "1.4.11",
+      "createdAt": 1781178798668,
+      "updatedAt": 1781178800238
+    },
+    {
+      "id": "ses_149786efdffeRUCj2IYG90BJKL",
+      "title": "New session - 2026-06-11T11:53:18.338Z",
+      "directory": "/tmp/mt2-opencode-gemini-3-flash",
+      "version": "1.4.11",
+      "createdAt": 1781178798338,
+      "updatedAt": 1781178799922
+    },
+    {
+      "id": "ses_149786f2fffedoU0rml0WH6U5N",
+      "title": "New session - 2026-06-11T11:53:18.288Z",
+      "directory": "/tmp/mt2-opencode-north-mini-code-free",
+      "version": "1.4.11",
+      "createdAt": 1781178798288,
+      "updatedAt": 1781178806156
+    },
+    {
+      "id": "ses_1497edc20ffeEGm3N85q1AgYQW",
+      "title": "New session - 2026-06-11T11:46:17.183Z",
+      "directory": "/tmp/modeltest-deepseek-v4-flash-free",
+      "version": "1.4.11",
+      "createdAt": 1781178377183,
+      "updatedAt": 1781178378997
+    },
+    {
+      "id": "ses_1497ee014ffeYx6CUQSXcVUoOv",
+      "title": "New session - 2026-06-11T11:46:16.171Z",
+      "directory": "/tmp/modeltest-minimax-m2.7",
+      "version": "1.4.11",
+      "createdAt": 1781178376171,
+      "updatedAt": 1781178378225
+    },
+    {
+      "id": "ses_1497ee08cffe29RA0q5vBZqhG0",
+      "title": "New session - 2026-06-11T11:46:16.051Z",
+      "directory": "/tmp/modeltest-nemotron-3-ultra-free",
+      "version": "1.4.11",
+      "createdAt": 1781178376051,
+      "updatedAt": 1781178539058
+    },
+    {
+      "id": "ses_1497ee0aaffe6RiRXciVFlDby6",
+      "title": "New session - 2026-06-11T11:46:16.021Z",
+      "directory": "/tmp/modeltest-mimo-v2.5-free",
+      "version": "1.4.11",
+      "createdAt": 1781178376021,
+      "updatedAt": 1781178378059
+    },
+    {
+      "id": "ses_152e59badffekOIV0mLzRemD4K",
+      "title": "New session - 2026-06-09T15:57:28.530Z",
+      "directory": "/tmp/improve-test",
+      "version": "1.4.11",
+      "createdAt": 1781020648530,
+      "updatedAt": 1781020736316
+    },
+    {
+      "id": "ses_1546dd8f9ffeFG1U7WvyidPD9a",
+      "title": "New session - 2026-06-09T08:49:02.726Z",
+      "directory": "/usr/local/bin",
+      "version": "1.4.11",
+      "createdAt": 1780994942726,
+      "updatedAt": 1780994943320
+    },
+    {
+      "id": "ses_1a791bf07ffeBzP82VIsvefdUf",
+      "title": "Studio Platform development plan implementation",
+      "directory": "/opt/provisioned/ai-content-creator-platform",
+      "version": "1.4.3",
+      "createdAt": 1779600081144,
+      "updatedAt": 1779600329006
+    },
+    {
+      "id": "ses_1bb6905e3ffe6lq5Z2Q7At2ksR",
+      "title": "New session - 2026-05-20T08:53:25.660Z",
+      "directory": "/tmp/brainstorm-plan",
+      "version": "1.4.11",
+      "createdAt": 1779267205660,
+      "updatedAt": 1779267206314
+    },
+    {
+      "id": "ses_1bb73eb19ffeKHEfas3Wq7p8L2",
+      "title": "New session - 2026-05-20T08:41:31.622Z",
+      "directory": "/tmp/brainstorm-plan",
+      "version": "1.4.11",
+      "createdAt": 1779266491622,
+      "updatedAt": 1779266492800
+    },
+    {
+      "id": "ses_1c79b34cbffe3TMV13VevTAN6h",
+      "title": "New session - 2026-05-18T00:03:10.260Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779062590260,
+      "updatedAt": 1779062598489
+    },
+    {
+      "id": "ses_1c7c2f19effejtWZShg6SJ6RBR",
+      "title": "HELLO",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779059986017,
+      "updatedAt": 1779059993443
+    },
+    {
+      "id": "ses_1c7c31d17ffeJ2yFlaJwws3JmF",
+      "title": "Greeting response request",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779059974888,
+      "updatedAt": 1779059980623
+    },
+    {
+      "id": "ses_1c7c44147ffe2SSnAxiRy7QCwd",
+      "title": "New session - 2026-05-17T23:18:20.088Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779059900088,
+      "updatedAt": 1779059900960
+    },
+    {
+      "id": "ses_1c7c4c3caffeYjVT8e4KyMu6p8",
+      "title": "New session - 2026-05-17T23:17:46.677Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779059866677,
+      "updatedAt": 1779059867777
+    },
+    {
+      "id": "ses_1c7c5c821ffeS0YVhVkjeeBi5N",
+      "title": "New session - 2026-05-17T23:16:40.030Z",
+      "directory": "/tmp",
+      "version": "1.4.11",
+      "createdAt": 1779059800030,
+      "updatedAt": 1779059801909
+    },
+    {
+      "id": "ses_1d23b17afffeJ3OTGQOHsSIUn8",
+      "title": "Initial greeting",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778884339792,
+      "updatedAt": 1779057815530
+    },
+    {
+      "id": "ses_1d23f87e1ffeyh33PUxTSvfWon",
+      "title": "Monitor finance analyst app builder run",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778884048926,
+      "updatedAt": 1778884147973
+    },
+    {
+      "id": "ses_1d2781659ffeKqGaYi1H2qNDEb",
+      "title": "Finance app login access issues",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778880342438,
+      "updatedAt": 1778883940000
+    },
+    {
+      "id": "ses_1d2a3b3bbffeCXNn55m8bT5KUu",
+      "title": "Finance analyst Cloudflare routing setup",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778877484101,
+      "updatedAt": 1778878612901
+    },
+    {
+      "id": "ses_1d8d5f709ffeJZYuLofwRFGbbt",
+      "title": "Stop kimi 2-6 spam on rate limited free models",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778773526775,
+      "updatedAt": 1778776396234
+    },
+    {
+      "id": "ses_1d8e8be08ffekOPgvsROGFpNrD",
+      "title": "newsbites finance app plan and AI buy/sell signals",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778772296183,
+      "updatedAt": 1778773053603
+    },
+    {
+      "id": "ses_1df9d11d7ffenHGywsxdVFwyQu",
+      "title": "Builder page issues, requeue/rerun workflows, and model labels/metrics improvements",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778659814952,
+      "updatedAt": 1778661283456
+    },
+    {
+      "id": "ses_1dfa2ef6affeCAwoF9fts5DsDU",
+      "title": "Session history UI: spacing, styling, mobile responsiveness",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778659430549,
+      "updatedAt": 1778659846122
+    },
+    {
+      "id": "ses_1e3497e34ffe2bZulcTurlylIq",
+      "title": "Dashboard space click issue diagnosis and attached log text",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778598183371,
+      "updatedAt": 1778602114560
+    },
+    {
+      "id": "ses_1e358ebdcffeIJLZjeBnuLB275",
+      "title": "Space click issue on dashboard v4 pages? text attached shows reason",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778597172259,
+      "updatedAt": 1778598205037
+    },
+    {
+      "id": "ses_1e4f0202fffezvxPXJWRqMskar",
+      "title": "Greeting and quick check-in",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778570485712,
+      "updatedAt": 1778570536533
+    },
+    {
+      "id": "ses_1ed3b99ebffe9FZrZdxrsr1P0W",
+      "title": "Greeting and quick check-in",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778431321620,
+      "updatedAt": 1778431327307
+    },
+    {
+      "id": "ses_1f4362543ffeHvSQXQCKL42Qua",
+      "title": "Light chat greeting",
+      "directory": "/",
+      "version": "1.4.3",
+      "createdAt": 1778314238655,
+      "updatedAt": 1778314261170
+    },
+    {
+      "id": "ses_26d89b398ffey6HO9Jq14WL0eD",
+      "title": "Greeting",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776278719591,
+      "updatedAt": 1776278887977
+    },
+    {
+      "id": "ses_26f11cac1ffe4fd5HbWi1OLyGF",
+      "title": "Convincing boyfriend: 15000€ diamond oval ring",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776253023550,
+      "updatedAt": 1776278886892
+    },
+    {
+      "id": "ses_2752ed196ffelF1muzUxarrYT8",
+      "title": "System plan mode: read-only analysis for user clarification",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776150457962,
+      "updatedAt": 1776150634748
+    },
+    {
+      "id": "ses_2753d4950ffeE0pshWF3djk1Xq",
+      "title": "NewsBites Autopipeline Management Plan Mode",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776149509807,
+      "updatedAt": 1776150353900
+    },
+    {
+      "id": "ses_277dce5f4ffeIgesYvj9M0uXkW",
+      "title": "Spotify playlist management extension plan",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776105495051,
+      "updatedAt": 1776105630487
+    },
+    {
+      "id": "ses_279bf8e5effeNUF9GIeBm56TEK",
+      "title": "Greeting",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776073863586,
+      "updatedAt": 1776073877714
+    },
+    {
+      "id": "ses_279ca73e6ffef00yYgHCs0ECQj",
+      "title": "Greeting",
+      "directory": "/tmp",
+      "version": "1.4.3",
+      "createdAt": 1776073149465,
+      "updatedAt": 1776084071728
+    },
+    {
+      "id": "ses_27c1fadf0ffej6D1cQhkzhfNJ4",
+      "title": "Current directory file explanation",
+      "directory": "/root/test-opencode",
+      "version": "1.4.3",
+      "createdAt": 1776034009615,
+      "updatedAt": 1776034027663
+    },
+    {
+      "id": "ses_27c2293ceffeLGYNh7O6f0IXds",
+      "title": "Current directory contents explanation",
+      "directory": "/root/test-opencode",
+      "version": "1.4.3",
+      "createdAt": 1776033819697,
+      "updatedAt": 1776033915146
+    }
+  ]
+}

@@ -1,9 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { normalizeWorkspace } from "./workspaces.ts";
+import {
+  acquireLegacyWriter,
+  archiveLegacySession,
+  appendLegacyEvent,
+  governedLegacySession,
+  registerLegacySession,
+  visibleLegacySessionIds,
+} from "../agentWorkspace/legacyHarnessPolicy.ts";
 
 const STATE_DIR = "/var/lib/control-surface";
 const STATE_FILE = join(STATE_DIR, "gemini-sessions.json");
@@ -34,6 +42,7 @@ type State = { sessions: GeminiSession[] };
 function loadState(): State {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
   if (!existsSync(STATE_FILE)) return { sessions: [] };
+  chmodSync(STATE_FILE, 0o600);
   try {
     return JSON.parse(readFileSync(STATE_FILE, "utf8"));
   } catch {
@@ -43,7 +52,8 @@ function loadState(): State {
 
 function saveState(state: State): void {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+  chmodSync(STATE_FILE, 0o600);
 }
 
 function json(body: unknown, status = 200): Response {
@@ -93,8 +103,10 @@ export async function geminiHealthHandler(): Promise<Response> {
 
 export async function geminiListHandler(): Promise<Response> {
   const state = loadState();
+  const visible = visibleLegacySessionIds("gemini");
   return json({
     sessions: state.sessions
+      .filter((session) => visible.has(session.id))
       .map((s) => ({
         id: s.id,
         title: s.title,
@@ -129,10 +141,12 @@ export async function geminiCreateHandler(req: Request): Promise<Response> {
   const state = loadState();
   state.sessions.push(session);
   saveState(state);
+  registerLegacySession({ harness: "gemini", ...session });
   return json({ session });
 }
 
 export async function geminiGetHandler(id: string): Promise<Response> {
+  if (!governedLegacySession("gemini", id, false)) return json({ error: "not found" }, 404);
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
   if (!session) return json({ error: "not found" }, 404);
@@ -146,11 +160,15 @@ export async function geminiGetHandler(id: string): Promise<Response> {
 }
 
 export async function geminiDeleteHandler(id: string): Promise<Response> {
+  const governed = governedLegacySession("gemini", id, true);
+  if (!governed) return json({ error: "not found" }, 404);
   const state = loadState();
   const before = state.sessions.length;
   state.sessions = state.sessions.filter((s) => s.id !== id);
   if (state.sessions.length === before) return json({ error: "not found" }, 404);
   saveState(state);
+  archiveLegacySession(governed);
+  appendLegacyEvent(governed, "session.deleted", { harness: "gemini" });
   return json({ ok: true });
 }
 
@@ -187,6 +205,9 @@ export async function geminiStreamHandler(req: Request, id: string): Promise<Res
   const body = (await req.json().catch(() => ({}))) as { text?: string; approvalMode?: string; outputFormat?: string; model?: string };
   const text = body.text?.trim() ?? "";
   if (!text) return new Response(JSON.stringify({ error: "text required" }), { status: 400 });
+  const governed = governedLegacySession("gemini", id, true);
+  if (!governed) return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  if (!acquireLegacyWriter(governed)) return new Response(JSON.stringify({ error: "shared-checkout writer lease conflict" }), { status: 409 });
 
   const state = loadState();
   const session = state.sessions.find((s) => s.id === id);
@@ -213,6 +234,7 @@ export async function geminiStreamHandler(req: Request, id: string): Promise<Res
   session.messages.push(userMsg);
   session.updatedAt = Date.now();
   saveState(state);
+  appendLegacyEvent(governed, "message.requested", { text });
 
   const outputFormat = body.outputFormat === "text" ? "text" : "stream-json";
   const args = [
@@ -350,6 +372,7 @@ export async function geminiStreamHandler(req: Request, id: string): Promise<Res
 }
 
 export async function geminiStopHandler(id: string): Promise<Response> {
+  if (!governedLegacySession("gemini", id, true)) return json({ error: "not found" }, 404);
   const active = activeGeminiRuns.get(id);
   if (!active) return json({ ok: true, stopped: false });
 
