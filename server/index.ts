@@ -24,9 +24,14 @@ import {
   closeTerminalClients,
   terminalStatusHandler,
   terminalUpgradeHandler,
-  terminalWebSocketHandlers,
   type TerminalSocketData,
 } from "./terminal/session.ts";
+import {
+  closeManagedTerminalClients,
+  managedTerminalUpgradeHandler,
+  terminalMultiplexedWebSocketHandlers,
+  type TerminalWebSocketData,
+} from "./terminal/multiplexer.ts";
 import { handleOpenCodeProxy } from "./agentWorkspace/opencodeProxy.ts";
 import { startOpenCodeEventSpool } from "./agentWorkspace/opencodeEventSpool.ts";
 import { importLegacyAgentSessions, markUnreconciledAgentRunsStale, seedLegacyOpenCodeVisibilityReceipts } from "./agentWorkspace/registry.ts";
@@ -180,6 +185,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
 
   const shutdown = () => {
     closeTerminalClients();
+    closeManagedTerminalClients();
     ingestor?.stop();
     builderReconciler?.stop();
     clearInterval(executiveReportTimer);
@@ -193,6 +199,7 @@ export async function startServer(): Promise<{ stop: () => void }> {
   return {
     stop: () => {
       closeTerminalClients();
+      closeManagedTerminalClients();
       ingestor?.stop();
       builderReconciler?.stop();
       clearInterval(executiveReportTimer);
@@ -210,7 +217,7 @@ const PORT = parseInt(process.env.PORT || "3000");
 const MAX_SSE_CONNECTIONS = 100;
 let currentSseConnections = 0;
 
-const server = Bun.serve<TerminalSocketData>({
+const server = Bun.serve<TerminalWebSocketData>({
   port: PORT,
   hostname: "0.0.0.0",
   idleTimeout: 0,
@@ -230,7 +237,19 @@ const server = Bun.serve<TerminalSocketData>({
     }
 
     if (pathname === "/api/terminal/ws") {
-      return terminalUpgradeHandler(req, bunServer);
+      return terminalUpgradeHandler(req, bunServer as Bun.Server<TerminalSocketData>);
+    }
+
+    const managedTerminalMatch = pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/ws$/);
+    if (managedTerminalMatch) {
+      let terminalId: string;
+      try {
+        terminalId = decodeURIComponent(managedTerminalMatch[1]);
+      } catch {
+        return new Response("Not found", { status: 404 });
+      }
+      if (!terminalId || terminalId.includes("/")) return new Response("Not found", { status: 404 });
+      return managedTerminalUpgradeHandler(req, terminalId, bunServer);
     }
 
     if (pathname === "/api/workflows") {
@@ -299,7 +318,7 @@ const server = Bun.serve<TerminalSocketData>({
     return serveStatic(pathname);
   },
 
-  websocket: terminalWebSocketHandlers,
+  websocket: terminalMultiplexedWebSocketHandlers,
 });
 
 console.log(`[control-surface] listening on :${server.port}`);

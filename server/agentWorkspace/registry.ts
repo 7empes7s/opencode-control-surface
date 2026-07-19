@@ -835,3 +835,76 @@ export function releaseWriterLeaseOfType(input: {
   `).run(now, now, input.resourceType, canonicalLeaseKey(input.resourceKey), input.sessionId, input.fenceEpoch);
   return result.changes === 1;
 }
+
+/**
+ * Replaces a writer only when the caller presents the epoch it observed.  The
+ * epoch comparison is kept in the UPDATE itself so concurrent takeover
+ * attempts cannot both succeed.
+ */
+export function takeoverWriterLease(input: {
+  tenantId: string;
+  resourceType: "repository" | "worktree";
+  resourceKey: string;
+  expectedFenceEpoch: number;
+  newHolderSessionId: string;
+  newHolderUserId: string;
+  ttlMs?: number;
+  now?: number;
+}): LeaseResult {
+  const db = getDb();
+  const now = input.now ?? Date.now();
+  const expiresAt = now + Math.max(30_000, Math.min(input.ttlMs ?? 30 * 60_000, 24 * 60 * 60_000));
+  const resourceKey = canonicalLeaseKey(input.resourceKey);
+  let result: LeaseResult = { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+  const readCurrent = () => db.query(`
+    SELECT tenant_id, holder_session_id, fence_epoch, expires_at
+    FROM leases
+    WHERE resource_type = ? AND resource_key = ?
+  `).get(input.resourceType, resourceKey) as {
+    tenant_id: string;
+    holder_session_id: string | null;
+    fence_epoch: number;
+    expires_at: number | null;
+  } | null;
+  const tx = db.transaction(() => {
+    const current = readCurrent();
+    if (!current || current.tenant_id !== input.tenantId || current.fence_epoch !== input.expectedFenceEpoch) {
+      result = current
+        ? { ok: false, holderSessionId: current.holder_session_id, fenceEpoch: current.fence_epoch, expiresAt: current.expires_at }
+        : { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+      return;
+    }
+    const updated = db.query(`
+      UPDATE leases
+      SET holder_session_id = ?, holder_user_id = ?, mode = 'writer', status = 'active',
+          fence_epoch = ?, revision = revision + 1, acquired_at = ?, expires_at = ?, released_at = NULL
+      WHERE resource_type = ? AND resource_key = ? AND tenant_id = ? AND fence_epoch = ?
+    `).run(
+      input.newHolderSessionId,
+      input.newHolderUserId,
+      input.expectedFenceEpoch + 1,
+      now,
+      expiresAt,
+      input.resourceType,
+      resourceKey,
+      input.tenantId,
+      input.expectedFenceEpoch,
+    );
+    if (updated.changes !== 1) {
+      const actual = readCurrent();
+      result = actual
+        ? { ok: false, holderSessionId: actual.holder_session_id, fenceEpoch: actual.fence_epoch, expiresAt: actual.expires_at }
+        : { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+      return;
+    }
+    const row = db.query(`
+      SELECT fence_epoch, revision FROM leases
+      WHERE resource_type = ? AND resource_key = ?
+    `).get(input.resourceType, resourceKey) as { fence_epoch: number; revision: number } | null;
+    result = row
+      ? { ok: true, fenceEpoch: row.fence_epoch, revision: row.revision }
+      : { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+  });
+  tx();
+  return result;
+}

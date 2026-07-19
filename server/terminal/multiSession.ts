@@ -11,6 +11,7 @@ import {
   listAgentSessions,
   registerAgentSession,
   releaseWriterLeaseOfType,
+  takeoverWriterLease,
   type AgentIdentity,
   type AgentSession,
   type LeaseResult,
@@ -35,7 +36,9 @@ export function isManagedTmuxName(name: string): boolean {
   return MANAGED_NAME_PATTERN.test(name);
 }
 
-export type ManagedTerminal = { session: AgentSession; tmuxName: string; alive: boolean };
+export type ManagedTerminal = { session: AgentSession; tmuxName: string; alive: boolean | null };
+
+export const MAX_TERMINALS_PER_OWNER = 12;
 
 function resolveTerminalCwd(cwd: string | undefined): string | null {
   const candidate = cwd ?? "/root";
@@ -64,6 +67,16 @@ export function createTerminalSession(input: {
 }): { ok: true; terminal: ManagedTerminal } | { ok: false; error: string; status: number } {
   const cwd = resolveTerminalCwd(input.cwd);
   if (!cwd) return { ok: false, error: "cwd must be an existing absolute directory", status: 400 };
+
+  const ownedManaged = listAgentSessions(input.identity, "terminal").filter((session) =>
+    session.ownerUserId === input.identity.userId
+    && session.effectiveConfig.socket === TERMINAL_SOCKET
+    && isManagedTmuxName(session.adapterSessionId)
+    && session.adapterSessionId === tmuxSessionNameFor(session.id),
+  );
+  if (ownedManaged.length >= MAX_TERMINALS_PER_OWNER) {
+    return { ok: false, error: "managed terminal limit reached", status: 429 };
+  }
 
   const terminalId = randomUUID();
   const tmuxName = tmuxSessionNameFor(terminalId);
@@ -131,7 +144,9 @@ export function listManagedTerminals(identity: AgentIdentity): ManagedTerminal[]
   return sessions.map((session) => ({
     session,
     tmuxName: session.adapterSessionId,
-    alive: isManagedTmuxName(session.adapterSessionId) && aliveNames.has(session.adapterSessionId),
+    alive: session.effectiveConfig.legacy === true && session.effectiveConfig.attachOnly === true
+      ? null
+      : isManagedTmuxName(session.adapterSessionId) && aliveNames.has(session.adapterSessionId),
   }));
 }
 
@@ -211,4 +226,69 @@ export function ensureLegacyRootTerminalRegistered(actor: string, identity: Agen
   } catch {
     return null;
   }
+}
+
+/** Resolves only a visible, registry-derived terminal on the reserved socket. */
+export function resolveManagedTerminalSession(
+  identity: AgentIdentity,
+  terminalId: string,
+  mutation = false,
+): AgentSession | null {
+  const session = listAgentSessions(identity, "terminal").find((item) => item.id === terminalId);
+  if (!session || (mutation && !canMutateAgentSession(identity, session))) return null;
+  if (session.effectiveConfig.legacy === true || session.archivedAt !== null) return null;
+  if (session.effectiveConfig.socket !== TERMINAL_SOCKET) return null;
+  if (!isManagedTmuxName(session.adapterSessionId)) return null;
+  if (session.adapterSessionId !== tmuxSessionNameFor(session.id)) return null;
+  return session;
+}
+
+export function acquireTerminalAttachmentWriter(input: {
+  identity: AgentIdentity;
+  terminalId: string;
+  connectionId: string;
+}): LeaseResult {
+  return acquireWriterLease({
+    tenantId: input.identity.tenantId,
+    resourceType: "worktree",
+    resourceKey: `terminal:${input.terminalId}`,
+    sessionId: input.connectionId,
+    userId: input.identity.userId,
+    ttlMs: 30 * 60_000,
+  });
+}
+
+export function releaseTerminalAttachmentWriter(input: {
+  terminalId: string;
+  connectionId: string;
+  fenceEpoch: number;
+}): boolean {
+  return releaseWriterLeaseOfType({
+    resourceType: "worktree",
+    resourceKey: `terminal:${input.terminalId}`,
+    sessionId: input.connectionId,
+    fenceEpoch: input.fenceEpoch,
+  });
+}
+
+export function takeoverTerminalAttachmentWriter(input: {
+  identity: AgentIdentity;
+  terminalId: string;
+  connectionId: string;
+  expectedFenceEpoch: number;
+}): LeaseResult {
+  if (!Number.isInteger(input.expectedFenceEpoch) || input.expectedFenceEpoch < 0) {
+    return { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+  }
+  const session = resolveManagedTerminalSession(input.identity, input.terminalId, true);
+  if (!session) return { ok: false, holderSessionId: null, fenceEpoch: 0, expiresAt: null };
+  return takeoverWriterLease({
+    tenantId: input.identity.tenantId,
+    resourceType: "worktree",
+    resourceKey: `terminal:${input.terminalId}`,
+    expectedFenceEpoch: input.expectedFenceEpoch,
+    newHolderSessionId: input.connectionId,
+    newHolderUserId: input.identity.userId,
+    ttlMs: 30 * 60_000,
+  });
 }
