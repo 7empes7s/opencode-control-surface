@@ -54,6 +54,7 @@ export const NAV_ITEMS: NavMeta[] = [
   { href: "/marketplace", label: "Marketplace", status: "labs", experimental: true },
   { href: "/traces", label: "Traces", status: "advanced" },
   { href: "/gateway", label: "Gateway", status: "core" },
+  { href: "/hyperagent", label: "Hyperagent", status: "advanced", sub: "Governed agent tasks — advisory broker attribution, spend requires operator/owner" },
   { href: "/governance", label: "Access & Policy", status: "core" },
   { href: "/compliance", label: "Compliance", status: "core" },
   { href: "/projects", label: "Projects", status: "advanced", experimental: true },

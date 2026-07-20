@@ -22,6 +22,7 @@ import { BuilderPage } from "./routes/BuilderPage";
 import { GeminiPage } from "./routes/GeminiPage";
 import { TracePage } from "./routes/TracePage";
 import { GatewayPage } from "./routes/GatewayPage";
+import { HyperagentPage } from "./routes/HyperagentPage";
 import { LiteLLMPage } from "./routes/LiteLLMPage";
 import { GovernancePage } from "./routes/GovernancePage";
 import { WorkflowsPage } from "./routes/WorkflowsPage";
@@ -221,6 +222,9 @@ export function App() {
         </Route>
         <Route path="/gateway">
           <DashLayout><GatewayPage /></DashLayout>
+        </Route>
+        <Route path="/hyperagent">
+          <DashLayout><HyperagentPage /></DashLayout>
         </Route>
         <Route path="/workflows">
           <DashLayout><WorkflowsPage /></DashLayout>

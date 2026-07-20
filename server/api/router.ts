@@ -205,6 +205,12 @@ import {
   v1ModelsHandler,
 } from "./gateway.ts";
 import {
+  hyperagentAgentsHandler,
+  hyperagentCreateThreadHandler,
+  hyperagentStatusHandler,
+  hyperagentThreadHandler,
+} from "./hyperagent.ts";
+import {
   listGatewayKeysHandler,
   createGatewayKeyHandler,
   revokeGatewayKeyHandler,
@@ -1376,6 +1382,27 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return rotateGatewayKeyHandler(req, decodeURIComponent(gatewayKeyRotateMatch[1]));
+  }
+
+  // Hyperagent (D5b) — read-only surface behind checkToken, the one
+  // spending action (create-thread) behind requireMutation (operator/owner).
+  if (method === "GET" && pathname === "/api/hyperagent/status") {
+    if (!checkToken(req)) return unauthorized();
+    return hyperagentStatusHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/hyperagent/agents") {
+    if (!checkToken(req)) return unauthorized();
+    return hyperagentAgentsHandler(req);
+  }
+  const hyperagentThreadMatch = pathname.match(/^\/api\/hyperagent\/threads\/([^/]+)$/);
+  if (method === "GET" && hyperagentThreadMatch) {
+    if (!checkToken(req)) return unauthorized();
+    return hyperagentThreadHandler(req, decodeURIComponent(hyperagentThreadMatch[1]));
+  }
+  if (method === "POST" && pathname === "/api/hyperagent/create-thread") {
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return hyperagentCreateThreadHandler(req);
   }
 
   // Cost Alias
