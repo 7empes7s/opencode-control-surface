@@ -2,6 +2,7 @@ import { getCurrentAuthenticatedUser } from "../auth/session.ts";
 import { resolveRole } from "../governance/rbac.ts";
 import {
   createTerminalSession,
+  ensureLegacyRootTerminalRegistered,
   listManagedTerminals,
   stopTerminalSession,
 } from "../terminal/multiSession.ts";
@@ -20,6 +21,7 @@ function unauthorized(): Response {
 export function terminalSessionsListHandler(): Response {
   const actor = identity();
   if (!actor) return unauthorized();
+  ensureLegacyRootTerminalRegistered(actor.userId, actor);
   const terminals = listManagedTerminals(actor);
   return Response.json(ok({ terminals, count: terminals.length }));
 }

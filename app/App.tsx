@@ -48,6 +48,8 @@ import { AgentRegistryPage } from "./routes/AgentRegistryPage";
 import { StatusPage } from "./routes/StatusPage";
 import { AdminPage } from "./routes/AdminPage";
 import { TerminalPage } from "./routes/TerminalPage";
+import { TerminalWorkspacePage } from "./routes/TerminalWorkspacePage";
+import { TerminalDock } from "./components/terminal/TerminalDock";
 import { AuthPrompt } from "./components/AuthPrompt";
 import { CommandPalette, useCommandPalette } from "./components/CommandPalette";
 import { authFetch } from "./lib/authFetch";
@@ -114,9 +116,11 @@ function PublicLayout({ children }: { children: React.ReactNode }) {
 
 function AppShell({ children }: { children: React.ReactNode }) {
   const { open, onClose } = useCommandPalette();
+  const [location] = useLocation();
   return (
     <>
       <UsageBeacon />
+      {location !== "/status" && <TerminalDock />}
       {children}
       <CommandPalette open={open} onClose={onClose} />
     </>
@@ -148,7 +152,7 @@ export function App() {
           <DashLayoutBare><GeminiPage /></DashLayoutBare>
         </Route>
         <Route path="/terminal">
-          <DashLayoutBare><TerminalPage /></DashLayoutBare>
+          <DashLayoutBare><TerminalWorkspacePage /></DashLayoutBare>
         </Route>
 
         <Route path="/admin">
