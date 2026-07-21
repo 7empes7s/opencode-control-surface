@@ -336,6 +336,16 @@ function createRelay(data: ManagedTerminalSocketData): Relay | null {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      env: {
+        ...Bun.env,
+        HOME: "/root",
+        USER: "root",
+        LOGNAME: "root",
+        SHELL: "/bin/bash",
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        LANG: Bun.env.LANG || "C.UTF-8",
+      },
       terminal,
       onExit(_process, exitCode, signalCode) {
         relayExited(relay, exitCode, signalCode);
