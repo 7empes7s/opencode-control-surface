@@ -149,10 +149,10 @@ export const CONTROL_CATALOG: ControlDefinition[] = [
   {
     id: "agent-identity-review",
     name: "Agent identity review",
-    description: "Agent autonomy declarations and periodic human review are not yet implemented.",
+    description: "Agent autonomy declarations and human review are recorded in the agent identity register; no periodic automated review check runs yet.",
     category: "Identity & access",
     frameworkRefs: ["ISO 42001 Annex A.5.2", "SOC 2 CC6.2"],
-    binding: { kind: "not-covered", reason: "Agents have no declared autonomy level or periodic review" },
+    binding: { kind: "not-covered", reason: "Agent declarations are reviewable, but no periodic automated review control runs yet" },
   },
   {
     id: "ai-provider-risk-register",

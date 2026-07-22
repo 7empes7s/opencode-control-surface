@@ -1810,6 +1810,25 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON control_results (control_id, ts);
   `);
 
+  // ── Catalog S8: human-declared agent autonomy and review register ────────
+  // Runtime telemetry remains in its source tables. These rows are the only
+  // writable S8 declaration data and are intentionally tenant-local.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_identity_profiles (
+      tenant_id TEXT NOT NULL,
+      identity_key TEXT NOT NULL,
+      autonomy_level TEXT CHECK(autonomy_level IN ('read-only', 'propose', 'act-with-approval', 'autonomous')),
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      owner TEXT,
+      last_reviewed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT,
+      PRIMARY KEY (tenant_id, identity_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_identity_profiles_tenant_updated
+      ON agent_identity_profiles (tenant_id, updated_at DESC);
+  `);
+
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
   // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to

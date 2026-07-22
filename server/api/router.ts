@@ -261,6 +261,7 @@ import {
 } from "./discovery.ts";
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
+import { agentIdentityListHandler, agentIdentityUpdateHandler } from "./agentIdentities.ts";
 import { agentSessionDetailHandler, agentSessionEventsHandler, agentSessionRunsHandler, agentSessionsListHandler } from "./agentSessions.ts";
 import { terminalSessionCreateHandler, terminalSessionStopHandler, terminalSessionsListHandler } from "./terminalSessions.ts";
 import {
@@ -704,6 +705,17 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && agentRegistryMatch) {
     if (!checkToken(req)) return unauthorized();
     return agentPassportHandler(req, decodeURIComponent(agentRegistryMatch[1]));
+  }
+  if (method === "GET" && pathname === "/api/agent-identities") {
+    if (!checkToken(req)) return unauthorized();
+    return agentIdentityListHandler(req);
+  }
+  const agentIdentityMatch = pathname.match(/^\/api\/agent-identities\/([^/]+)$/);
+  if (method === "PUT" && agentIdentityMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return agentIdentityUpdateHandler(req, decodeURIComponent(agentIdentityMatch[1]));
   }
   if (method === "POST" && pathname === "/api/insights/scan") {
     const denied = requireMutation(req);

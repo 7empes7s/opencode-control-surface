@@ -55,7 +55,7 @@ describe("evaluateControlTick", () => {
       reason: control.binding.kind === "not-covered" ? control.binding.reason : "",
     }))).toEqual([
       { id: "artifact-provenance-c2pa", reason: "C2PA manifests inside generated artifacts are not verified" },
-      { id: "agent-identity-review", reason: "Agents have no declared autonomy level or periodic review" },
+      { id: "agent-identity-review", reason: "Agent declarations are reviewable, but no periodic automated review control runs yet" },
       { id: "ai-provider-risk-register", reason: "No vendor risk register for AI providers" },
       { id: "external-saas-ai", reason: "SaaS-layer AI (S-X) is declared out of scope; no coverage claimed" },
     ]);

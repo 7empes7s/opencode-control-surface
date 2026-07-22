@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, Clock, DollarSign, RefreshCw, ShieldAlert, ShieldCheck, AlertTriangle, Activity, Users } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { authFetch } from "../lib/authFetch";
@@ -44,6 +44,51 @@ type AgentRegistryPayload = {
   counts: { total: number; active: number; paused: number; retired: number };
 };
 
+type AutonomyLevel = "read-only" | "propose" | "act-with-approval" | "autonomous";
+type DeclarationState = "undeclared" | "unreviewed" | "reviewed";
+
+type CountEvidence = {
+  available: boolean;
+  count: number;
+  successCount: number | null;
+  lastObservedAt: number | null;
+};
+
+type SessionEvidence = {
+  available: boolean;
+  sessions: number;
+  runs: number;
+  events: number;
+  lastObservedAt: number | null;
+};
+
+type AgentIdentity = {
+  definition: {
+    key: string;
+    name: string;
+    class: "builder" | "session" | "pipeline-stage" | "broker";
+    description: string;
+    evidenceCaveats: string[];
+  };
+  declaration: {
+    autonomyLevel: AutonomyLevel | null;
+    capabilities: string[];
+    owner: string | null;
+    lastReviewedAt: number | null;
+    state: DeclarationState;
+    updatedAt: number | null;
+    updatedBy: string | null;
+  };
+  evidence: {
+    builderPasses: CountEvidence;
+    gatewayCalls: CountEvidence;
+    actionAudit: CountEvidence;
+    sessions: SessionEvidence;
+  };
+};
+
+type AgentIdentityPayload = { identities: AgentIdentity[] };
+
 function statusPillClass(status: AgentStatus): string {
   if (status === "active") return "green";
   if (status === "paused") return "amber";
@@ -75,6 +120,163 @@ function RiskPill({ tier }: { tier: AgentRiskTier }) {
 
 function KindBadge({ kind }: { kind: AgentKind }) {
   return <span className="pill gray">{kind}</span>;
+}
+
+function declarationPillClass(state: DeclarationState): string {
+  if (state === "reviewed") return "green";
+  if (state === "unreviewed") return "amber";
+  return "gray";
+}
+
+function formatReviewDate(value: number | null): string {
+  return value ? new Date(value).toLocaleDateString() : "unreviewed";
+}
+
+function dateInputValue(value: number | null): string {
+  return value ? new Date(value).toISOString().slice(0, 10) : "";
+}
+
+function EvidenceValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="agent-identity-evidence-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function evidenceSummary(evidence: CountEvidence): string {
+  if (!evidence.available) return "not collected";
+  if (evidence.successCount === null) return `${evidence.count} records`;
+  return `${evidence.count} records · ${evidence.successCount} successful`;
+}
+
+function IdentityDeclarationEditor({ identity, onSaved }: { identity: AgentIdentity; onSaved: () => void }) {
+  const { declaration } = identity;
+  const [editing, setEditing] = useState(false);
+  const [autonomyLevel, setAutonomyLevel] = useState<AutonomyLevel | "">(declaration.autonomyLevel ?? "");
+  const [capabilities, setCapabilities] = useState(declaration.capabilities.join("\n"));
+  const [owner, setOwner] = useState(declaration.owner ?? "");
+  const [reviewDate, setReviewDate] = useState(dateInputValue(declaration.lastReviewedAt));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveDeclaration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    const lastReviewedAt = reviewDate ? Date.parse(`${reviewDate}T00:00:00.000Z`) : null;
+    try {
+      const response = await authFetch(`/api/agent-identities/${encodeURIComponent(identity.definition.key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          autonomyLevel: autonomyLevel || null,
+          capabilities: capabilities.split("\n").map((item) => item.trim()).filter(Boolean),
+          owner: owner.trim() || null,
+          lastReviewedAt,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      setEditing(false);
+      onSaved();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button type="button" className="btn btn-ghost" onClick={() => setEditing(true)}>
+        Update declaration
+      </button>
+    );
+  }
+
+  return (
+    <form className="agent-identity-editor" onSubmit={saveDeclaration}>
+      <label>
+        autonomy
+        <select value={autonomyLevel} onChange={(event) => setAutonomyLevel(event.target.value as AutonomyLevel | "")}>
+          <option value="">Undeclared</option>
+          <option value="read-only">Read-only</option>
+          <option value="propose">Propose</option>
+          <option value="act-with-approval">Act with approval</option>
+          <option value="autonomous">Autonomous</option>
+        </select>
+      </label>
+      <label>
+        owner
+        <input value={owner} maxLength={200} onChange={(event) => setOwner(event.target.value)} placeholder="Undeclared" />
+      </label>
+      <label className="agent-identity-editor-wide">
+        scoped capabilities (one per line)
+        <textarea value={capabilities} maxLength={5200} rows={3} onChange={(event) => setCapabilities(event.target.value)} placeholder="Undeclared" />
+      </label>
+      <label>
+        last review
+        <input type="date" value={reviewDate} onChange={(event) => setReviewDate(event.target.value)} />
+      </label>
+      <div className="agent-identity-editor-actions">
+        <button type="submit" className="btn" disabled={saving}>{saving ? "Saving…" : "Save declaration"}</button>
+        <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
+      </div>
+      {error && <div className="agent-identity-editor-error">{error}</div>}
+    </form>
+  );
+}
+
+function AgentIdentityCard({ identity, onSaved }: { identity: AgentIdentity; onSaved: () => void }) {
+  const { definition, declaration, evidence } = identity;
+  const sessionSummary = evidence.sessions.available
+    ? `${evidence.sessions.sessions} sessions · ${evidence.sessions.runs} runs · ${evidence.sessions.events} events`
+    : "not collected";
+
+  return (
+    <article className="agent-identity-card">
+      <div className="agent-identity-card-head">
+        <div>
+          <div className="dash-section-title">{definition.class}</div>
+          <strong>{definition.name}</strong>
+          <p>{definition.description}</p>
+        </div>
+        <span className={`pill ${declarationPillClass(declaration.state)}`}>{declaration.state}</span>
+      </div>
+
+      <div className="agent-identity-declaration">
+        <div className="dash-section-title">human declaration</div>
+        <div className="agent-identity-fields">
+          <EvidenceValue label="autonomy" value={declaration.autonomyLevel ?? "undeclared"} />
+          <EvidenceValue label="owner" value={declaration.owner ?? "undeclared"} />
+          <EvidenceValue label="last review" value={formatReviewDate(declaration.lastReviewedAt)} />
+        </div>
+        <div className="agent-identity-capabilities">
+          <span>scoped capabilities</span>
+          {declaration.capabilities.length === 0
+            ? <strong>undeclared</strong>
+            : <div>{declaration.capabilities.map((capability) => <span className="pill gray" key={capability}>{capability}</span>)}</div>}
+        </div>
+      </div>
+
+      <div className="agent-identity-evidence">
+        <div className="dash-section-title">observed telemetry — not a permission declaration</div>
+        <div className="agent-identity-fields">
+          <EvidenceValue label="builder passes" value={evidenceSummary(evidence.builderPasses)} />
+          <EvidenceValue label="gateway calls" value={evidenceSummary(evidence.gatewayCalls)} />
+          <EvidenceValue label="action audit" value={evidenceSummary(evidence.actionAudit)} />
+          <EvidenceValue label="managed sessions" value={sessionSummary} />
+        </div>
+      </div>
+
+      {definition.evidenceCaveats.map((caveat) => <p className="agent-identity-caveat" key={caveat}>{caveat}</p>)}
+      <IdentityDeclarationEditor key={`${definition.key}-${declaration.updatedAt ?? "new"}`} identity={identity} onSaved={onSaved} />
+    </article>
+  );
 }
 
 function PassportPanel({ agentId, onClose }: { agentId: string; onClose: () => void }) {
@@ -290,6 +492,12 @@ function AgentRow({ agent, isOpen, onToggle }: { agent: RegisteredAgent; isOpen:
 
 export function AgentRegistryPage() {
   const { data, loading, error, refresh } = useApi<AgentRegistryPayload>(`/api/agent-registry`, 15_000);
+  const {
+    data: identityData,
+    loading: identityLoading,
+    error: identityError,
+    refresh: refreshIdentities,
+  } = useApi<AgentIdentityPayload>("/api/agent-identities", 15_000);
   const [openAgentId, setOpenAgentId] = useState<string | null>(null);
 
   if (loading && !data) return <div className="loading-panel">Loading the agent registry.</div>;
@@ -338,6 +546,28 @@ export function AgentRegistryPage() {
             <small>retired</small>
           </div>
         </div>
+      </section>
+
+      <section className="dash-section agent-identity-register">
+        <div className="agent-identity-register-head">
+          <div>
+            <div className="dash-section-title">identity & autonomy register</div>
+            <h2>What has been declared, separate from what telemetry observed.</h2>
+            <p>Only an owner or operator can update declarations. Observed activity never grants a capability or autonomy level.</p>
+          </div>
+          <button type="button" className="btn btn-ghost" onClick={refreshIdentities}>Refresh register</button>
+        </div>
+        {identityLoading && !identityData ? (
+          <div className="empty-state">Loading identity declarations…</div>
+        ) : identityError && !identityData ? (
+          <div className="empty-state error">The identity register did not load. {identityError}</div>
+        ) : identityData ? (
+          <div className="agent-identity-grid">
+            {identityData.identities.map((identity) => (
+              <AgentIdentityCard key={identity.definition.key} identity={identity} onSaved={refreshIdentities} />
+            ))}
+          </div>
+        ) : null}
       </section>
 
       <section className="dash-section">

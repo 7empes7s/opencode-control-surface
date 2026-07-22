@@ -15,11 +15,20 @@ function isInternalApiPath(pathname: string): boolean {
   return pathname === "/api/internal" || pathname.startsWith("/api/internal/");
 }
 
+function isIdentityDeclarationPath(pathname: string): boolean {
+  return pathname === "/api/agent-identities" || pathname.startsWith("/api/agent-identities/");
+}
+
 export function isMutatingApiRequest(method: string, pathname: string): boolean {
   if (!MUTATING_METHODS.has(method.toUpperCase())) return false;
   if (!pathname.startsWith("/api/")) return false;
   if (UNAUDITED_EXCLUSIONS.has(pathname)) return false;
   if (isInternalApiPath(pathname)) return false;
+  // Catalog S8 declarations are intentionally confined to
+  // agent_identity_profiles. Their own updated_at/updated_by fields provide
+  // the permitted change record; do not make the audit boundary write an
+  // existing telemetry table for this otherwise read-only slice.
+  if (isIdentityDeclarationPath(pathname)) return false;
   return true;
 }
 
