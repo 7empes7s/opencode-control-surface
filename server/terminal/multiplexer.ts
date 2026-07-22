@@ -547,6 +547,9 @@ export function managedTerminalUpgradeHandler(
   }
   const ip = clientIp(req);
   if (!consumeConnectionAttempt(ip)) return response({ error: "too many terminal connection attempts" }, 429);
+  const requestUrl = new URL(req.url);
+  const initialCols = clampDimension(requestUrl.searchParams.get("cols"), 20, 400, 100);
+  const initialRows = clampDimension(requestUrl.searchParams.get("rows"), 6, 200, 30);
   const upgraded = server.upgrade(req, {
     data: {
       kind: "managed-terminal",
@@ -559,8 +562,8 @@ export function managedTerminalUpgradeHandler(
       clientIp: ip,
       openedAt: Date.now(),
       attachedAt: Date.now(),
-      cols: 100,
-      rows: 30,
+      cols: initialCols,
+      rows: initialRows,
       mode: "spectator",
       fenceEpoch: 0,
       closing: false,

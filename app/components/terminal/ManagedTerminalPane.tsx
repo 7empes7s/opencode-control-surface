@@ -26,9 +26,9 @@ const MAX_SILENT_RETRIES = 3;
 const ATTACH_FAILED_MESSAGE =
   "Attach failed — the operator connection limit may be reached; close another terminal tab or click Reconnect.";
 
-function socketUrl(terminalId: string): string {
+function socketUrl(terminalId: string, cols: number, rows: number): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/terminal/sessions/${encodeURIComponent(terminalId)}/ws`;
+  return `${protocol}//${window.location.host}/api/terminal/sessions/${encodeURIComponent(terminalId)}/ws?cols=${cols}&rows=${rows}`;
 }
 
 function clampCols(cols: number): number {
@@ -90,6 +90,7 @@ export function ManagedTerminalPane({ terminalId, title }: { terminalId: string;
     terminal.loadAddon(fitAddon);
     terminal.open(host);
     terminalRef.current = terminal;
+    try { fitAddon.fit(); } catch { /* host is between layouts; ResizeObserver will fit shortly */ }
 
     const sendResize = () => {
       const socket = socketRef.current;
@@ -131,7 +132,7 @@ export function ManagedTerminalPane({ terminalId, title }: { terminalId: string;
       setStatus(failureCountRef.current > 0 ? "reconnecting" : "connecting");
       setErrorMessage(null);
 
-      const socket = new WebSocket(socketUrl(terminalId));
+      const socket = new WebSocket(socketUrl(terminalId, clampCols(terminal.cols), clampRows(terminal.rows)));
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
 
@@ -155,6 +156,10 @@ export function ManagedTerminalPane({ terminalId, title }: { terminalId: string;
           setErrorMessage(null);
           sendResize();
           terminal.focus();
+          window.requestAnimationFrame(() => {
+            if (disposedRef.current) return;
+            try { terminal.refresh(0, terminal.rows - 1); } catch { /* between layouts */ }
+          });
           return;
         }
         if (message.type === "writer-state") {

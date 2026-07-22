@@ -327,6 +327,9 @@ export function TerminalPage() {
               connectedClients: message.connectedClients ?? current.connectedClients,
             } : current);
             fitTerminal();
+            window.requestAnimationFrame(() => {
+              try { terminal.refresh(0, terminal.rows - 1); } catch { /* between layouts */ }
+            });
             terminal.focus();
             return;
           }
