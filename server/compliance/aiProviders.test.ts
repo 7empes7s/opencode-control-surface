@@ -9,11 +9,17 @@ import { _resetGatewayConfigCacheForTests } from "../gateway/config.ts";
 import { closeDashboardDb, getDashboardDb, initDashboardDb } from "../db/dashboard.ts";
 import { testTenantContext } from "../tenancy/context.ts";
 import {
+  createAiProviderVendorGroup,
   configuredProviderKeys,
+  deleteAiProviderVendorGroup,
+  deleteAiProviderVendorGroupRule,
   getAiProviderProfile,
+  listAiProviderRegister,
   listAiProviderProfiles,
   PROVIDER_ZERO_SUCCESS_WINDOW_MS,
   saveAiProviderDeclaration,
+  saveAiProviderVendorGroupRule,
+  updateAiProviderVendorGroup,
   validateProviderDeclaration,
 } from "./aiProviders.ts";
 
@@ -79,6 +85,10 @@ function declaration(overrides: Record<string, unknown> = {}): Record<string, un
     lastReviewedAt: NOW,
     ...overrides,
   };
+}
+
+function vendorGroup(name: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { name, declaration: declaration(overrides) };
 }
 
 function insertGatewayCall(tenantId: string, resolvedModel: string, ts: number, success: number): void {
@@ -190,7 +200,82 @@ describe("AI provider register", () => {
     const providers = listAiProviderProfiles(tenant("t-alpha"), NOW);
     expect(providers.map((provider) => provider.key)).toEqual(["bespoke", "shadow-route"]);
     expect(providers.every((provider) => provider.evidence.available === false && provider.declaration.state === "undeclared")).toBe(true);
+    expect(listAiProviderRegister(tenant("t-alpha"), NOW)).toMatchObject({
+      vendorGroups: [],
+      ungroupedProviders: [{ key: "bespoke" }, { key: "shadow-route" }],
+    });
     expect(saveAiProviderDeclaration("bespoke", declaration(), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: false, status: 503 });
+    expect(createAiProviderVendorGroup(vendorGroup("OpenRouter"), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: false, status: 503 });
+  });
+
+  test("groups only operator-curated key and prefix rules, aggregates evidence, and leaves every unmapped key visible", () => {
+    insertGatewayCall("t-alpha", "openrouter-gemma4-31b-free/model-a", NOW - 100, 1);
+    insertGatewayCall("t-alpha", "openrouter-qwen/model-b", NOW, 0);
+    insertBuilderPass("t-alpha", "openrouter-gemma4-31b-free", "success");
+    insertRouteTruth("t-alpha", "models:dead-route:openrouter-qwen");
+
+    const created = createAiProviderVendorGroup(vendorGroup("OpenRouter"), "operator", tenant("t-alpha"), NOW);
+    expect(created).toMatchObject({ ok: true, vendorGroup: { key: "openrouter", riskScore: 12 } });
+    const keyRule = saveAiProviderVendorGroupRule("openrouter", { kind: "key", value: "openrouter-gemma4-31b-free" }, "operator", tenant("t-alpha"), NOW);
+    expect(keyRule).toMatchObject({ ok: true, rule: { kind: "key", value: "openrouter-gemma4-31b-free" } });
+    const prefixRule = saveAiProviderVendorGroupRule("openrouter", { kind: "prefix", value: "openrouter-" }, "operator", tenant("t-alpha"), NOW);
+    expect(prefixRule).toMatchObject({ ok: true, rule: { kind: "prefix", value: "openrouter-" } });
+
+    const register = listAiProviderRegister(tenant("t-alpha"), NOW);
+    const group = register.vendorGroups[0]!;
+    expect(group.name).toBe("OpenRouter");
+    expect(group.rules.map((rule) => `${rule.kind}:${rule.value}`)).toEqual([
+      "key:openrouter-gemma4-31b-free",
+      "prefix:openrouter-",
+    ]);
+    expect(group.members.map((member) => member.key)).toEqual(["openrouter-gemma4-31b-free", "openrouter-qwen"]);
+    expect(group.members[0]?.grouping).toMatchObject({ operatorCurated: true, rule: { kind: "key" } });
+    expect(group.members[1]?.grouping).toMatchObject({ operatorCurated: true, rule: { kind: "prefix", value: "openrouter-" } });
+    expect(group.evidence.gateway).toMatchObject({ calls: 2, successes: 1 });
+    expect(group.evidence.builderPasses).toMatchObject({ passes: 1, successes: 1 });
+    expect(group.evidence.routeTruthFindingKinds).toEqual(["dead-route"]);
+    expect(register.ungroupedProviders.map((provider) => provider.key)).toEqual(["bespoke", "shadow-route"]);
+    expect(register.providers.map((provider) => provider.key)).toContain("openrouter-gemma4-31b-free");
+  });
+
+  test("keeps vendor groups tenant-local, rejects inferred/overlapping routes, and never deletes per-key declarations", () => {
+    insertGatewayCall("t-alpha", "openrouter-gemma/model-a", NOW, 1);
+    insertGatewayCall("t-alpha", "nvidia-nim/model-a", NOW, 1);
+    const routeDeclaration = saveAiProviderDeclaration("openrouter-gemma", declaration(), "operator", tenant("t-alpha"), NOW);
+    expect(routeDeclaration).toMatchObject({ ok: true });
+
+    expect(createAiProviderVendorGroup(vendorGroup("OpenRouter"), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: true });
+    expect(createAiProviderVendorGroup(vendorGroup("Unsafe vendor", { credentialLocation: "sk-should-not-store" }), "operator", tenant("t-alpha"), NOW))
+      .toMatchObject({ ok: false, status: 400 });
+    const prefix = saveAiProviderVendorGroupRule("openrouter", { kind: "prefix", value: "openrouter-" }, "operator", tenant("t-alpha"), NOW);
+    expect(prefix).toMatchObject({ ok: true });
+    expect(createAiProviderVendorGroup(vendorGroup("NVIDIA NIM"), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: true });
+    expect(saveAiProviderVendorGroupRule("nvidia-nim", { kind: "prefix", value: "openrouter" }, "operator", tenant("t-alpha"), NOW))
+      .toMatchObject({ ok: false, status: 400 });
+    expect(saveAiProviderVendorGroupRule("nvidia-nim", { kind: "key", value: "not-observed" }, "operator", tenant("t-alpha"), NOW))
+      .toMatchObject({ ok: false, status: 400 });
+    expect(saveAiProviderVendorGroupRule("nvidia-nim", { kind: "prefix", value: "nvidia-" }, "operator", tenant("t-alpha"), NOW))
+      .toMatchObject({ ok: true });
+
+    expect(listAiProviderRegister(tenant("t-beta"), NOW).vendorGroups).toEqual([]);
+    expect(deleteAiProviderVendorGroup("openrouter", tenant("t-alpha"))).toMatchObject({ ok: true, groupKey: "openrouter" });
+    expect(getAiProviderProfile("openrouter-gemma", tenant("t-alpha"), NOW)?.declaration).toMatchObject({ state: "reviewed", updatedBy: "operator" });
+    expect(Number((db().query("SELECT COUNT(*) AS count FROM ai_provider_vendor_groups").get() as { count: number }).count)).toBe(1);
+    expect(Number((db().query("SELECT COUNT(*) AS count FROM ai_provider_vendor_group_rules").get() as { count: number }).count)).toBe(1);
+  });
+
+  test("updates group declarations and removes rules without touching route declarations", () => {
+    insertGatewayCall("t-alpha", "github-models/model-a", NOW, 1);
+    expect(saveAiProviderDeclaration("github-models", declaration(), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: true });
+    expect(createAiProviderVendorGroup(vendorGroup("GitHub Models"), "operator", tenant("t-alpha"), NOW)).toMatchObject({ ok: true });
+    const saved = saveAiProviderVendorGroupRule("github-models", { kind: "prefix", value: "github-" }, "operator", tenant("t-alpha"), NOW);
+    expect(saved).toMatchObject({ ok: true });
+    if (!saved.ok) throw new Error("rule save failed");
+    expect(updateAiProviderVendorGroup("github-models", vendorGroup("GitHub Hosted Models", { riskImpact: 5 }), "reviewer", tenant("t-alpha"), NOW))
+      .toMatchObject({ ok: true, vendorGroup: { name: "GitHub Hosted Models", riskScore: 15 } });
+    expect(deleteAiProviderVendorGroupRule("github-models", saved.rule.id, tenant("t-alpha"), NOW)).toMatchObject({ ok: true });
+    expect(listAiProviderRegister(tenant("t-alpha"), NOW).ungroupedProviders.map((provider) => provider.key)).toContain("github-models");
+    expect(getAiProviderProfile("github-models", tenant("t-alpha"), NOW)?.declaration).toMatchObject({ state: "reviewed", updatedBy: "operator" });
   });
 });
 
@@ -205,6 +290,8 @@ describe("AI provider register API gates", () => {
     expect((await handleApi(sessionRequest("viewer", "/api/ai-provider-register"), new URL("http://localhost/api/ai-provider-register"))).status).toBe(200);
     const denied = sessionRequest("viewer", "/api/ai-provider-register/bespoke", { method: "PUT", body: JSON.stringify(declaration()) });
     expect((await handleApi(denied, new URL(denied.url))).status).toBe(403);
+    const viewerGroup = sessionRequest("viewer", "/api/ai-provider-register/groups", { method: "POST", body: JSON.stringify(vendorGroup("OpenRouter")) });
+    expect((await handleApi(viewerGroup, new URL(viewerGroup.url))).status).toBe(403);
   });
 
   test("requires the mutation gate and stores only the provider declaration row", async () => {
@@ -215,5 +302,22 @@ describe("AI provider register API gates", () => {
     const body = await response.json() as { data: { provider: { declaration: { state: string; updatedBy: string | null } } } };
     expect(body.data.provider.declaration).toMatchObject({ state: "reviewed", updatedBy: "operator" });
     expect(Number((db().query("SELECT COUNT(*) AS count FROM ai_provider_risk_profiles").get() as { count: number }).count)).toBe(1);
+  });
+
+  test("uses the exact S11 token and mutation gates for vendor group routes", async () => {
+    const anonymous = new Request("http://localhost/api/ai-provider-register/groups", { method: "POST", body: JSON.stringify(vendorGroup("OpenRouter")) });
+    expect((await handleApi(anonymous, new URL(anonymous.url))).status).toBe(401);
+
+    seedUser("operator", "operator");
+    const create = sessionRequest("operator", "/api/ai-provider-register/groups", { method: "POST", body: JSON.stringify(vendorGroup("OpenRouter")) });
+    expect((await handleApi(create, new URL(create.url))).status).toBe(201);
+    insertGatewayCall("mimule", "openrouter-gemma/model-a", NOW, 1);
+    const rule = sessionRequest("operator", "/api/ai-provider-register/groups/openrouter/rules", {
+      method: "POST",
+      body: JSON.stringify({ kind: "prefix", value: "openrouter-" }),
+    });
+    expect((await handleApi(rule, new URL(rule.url))).status).toBe(201);
+    expect(Number((db().query("SELECT COUNT(*) AS count FROM ai_provider_vendor_groups").get() as { count: number }).count)).toBe(1);
+    expect(Number((db().query("SELECT COUNT(*) AS count FROM ai_provider_vendor_group_rules").get() as { count: number }).count)).toBe(1);
   });
 });

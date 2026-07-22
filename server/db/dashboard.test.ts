@@ -62,6 +62,8 @@ const expectedTables = [
   "leases",
   "agent_identity_profiles",
   "ai_provider_risk_profiles",
+  "ai_provider_vendor_groups",
+  "ai_provider_vendor_group_rules",
 ];
 
 let tempDir: string;
@@ -319,6 +321,7 @@ function registerDashboardDbTests(): void {
       "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
       "agent_identity_profiles",
       "ai_provider_risk_profiles",
+      "ai_provider_vendor_groups", "ai_provider_vendor_group_rules",
     ];
 
     for (const table of tenantTables) {

@@ -28,10 +28,10 @@ export function isMutatingApiRequest(method: string, pathname: string): boolean 
   if (!pathname.startsWith("/api/")) return false;
   if (UNAUDITED_EXCLUSIONS.has(pathname)) return false;
   if (isInternalApiPath(pathname)) return false;
-  // Catalog S8 declarations are intentionally confined to
-  // agent_identity_profiles. Their own updated_at/updated_by fields provide
+  // Catalog S8 and S11/S11b declarations are intentionally confined to their
+  // own tenant-local declaration tables. Their actor/timestamp fields provide
   // the permitted change record; do not make the audit boundary write an
-  // existing telemetry table for this otherwise read-only slice.
+  // existing telemetry table for these otherwise read-only slices.
   if (isIdentityDeclarationPath(pathname) || isAiProviderDeclarationPath(pathname)) return false;
   return true;
 }

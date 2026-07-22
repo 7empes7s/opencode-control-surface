@@ -262,7 +262,15 @@ import {
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
 import { agentIdentityListHandler, agentIdentityUpdateHandler } from "./agentIdentities.ts";
-import { aiProviderRegisterListHandler, aiProviderRegisterUpdateHandler } from "./aiProviders.ts";
+import {
+  aiProviderRegisterListHandler,
+  aiProviderRegisterUpdateHandler,
+  aiProviderVendorGroupCreateHandler,
+  aiProviderVendorGroupDeleteHandler,
+  aiProviderVendorGroupRuleCreateHandler,
+  aiProviderVendorGroupRuleDeleteHandler,
+  aiProviderVendorGroupUpdateHandler,
+} from "./aiProviders.ts";
 import { agentSessionDetailHandler, agentSessionEventsHandler, agentSessionRunsHandler, agentSessionsListHandler } from "./agentSessions.ts";
 import { terminalSessionCreateHandler, terminalSessionStopHandler, terminalSessionsListHandler } from "./terminalSessions.ts";
 import {
@@ -721,6 +729,39 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/ai-provider-register") {
     if (!checkToken(req)) return unauthorized();
     return aiProviderRegisterListHandler(req);
+  }
+  if (method === "POST" && pathname === "/api/ai-provider-register/groups") {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderVendorGroupCreateHandler(req);
+  }
+  const aiProviderVendorGroupRuleMatch = pathname.match(/^\/api\/ai-provider-register\/groups\/([^/]+)\/rules\/([^/]+)$/);
+  if (method === "DELETE" && aiProviderVendorGroupRuleMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderVendorGroupRuleDeleteHandler(req, decodeURIComponent(aiProviderVendorGroupRuleMatch[1]), decodeURIComponent(aiProviderVendorGroupRuleMatch[2]));
+  }
+  const aiProviderVendorGroupRulesMatch = pathname.match(/^\/api\/ai-provider-register\/groups\/([^/]+)\/rules$/);
+  if (method === "POST" && aiProviderVendorGroupRulesMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderVendorGroupRuleCreateHandler(req, decodeURIComponent(aiProviderVendorGroupRulesMatch[1]));
+  }
+  const aiProviderVendorGroupMatch = pathname.match(/^\/api\/ai-provider-register\/groups\/([^/]+)$/);
+  if (method === "PUT" && aiProviderVendorGroupMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderVendorGroupUpdateHandler(req, decodeURIComponent(aiProviderVendorGroupMatch[1]));
+  }
+  if (method === "DELETE" && aiProviderVendorGroupMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderVendorGroupDeleteHandler(req, decodeURIComponent(aiProviderVendorGroupMatch[1]));
   }
   const aiProviderRegisterMatch = pathname.match(/^\/api\/ai-provider-register\/([^/]+)$/);
   if (method === "PUT" && aiProviderRegisterMatch) {

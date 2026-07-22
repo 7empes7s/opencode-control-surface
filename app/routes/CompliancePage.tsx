@@ -1,4 +1,4 @@
-import { Fragment, useState, type FormEvent } from "react";
+import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import { Shield, Download, FileText, Users, AlertTriangle } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useAuthApi } from "../hooks/useAuthApi";
@@ -111,8 +111,35 @@ interface AiProviderRegisterEntry {
   };
 }
 
+interface AiProviderVendorGroupRule {
+  id: string;
+  kind: "key" | "prefix";
+  value: string;
+  createdAt: number;
+  createdBy: string | null;
+}
+
+interface AiProviderVendorGroupMember extends AiProviderRegisterEntry {
+  grouping: {
+    operatorCurated: true;
+    rule: AiProviderVendorGroupRule;
+  };
+}
+
+interface AiProviderVendorGroup {
+  key: string;
+  name: string;
+  declaration: AiProviderRegisterEntry["declaration"];
+  riskScore: number | null;
+  rules: AiProviderVendorGroupRule[];
+  members: AiProviderVendorGroupMember[];
+  evidence: AiProviderRegisterEntry["evidence"];
+}
+
 interface AiProviderRegisterPayload {
   providers: AiProviderRegisterEntry[];
+  vendorGroups: AiProviderVendorGroup[];
+  ungroupedProviders: AiProviderRegisterEntry[];
 }
 
 interface RbacMe {
@@ -503,77 +530,229 @@ function AiProviderDeclarationEditor({ provider, onSaved }: { provider: AiProvid
   );
 }
 
+function AiProviderEvidence({ provider }: { provider: AiProviderRegisterEntry }) {
+  return (
+    <div className="agent-identity-evidence">
+      <div className="agent-identity-fields">
+        <div className="agent-identity-evidence-item"><span>gateway traffic</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.successes}/${provider.evidence.gateway.calls} successful (${percent(provider.evidence.gateway.successRate)})` : "not collected"}</strong></div>
+        <div className="agent-identity-evidence-item"><span>last 17 days</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.recentSuccesses}/${provider.evidence.gateway.recentCalls} successful (${percent(provider.evidence.gateway.recentSuccessRate)})` : "not collected"}</strong></div>
+        <div className="agent-identity-evidence-item"><span>builder passes</span><strong>{provider.evidence.available ? `${provider.evidence.builderPasses.successes}/${provider.evidence.builderPasses.passes} successful (${percent(provider.evidence.builderPasses.successRate)})` : "not collected"}</strong></div>
+        <div className="agent-identity-evidence-item"><span>S7 route-truth</span><strong>{provider.evidence.routeTruthFindingKinds.length ? provider.evidence.routeTruthFindingKinds.join(", ") : "none active"}</strong></div>
+      </div>
+      {provider.evidence.zeroSuccess17d && <div className="agent-identity-caveat text-xs">Reliability and governance finding: 0% success across 17 days. This is real gateway telemetry, not a diagnosis of cause.</div>}
+      <div className="agent-identity-capabilities"><span>configured identifiers</span><div>{provider.evidence.configuredIdentifiers.length ? provider.evidence.configuredIdentifiers.map((item) => <span className="pill gray" key={`configured-${item}`}>{item}</span>) : <strong>none</strong>}</div></div>
+      <div className="agent-identity-capabilities"><span>telemetry identifiers</span><div>{[...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].length ? [...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].map((item, index) => <span className="pill gray" key={`telemetry-${index}-${item}`}>{item}</span>) : <strong>none</strong>}</div></div>
+    </div>
+  );
+}
+
+function AiProviderRouteCard({ provider, canEdit, onSaved, grouping, assign }: {
+  provider: AiProviderRegisterEntry;
+  canEdit: boolean;
+  onSaved: () => void;
+  grouping?: AiProviderVendorGroupMember["grouping"];
+  assign?: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <article className="agent-identity-card">
+      <div className="agent-identity-card-head">
+        <div>
+          <div className="dash-section-title">{grouping ? "operator-curated member route" : "ungrouped observed route"}</div>
+          <strong className="font-mono">{provider.key}</strong>
+          <p className="text-xs text-[var(--text-dim)]">{grouping ? `Assigned by operator ${grouping.rule.kind} rule: ${grouping.rule.value}` : "No vendor group declared"}</p>
+        </div>
+        <span className={`pill ${providerStateClass(provider.declaration.state)}`}>{provider.declaration.state}</span>
+      </div>
+      <div className="agent-identity-declaration">
+        <div className="agent-identity-fields">
+          <div className="agent-identity-evidence-item"><span>route risk score</span><strong>{provider.riskScore ?? "undeclared"}</strong></div>
+          <div className="agent-identity-evidence-item"><span>treatment</span><strong>{provider.declaration.treatment ?? "undeclared"}</strong></div>
+          <div className="agent-identity-evidence-item"><span>last review</span><strong>{providerDate(provider.declaration.lastReviewedAt)}</strong></div>
+        </div>
+        <div className="agent-identity-capabilities"><span>data classes sent</span><div>{provider.declaration.dataClasses.length ? provider.declaration.dataClasses.map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>undeclared</strong>}</div></div>
+      </div>
+      <div className="compliance-actions">
+        <button type="button" className="btn btn-ghost" onClick={() => setExpanded((current) => !current)} aria-expanded={expanded}>{expanded ? "Hide evidence" : "Show evidence"}</button>
+        {assign}
+        {canEdit && <AiProviderDeclarationEditor provider={provider} onSaved={onSaved} />}
+      </div>
+      {expanded && <AiProviderEvidence provider={provider} />}
+    </article>
+  );
+}
+
+function AiVendorGroupEditor({ group, onSaved, onCancel }: { group?: AiProviderVendorGroup; onSaved: () => void; onCancel: () => void }) {
+  const declaration = group?.declaration;
+  const [name, setName] = useState(group?.name ?? "");
+  const [dataClasses, setDataClasses] = useState(declaration?.dataClasses.join("\n") ?? "");
+  const [credentialLocation, setCredentialLocation] = useState(declaration?.credentialLocation ?? "");
+  const [egressBoundary, setEgressBoundary] = useState<ProviderEgressBoundary | "">(declaration?.egressBoundary ?? "");
+  const [owner, setOwner] = useState(declaration?.owner ?? "");
+  const [riskLikelihood, setRiskLikelihood] = useState(declaration?.riskLikelihood?.toString() ?? "");
+  const [riskImpact, setRiskImpact] = useState(declaration?.riskImpact?.toString() ?? "");
+  const [treatment, setTreatment] = useState<ProviderTreatment | "">(declaration?.treatment ?? "");
+  const [reviewDate, setReviewDate] = useState(providerDateInput(declaration?.lastReviewedAt ?? null));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(group ? `/api/ai-provider-register/groups/${encodeURIComponent(group.key)}` : "/api/ai-provider-register/groups", {
+        method: group ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          declaration: {
+            dataClasses: dataClasses.split("\n").map((item) => item.trim()).filter(Boolean),
+            credentialLocation: credentialLocation.trim() || null,
+            egressBoundary: egressBoundary || null,
+            owner: owner.trim() || null,
+            riskLikelihood: riskLikelihood ? Number(riskLikelihood) : null,
+            riskImpact: riskImpact ? Number(riskImpact) : null,
+            treatment: treatment || null,
+            lastReviewedAt: reviewDate ? Date.parse(`${reviewDate}T00:00:00.000Z`) : null,
+          },
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      onSaved();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="agent-identity-editor" onSubmit={saveGroup}>
+      <div className="agent-identity-editor-wide text-xs text-[var(--text-dim)]">Operator-curated vendor declaration — values are not inferred from member routes.</div>
+      <label className="agent-identity-editor-wide">vendor group name<input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="OpenRouter" /></label>
+      <label className="agent-identity-editor-wide">data classes sent (one per line)<textarea value={dataClasses} maxLength={5200} rows={3} onChange={(event) => setDataClasses(event.target.value)} placeholder="Undeclared" /></label>
+      <label className="agent-identity-editor-wide">credential location or variable name — never secret value<input value={credentialLocation} maxLength={240} onChange={(event) => setCredentialLocation(event.target.value)} placeholder="process.env.PROVIDER_API_KEY" /></label>
+      <label>egress boundary<select value={egressBoundary} onChange={(event) => setEgressBoundary(event.target.value as ProviderEgressBoundary | "")}><option value="">Undeclared</option><option value="external-provider">External provider</option><option value="private-network">Private network</option><option value="unknown">Unknown</option></select></label>
+      <label>owner<input value={owner} maxLength={200} onChange={(event) => setOwner(event.target.value)} placeholder="Undeclared" /></label>
+      <label>likelihood (1–5)<select value={riskLikelihood} onChange={(event) => setRiskLikelihood(event.target.value)}><option value="">Undeclared</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+      <label>impact (1–5)<select value={riskImpact} onChange={(event) => setRiskImpact(event.target.value)}><option value="">Undeclared</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+      <label>treatment<select value={treatment} onChange={(event) => setTreatment(event.target.value as ProviderTreatment | "")}><option value="">Undeclared</option><option value="accept">Accept</option><option value="mitigate">Mitigate</option><option value="transfer">Transfer</option><option value="avoid">Avoid</option></select></label>
+      <label>last review<input type="date" value={reviewDate} onChange={(event) => setReviewDate(event.target.value)} /></label>
+      <div className="agent-identity-editor-actions"><button type="submit" className="btn" disabled={saving}>{saving ? "Saving…" : group ? "Save vendor declaration" : "Create vendor group"}</button><button type="button" className="btn btn-ghost" disabled={saving} onClick={onCancel}>Cancel</button></div>
+      {error && <div className="agent-identity-editor-error">{error}</div>}
+    </form>
+  );
+}
+
+function AiVendorRuleEditor({ group, canEdit, onSaved }: { group: AiProviderVendorGroup; canEdit: boolean; onSaved: () => void }) {
+  const [kind, setKind] = useState<AiProviderVendorGroupRule["kind"]>("key");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function addRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(`/api/ai-provider-register/groups/${encodeURIComponent(group.key)}/rules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, value: value.trim() }) });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      setValue("");
+      onSaved();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRule(rule: AiProviderVendorGroupRule) {
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(`/api/ai-provider-register/groups/${encodeURIComponent(group.key)}/rules/${encodeURIComponent(rule.id)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      onSaved();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="space-y-2"><div className="agent-identity-capabilities"><span>operator-curated assignment rules</span><div>{group.rules.length ? group.rules.map((rule) => <span className="pill gray" key={rule.id}>{rule.kind} rule: {rule.value}{canEdit && <button type="button" className="btn btn-ghost btn-xs" disabled={saving} onClick={() => void deleteRule(rule)}>remove</button>}</span>) : <strong>none declared</strong>}</div></div>{canEdit && <form className="compliance-actions" onSubmit={addRule}><select value={kind} onChange={(event) => setKind(event.target.value as AiProviderVendorGroupRule["kind"])}><option value="key">Exact observed key</option><option value="prefix">Observed-key prefix</option></select><input value={value} maxLength={160} onChange={(event) => setValue(event.target.value)} placeholder={kind === "key" ? "openrouter-gemma4-31b-free" : "openrouter-"} /><button className="btn btn-ghost" type="submit" disabled={saving || !value.trim()}>{saving ? "Saving…" : "Add operator-curated rule"}</button></form>}{error && <div className="agent-identity-editor-error">{error}</div>}</div>;
+}
+
+function AiProviderAssignToVendor({ providerKey, groups, onSaved }: { providerKey: string; groups: AiProviderVendorGroup[]; onSaved: () => void }) {
+  const [groupKey, setGroupKey] = useState(groups[0]?.key ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function assign() {
+    if (!groupKey) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await authFetch(`/api/ai-provider-register/groups/${encodeURIComponent(groupKey)}/rules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "key", value: providerKey }) });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      onSaved();
+    } catch (assignError) {
+      setError(assignError instanceof Error ? assignError.message : String(assignError));
+    } finally {
+      setSaving(false);
+    }
+  }
+  if (!groups.length) return <span className="text-xs text-[var(--text-dim)]">Create a vendor group before assigning this observed route.</span>;
+  return <span className="compliance-actions"><select aria-label={`Assign ${providerKey} to vendor`} value={groupKey} onChange={(event) => setGroupKey(event.target.value)}>{groups.map((group) => <option key={group.key} value={group.key}>{group.name}</option>)}</select><button type="button" className="btn btn-ghost" disabled={saving} onClick={() => void assign()}>{saving ? "Assigning…" : "Assign to vendor"}</button>{error && <span className="agent-identity-editor-error">{error}</span>}</span>;
+}
+
 function AiProviderRegisterPanel() {
   const { data, loading, error, refresh } = useAuthApi<AiProviderRegisterPayload>("/api/ai-provider-register", 15_000);
   const { data: me } = useAuthApi<RbacMe>("/api/governance/rbac/me", 60_000);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [groupError, setGroupError] = useState<string | null>(null);
   const canEdit = me?.role === "owner" || me?.role === "operator";
+  const groups = data?.vendorGroups ?? [];
+  const ungrouped = data?.ungroupedProviders ?? data?.providers ?? [];
 
-  return (
-    <div className="space-y-4">
-      <div className="section-card">
-        <div className="section-card-header">
-          <div>
-            <h2 className="text-sm font-medium text-[var(--text)]">AI provider register</h2>
-            <p className="text-xs text-[var(--text-dim)]">Observed provider identifiers are evidence; data-flow and risk fields are operator declarations.</p>
-          </div>
-          <button className="btn btn-sm btn-ghost" onClick={refresh}>Refresh</button>
-        </div>
-        <div className="section-card-body compliance-section-body space-y-3">
-          <div className="compliance-summary-strip">
-            <Shield size={14} style={{ color: "var(--accent)" }} />
-            <div className="text-xs text-[var(--text)]">Credential fields accept a location or variable name only. Secret values are never requested, displayed, or stored.</div>
-          </div>
-          {!canEdit && me && <div className="text-xs text-[var(--text-dim)]">Only an owner or operator can update declarations.</div>}
-          {loading && !data && <div className="loading-panel">Loading observed AI providers…</div>}
-          {error && !data && <div className="loading-panel error">Provider register did not load: {error}</div>}
-          {data?.providers.length === 0 && <div className="empty-state">No provider identifiers have been observed in available gateway configuration or tenant telemetry.</div>}
-          <div className="space-y-3">
-            {(data?.providers ?? []).map((provider) => {
-              const isExpanded = expanded === provider.key;
-              return (
-                <article key={provider.key} className="agent-identity-card">
-                  <div className="agent-identity-card-head">
-                    <div>
-                      <div className="dash-section-title">observed provider / route identifier</div>
-                      <strong className="font-mono">{provider.key}</strong>
-                      <p className="text-xs text-[var(--text-dim)]">{provider.declaration.owner ?? "No owner declared"} · {provider.declaration.egressBoundary ?? "egress undeclared"}</p>
-                    </div>
-                    <span className={`pill ${providerStateClass(provider.declaration.state)}`}>{provider.declaration.state}</span>
-                  </div>
-                  <div className="agent-identity-declaration">
-                    <div className="agent-identity-fields">
-                      <div className="agent-identity-evidence-item"><span>risk score</span><strong>{provider.riskScore ?? "undeclared"}</strong></div>
-                      <div className="agent-identity-evidence-item"><span>treatment</span><strong>{provider.declaration.treatment ?? "undeclared"}</strong></div>
-                      <div className="agent-identity-evidence-item"><span>last review</span><strong>{providerDate(provider.declaration.lastReviewedAt)}</strong></div>
-                    </div>
-                    <div className="agent-identity-capabilities"><span>data classes sent</span><div>{provider.declaration.dataClasses.length ? provider.declaration.dataClasses.map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>undeclared</strong>}</div></div>
-                  </div>
-                  <div className="compliance-actions">
-                    <button type="button" className="btn btn-ghost" onClick={() => setExpanded((current) => current === provider.key ? null : provider.key)} aria-expanded={isExpanded}>{isExpanded ? "Hide evidence" : "Show evidence"}</button>
-                    {canEdit && <AiProviderDeclarationEditor provider={provider} onSaved={refresh} />}
-                  </div>
-                  {isExpanded && (
-                    <div className="agent-identity-evidence">
-                      <div className="agent-identity-fields">
-                        <div className="agent-identity-evidence-item"><span>gateway traffic</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.successes}/${provider.evidence.gateway.calls} successful (${percent(provider.evidence.gateway.successRate)})` : "not collected"}</strong></div>
-                        <div className="agent-identity-evidence-item"><span>last 17 days</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.recentSuccesses}/${provider.evidence.gateway.recentCalls} successful (${percent(provider.evidence.gateway.recentSuccessRate)})` : "not collected"}</strong></div>
-                        <div className="agent-identity-evidence-item"><span>builder passes</span><strong>{provider.evidence.available ? `${provider.evidence.builderPasses.successes}/${provider.evidence.builderPasses.passes} successful (${percent(provider.evidence.builderPasses.successRate)})` : "not collected"}</strong></div>
-                        <div className="agent-identity-evidence-item"><span>S7 route-truth</span><strong>{provider.evidence.routeTruthFindingKinds.length ? provider.evidence.routeTruthFindingKinds.join(", ") : "none active"}</strong></div>
-                      </div>
-                      {provider.evidence.zeroSuccess17d && <div className="agent-identity-caveat text-xs">Reliability and governance finding: 0% success across 17 days. This is real gateway telemetry, not a diagnosis of cause.</div>}
-                      <div className="agent-identity-capabilities"><span>configured identifiers</span><div>{provider.evidence.configuredIdentifiers.length ? provider.evidence.configuredIdentifiers.map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>none</strong>}</div></div>
-                      <div className="agent-identity-capabilities"><span>telemetry identifiers</span><div>{[...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].length ? [...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>none</strong>}</div></div>
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  async function deleteGroup(group: AiProviderVendorGroup) {
+    setDeleting(group.key);
+    setGroupError(null);
+    try {
+      const response = await authFetch(`/api/ai-provider-register/groups/${encodeURIComponent(group.key)}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      if (expanded === group.key) setExpanded(null);
+      setEditingGroup(null);
+      refresh();
+    } catch (deleteError) {
+      setGroupError(deleteError instanceof Error ? deleteError.message : String(deleteError));
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  return <div className="space-y-4"><div className="section-card"><div className="section-card-header"><div><h2 className="text-sm font-medium text-[var(--text)]">AI provider register</h2><p className="text-xs text-[var(--text-dim)]">Vendor membership is an operator-curated declaration. Observed route keys remain evidence and are never vendor-inferred.</p></div><button className="btn btn-sm btn-ghost" onClick={refresh}>Refresh</button></div><div className="section-card-body compliance-section-body space-y-4"><div className="compliance-summary-strip"><Shield size={14} style={{ color: "var(--accent)" }} /><div className="text-xs text-[var(--text)]">Credential fields accept a location or variable name only. Secret values are never requested, displayed, or stored.</div></div>{!canEdit && me && <div className="text-xs text-[var(--text-dim)]">Only an owner or operator can create vendor groups, curate rules, or update declarations.</div>}{loading && !data && <div className="loading-panel">Loading observed AI providers…</div>}{error && !data && <div className="loading-panel error">Provider register did not load: {error}</div>}{canEdit && !creating && <button type="button" className="btn" onClick={() => setCreating(true)}>Create vendor group</button>}{creating && <AiVendorGroupEditor onCancel={() => setCreating(false)} onSaved={() => { setCreating(false); refresh(); }} />}{data && groups.length === 0 && ungrouped.length === 0 && <div className="empty-state">No provider identifiers have been observed in available gateway configuration or tenant telemetry.</div>}
+    <div className="space-y-2"><div className="dash-section-title">Vendor groups</div><div className="table-container"><table className="data-table"><thead><tr><th>operator-curated vendor</th><th>members</th><th>gateway evidence</th><th>S7 findings</th><th>vendor risk</th><th>actions</th></tr></thead><tbody>{groups.map((group) => { const isExpanded = expanded === group.key; return <Fragment key={group.key}><tr><td><strong>{group.name}</strong><div className="text-xs text-[var(--text-dim)]">operator-curated · {group.rules.length} rule{group.rules.length === 1 ? "" : "s"}</div></td><td>{group.members.length}</td><td>{group.evidence.available ? `${group.evidence.gateway.successes}/${group.evidence.gateway.calls} (${percent(group.evidence.gateway.successRate)})` : "not collected"}</td><td>{group.evidence.routeTruthFindingKinds.length ? group.evidence.routeTruthFindingKinds.join(", ") : "none active"}</td><td><span className={`pill ${providerStateClass(group.declaration.state)}`}>{group.riskScore ?? "undeclared"} · {group.declaration.state}</span></td><td><button type="button" className="btn btn-ghost" onClick={() => setExpanded((current) => current === group.key ? null : group.key)} aria-expanded={isExpanded}>{isExpanded ? "Hide" : "Expand"}</button></td></tr>{isExpanded && <tr><td colSpan={6}><div className="space-y-3"><div className="agent-identity-evidence"><div className="agent-identity-fields"><div className="agent-identity-evidence-item"><span>aggregate builder passes</span><strong>{group.evidence.available ? `${group.evidence.builderPasses.successes}/${group.evidence.builderPasses.passes} successful (${percent(group.evidence.builderPasses.successRate)})` : "not collected"}</strong></div><div className="agent-identity-evidence-item"><span>vendor declaration</span><strong>{group.declaration.owner ?? "owner undeclared"} · {group.declaration.egressBoundary ?? "egress undeclared"}</strong></div><div className="agent-identity-evidence-item"><span>last review</span><strong>{providerDate(group.declaration.lastReviewedAt)}</strong></div></div>{group.evidence.zeroSuccess17d && <div className="agent-identity-caveat text-xs">At least one expanded member route meets S11’s 17-day zero-success condition.</div>}</div>{canEdit && <div className="compliance-actions"><button type="button" className="btn btn-ghost" onClick={() => setEditingGroup((current) => current === group.key ? null : group.key)}>{editingGroup === group.key ? "Close editor" : "Edit vendor declaration"}</button><button type="button" className="btn btn-ghost" disabled={deleting === group.key} onClick={() => void deleteGroup(group)}>{deleting === group.key ? "Deleting…" : "Delete vendor group"}</button></div>}{groupError && deleting === null && <div className="agent-identity-editor-error">{groupError}</div>}{editingGroup === group.key && <AiVendorGroupEditor key={group.key} group={group} onCancel={() => setEditingGroup(null)} onSaved={() => { setEditingGroup(null); refresh(); }} />}<AiVendorRuleEditor group={group} canEdit={canEdit} onSaved={refresh} /><div className="dash-section-title">Expanded member routes</div>{group.members.length ? <div className="space-y-3">{group.members.map((member) => <AiProviderRouteCard key={member.key} provider={member} grouping={member.grouping} canEdit={canEdit} onSaved={refresh} />)}</div> : <div className="empty-state">No currently observed route keys match this operator-curated group’s rules.</div>}</div></td></tr>}</Fragment>; })}{groups.length === 0 && <tr><td colSpan={6} className="loading-dim">No vendor groups have been declared. Observed route keys remain below, ungrouped.</td></tr>}</tbody></table></div></div>
+    <div className="space-y-3"><div><div className="dash-section-title">Ungrouped observed routes</div><p className="text-xs text-[var(--text-dim)]">These routes are intentionally visible until an operator explicitly assigns them to a vendor group.</p></div>{ungrouped.length ? ungrouped.map((provider) => <AiProviderRouteCard key={provider.key} provider={provider} canEdit={canEdit} onSaved={refresh} assign={canEdit ? <AiProviderAssignToVendor providerKey={provider.key} groups={groups} onSaved={refresh} /> : undefined} />) : <div className="empty-state">All currently observed routes match an operator-curated vendor rule.</div>}</div>
+  </div></div></div>;
 }
 
 function ReportsPanel() {

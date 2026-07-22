@@ -1853,6 +1853,44 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON ai_provider_risk_profiles (tenant_id, updated_at DESC);
   `);
 
+  // ── Catalog S11b: operator-curated AI vendor groups ────────────────────
+  // Groups and their route-key rules are declarations, not inferred vendor
+  // facts. They are deliberately separate from per-key S11 profiles so route
+  // declarations are never rewritten or lost when group membership changes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_provider_vendor_groups (
+      tenant_id TEXT NOT NULL,
+      group_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      data_classes_json TEXT NOT NULL DEFAULT '[]',
+      credential_location TEXT,
+      egress_boundary TEXT CHECK(egress_boundary IN ('external-provider', 'private-network', 'unknown')),
+      owner TEXT,
+      risk_likelihood INTEGER CHECK(risk_likelihood BETWEEN 1 AND 5),
+      risk_impact INTEGER CHECK(risk_impact BETWEEN 1 AND 5),
+      treatment TEXT CHECK(treatment IN ('accept', 'mitigate', 'transfer', 'avoid')),
+      last_reviewed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT,
+      PRIMARY KEY (tenant_id, group_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_provider_vendor_groups_tenant_updated
+      ON ai_provider_vendor_groups (tenant_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ai_provider_vendor_group_rules (
+      tenant_id TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      group_key TEXT NOT NULL,
+      rule_kind TEXT NOT NULL CHECK(rule_kind IN ('key', 'prefix')),
+      match_value TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      PRIMARY KEY (tenant_id, rule_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_provider_vendor_group_rules_tenant_group
+      ON ai_provider_vendor_group_rules (tenant_id, group_key, rule_kind, match_value);
+  `);
+
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
   // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to
