@@ -43,6 +43,54 @@ export interface OutcomeLeaderboard {
   models: OutcomeLeaderboardModel[];
 }
 
+// ── Compliance control catalog ───────────────────────────────────────────
+
+export type ComplianceControlStatus = "pass" | "fail" | "error" | "not-covered";
+
+export type ComplianceControlBinding =
+  | { kind: "scanner"; scanner: string; failSeverity: "high" | "medium" }
+  | { kind: "not-covered"; reason: string };
+
+export interface ComplianceCatalogControl {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  frameworkRefs: string[];
+  binding: ComplianceControlBinding;
+  status: ComplianceControlStatus | null;
+  findingsCount: number;
+  maxSeverity: "info" | "low" | "medium" | "high" | "critical" | null;
+  lastCheckedAt: number | null;
+  stale: boolean;
+}
+
+export interface ComplianceControlCoverage {
+  total: number;
+  automated: number;
+  notCovered: number;
+  percent: number;
+}
+
+export interface ComplianceControlsResponse {
+  controls: ComplianceCatalogControl[];
+  coverage: ComplianceControlCoverage;
+}
+
+export interface ComplianceControlHistoryRow {
+  id: number;
+  controlId: string;
+  ts: number;
+  status: ComplianceControlStatus;
+  findingsCount: number;
+  maxSeverity: "info" | "low" | "medium" | "high" | "critical" | null;
+  evidence: string | null;
+}
+
+export interface ComplianceControlHistoryResponse {
+  history: ComplianceControlHistoryRow[];
+}
+
 // ── Shared primitives ─────────────────────────────────────────────────────
 
 export interface EvidenceRef {

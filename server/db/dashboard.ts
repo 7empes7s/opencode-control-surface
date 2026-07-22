@@ -1794,6 +1794,22 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON feature_flags (tenant_id, updated_at);
   `);
 
+  // ── Catalog S9: compact history for scanner-bound compliance controls ────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS control_results (
+      id INTEGER PRIMARY KEY,
+      tenant_id TEXT,
+      control_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pass', 'fail', 'error', 'not-covered')),
+      findings_count INTEGER NOT NULL DEFAULT 0,
+      max_severity TEXT,
+      evidence TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_control_results_control_ts
+      ON control_results (control_id, ts);
+  `);
+
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
   // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to

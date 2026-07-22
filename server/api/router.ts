@@ -319,6 +319,8 @@ import { complianceDpaHandler,
   complianceSubprocessorsHandler,
   complianceSoc2MappingHandler,
   complianceSummaryHandler,
+  complianceControlsHandler,
+  complianceControlsHistoryHandler,
   complianceEvidenceBundleHandler,
   complianceEvidenceZipHandler,
 } from "./compliance.ts";
@@ -2225,6 +2227,14 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/compliance/summary") {
     if (!checkToken(req)) return unauthorized();
     return complianceSummaryHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/controls") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceControlsHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/controls/history") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceControlsHistoryHandler(req);
   }
   if (method === "GET" && pathname === "/api/compliance/evidence-bundle") {
     if (!checkToken(req)) return unauthorized();

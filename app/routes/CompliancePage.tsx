@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Shield, Download, FileText, Users, AlertTriangle } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useAuthApi } from "../hooks/useAuthApi";
@@ -23,8 +23,47 @@ interface ReportTemplate {
   params: Record<string, { type: string; required?: boolean }>;
 }
 
+type ControlStatus = "pass" | "fail" | "error" | "not-covered";
+
+interface ComplianceControl {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  frameworkRefs: string[];
+  binding:
+    | { kind: "scanner"; scanner: string; failSeverity: "high" | "medium" }
+    | { kind: "not-covered"; reason: string };
+  status: ControlStatus | null;
+  findingsCount: number;
+  maxSeverity: "info" | "low" | "medium" | "high" | "critical" | null;
+  lastCheckedAt: number | null;
+  stale: boolean;
+}
+
+interface ComplianceControlsResult {
+  controls: ComplianceControl[];
+  coverage: { total: number; automated: number; notCovered: number; percent: number };
+}
+
+interface ComplianceControlHistoryRow {
+  id: number;
+  controlId: string;
+  ts: number;
+  status: ControlStatus;
+  findingsCount: number;
+  maxSeverity: "info" | "low" | "medium" | "high" | "critical" | null;
+  evidence: string | null;
+}
+
+interface ComplianceControlHistoryResult {
+  history: ComplianceControlHistoryRow[];
+}
+
+type ControlSortKey = "name" | "category" | "status" | "findings" | "lastChecked";
+
 export function CompliancePage() {
-  const [activeTab, setActiveTab] = useState<"reports" | "audit" | "tenant" | "dpa">("reports");
+  const [activeTab, setActiveTab] = useState<"controls" | "reports" | "audit" | "tenant" | "dpa">("controls");
 
   return (
     <div className="dash-page">
@@ -36,6 +75,12 @@ export function CompliancePage() {
       </div>
 
       <div className="dash-tabs">
+        <button
+          className={`tab-btn ${activeTab === "controls" ? "active" : ""}`}
+          onClick={() => setActiveTab("controls")}
+        >
+          Controls
+        </button>
         <button
           className={`tab-btn ${activeTab === "reports" ? "active" : ""}`}
           onClick={() => setActiveTab("reports")}
@@ -62,10 +107,204 @@ export function CompliancePage() {
         </button>
       </div>
 
+      {activeTab === "controls" && <ControlsPanel />}
       {activeTab === "reports" && <ReportsPanel />}
       {activeTab === "audit" && <AuditExportPanel />}
       {activeTab === "tenant" && <TenantSettingsPanel />}
       {activeTab === "dpa" && <DpaPanel />}
+    </div>
+  );
+}
+
+function controlStatusColor(status: ControlStatus | null): string {
+  switch (status) {
+    case "pass": return "var(--green)";
+    case "fail": return "var(--red)";
+    case "error": return "var(--amber-warn)";
+    case "not-covered": return "var(--text-muted)";
+    default: return "var(--text-dim)";
+  }
+}
+
+function controlStatusLabel(status: ControlStatus | null): string {
+  return status ?? "not checked";
+}
+
+function controlStatusClass(status: ControlStatus | null): string {
+  switch (status) {
+    case "pass": return "green";
+    case "fail": return "red";
+    case "error": return "amber";
+    default: return "gray";
+  }
+}
+
+function formatControlTimestamp(ts: number | null): string {
+  return ts === null ? "Not checked" : new Date(ts).toLocaleString();
+}
+
+function ControlsPanel() {
+  const { data, loading, error, refresh } = useAuthApi<ComplianceControlsResult>("/api/compliance/controls", 0);
+  const [historyByControl, setHistoryByControl] = useState<Record<string, ComplianceControlHistoryRow[]>>({});
+  const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>({});
+  const controls = data?.controls ?? [];
+  const coverage = data?.coverage;
+
+  const table = useTableControls<ComplianceControl, ControlSortKey>({
+    rows: controls,
+    rowKey: (control) => control.id,
+    pageSize: 25,
+    defaultSort: { key: "name", dir: "asc" },
+    filterText: (control) => [
+      control.name,
+      control.description,
+      control.category,
+      control.status,
+      ...control.frameworkRefs,
+      control.binding.kind === "scanner" ? control.binding.scanner : control.binding.reason,
+    ],
+    sortValue: (control, key) => {
+      switch (key) {
+        case "name": return control.name;
+        case "category": return control.category;
+        case "status": return control.status;
+        case "findings": return control.findingsCount;
+        case "lastChecked": return control.lastCheckedAt;
+        default: return "";
+      }
+    },
+    tieBreak: ["name"],
+  });
+
+  const loadHistory = async (controlId: string) => {
+    if (historyByControl[controlId] !== undefined || historyLoading[controlId]) return;
+    setHistoryLoading((current) => ({ ...current, [controlId]: true }));
+    try {
+      const response = await authFetch(`/api/compliance/controls/history?id=${encodeURIComponent(controlId)}&limit=10`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const json = await response.json() as { data?: ComplianceControlHistoryResult };
+      setHistoryByControl((current) => ({ ...current, [controlId]: json.data?.history ?? [] }));
+    } catch {
+      setHistoryByControl((current) => ({ ...current, [controlId]: [] }));
+    } finally {
+      setHistoryLoading((current) => ({ ...current, [controlId]: false }));
+    }
+  };
+
+  const toggleControl = (control: ComplianceControl) => {
+    const opening = !table.isExpanded(control.id);
+    table.toggleExpanded(control.id);
+    if (opening) void loadHistory(control.id);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="section-card">
+        <div className="section-card-header">
+          <h2 className="text-sm font-medium text-[var(--text)]">Control catalog</h2>
+          <button className="btn btn-sm btn-ghost" onClick={refresh}>Refresh</button>
+        </div>
+        <div className="section-card-body compliance-section-body space-y-4">
+          {coverage && (
+            <div className="compliance-summary-strip">
+              <Shield size={14} style={{ color: "var(--green)" }} />
+              <div className="text-xs text-[var(--text)]">
+                <strong>{coverage.automated} of {coverage.total} controls automated</strong> — {coverage.notCovered} honestly not covered ({coverage.percent}% coverage).
+              </div>
+            </div>
+          )}
+
+          {error && !data && (
+            <div className="loading-panel error">Control catalog did not load: {error}</div>
+          )}
+          {loading && !data && <div className="loading-panel">Loading controls...</div>}
+
+          <div className="table-container">
+            <TableControls {...table.controlsProps} searchPlaceholder="Search controls..." />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th {...table.sortHeaderProps("name")}>
+                    control <span className="sortable-th-arrow">{table.sort.key === "name" ? (table.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...table.sortHeaderProps("category")}>
+                    category <span className="sortable-th-arrow">{table.sort.key === "category" ? (table.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...table.sortHeaderProps("status")}>
+                    status <span className="sortable-th-arrow">{table.sort.key === "status" ? (table.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...table.sortHeaderProps("findings")}>
+                    findings <span className="sortable-th-arrow">{table.sort.key === "findings" ? (table.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...table.sortHeaderProps("lastChecked")}>
+                    last checked <span className="sortable-th-arrow">{table.sort.key === "lastChecked" ? (table.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th>framework refs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {table.rows.map((control) => {
+                  const expanded = table.isExpanded(control.id);
+                  return (
+                    <Fragment key={control.id}>
+                      <tr>
+                        <td>
+                          <button className="btn btn-xs btn-ghost" onClick={() => toggleControl(control)} aria-expanded={expanded}>
+                            {expanded ? "▾" : "▸"} {control.name}
+                          </button>
+                        </td>
+                        <td className="text-xs text-[var(--text-dim)]">{control.category}</td>
+                        <td>
+                          <span className={`pill ${controlStatusClass(control.status)}`}>
+                            {controlStatusLabel(control.status)}
+                          </span>
+                          {control.stale && <span className="pill amber ml-1">stale</span>}
+                        </td>
+                        <td className="font-mono text-xs">{control.findingsCount}</td>
+                        <td className="text-xs text-[var(--text-dim)]">{formatControlTimestamp(control.lastCheckedAt)}</td>
+                        <td className="text-xs text-[var(--text-dim)]">{control.frameworkRefs.join(", ")}</td>
+                      </tr>
+                      {expanded && (
+                        <tr>
+                          <td colSpan={6} className="text-xs text-[var(--text-dim)]">
+                            <div className="space-y-2 py-1">
+                              <div>{control.description}</div>
+                              {control.binding.kind === "scanner" ? (
+                                <div>Binding: <span className="font-mono">{control.binding.scanner}</span> scanner; fails at <span className="font-mono">{control.binding.failSeverity}</span> severity.</div>
+                              ) : (
+                                <div>Not covered: {control.binding.reason}</div>
+                              )}
+                              <div>
+                                <span className="font-medium text-[var(--text)]">Recent history</span>
+                                {historyLoading[control.id] && <span className="ml-2">Loading…</span>}
+                                {!historyLoading[control.id] && (historyByControl[control.id] ?? []).length === 0 && <span className="ml-2">No recorded results yet.</span>}
+                                {(historyByControl[control.id] ?? []).length > 0 && (
+                                  <ul className="mt-1 space-y-1">
+                                    {(historyByControl[control.id] ?? []).map((row) => (
+                                      <li key={row.id}>
+                                        {formatControlTimestamp(row.ts)} — <span style={{ color: controlStatusColor(row.status) }}>{row.status}</span> ({row.findingsCount} findings)
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+                {table.filteredCount === 0 && (
+                  <tr>
+                    <td colSpan={6} className="loading-dim">no controls match the current filter</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

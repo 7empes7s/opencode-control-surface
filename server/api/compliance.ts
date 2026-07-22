@@ -1,12 +1,18 @@
 import { generateDpa, listSubprocessors, getSoc2Mapping } from "../compliance/generator.ts";
 import { getTenantSettings } from "../tenancy/settings.ts";
 import { getTenantContext } from "../tenancy/context.ts";
-import { ok, type ApiEnvelope } from "./types.ts";
+import {
+  ok,
+  type ApiEnvelope,
+  type ComplianceControlHistoryResponse,
+  type ComplianceControlsResponse,
+} from "./types.ts";
 import { exportAuditLog } from "../governance/audit/export.ts";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { buildEvidenceZip } from "../compliance/zipPack.ts";
 import { buildComplianceControlStatuses } from "../compliance/evidencePack.ts";
+import { listCatalogControls, listControlHistory } from "../compliance/controls.ts";
 
 export function complianceDpaHandler(req: Request): Response {
   const ctx = getTenantContext(req);
@@ -43,6 +49,26 @@ export function complianceSummaryHandler(req: Request): Response {
   const summary = buildComplianceControlStatuses(ctx.tenantId);
 
   const envelope: ApiEnvelope<typeof summary> = ok(summary);
+  return new Response(JSON.stringify(envelope), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function complianceControlsHandler(req: Request): Response {
+  const ctx = getTenantContext(req);
+  const data = listCatalogControls(Date.now(), ctx);
+  const envelope: ApiEnvelope<ComplianceControlsResponse> = ok(data);
+  return new Response(JSON.stringify(envelope), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function complianceControlsHistoryHandler(req: Request): Response {
+  const ctx = getTenantContext(req);
+  const url = new URL(req.url);
+  const id = url.searchParams.get("id") ?? "";
+  const history = listControlHistory(id, url.searchParams.get("limit"), ctx);
+  const envelope: ApiEnvelope<ComplianceControlHistoryResponse> = ok({ history });
   return new Response(JSON.stringify(envelope), {
     headers: { "Content-Type": "application/json" },
   });

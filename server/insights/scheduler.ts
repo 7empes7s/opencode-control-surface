@@ -19,8 +19,28 @@ import { autoApplySafeInsights } from "./autoapply.ts";
 import { notifyCriticalFindings } from "../notifications/notifier.ts";
 import { startModelEvalScheduler, stopModelEvalScheduler } from "../evals/modelEval.ts";
 import { maybeGenerateDailyDigest } from "../reporting/digest.ts";
+import { recordControlsTick, type ControlTickSummary } from "../compliance/controls.ts";
+import type { InsightSeverity } from "./types.ts";
 
 let insightsTimer: ReturnType<typeof setInterval> | null = null;
+
+const SEVERITY_RANK: Record<InsightSeverity, number> = {
+  info: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
+function maxFindingSeverity(findings: Array<{ severity: InsightSeverity }>): InsightSeverity | null {
+  let maxSeverity: InsightSeverity | null = null;
+  for (const finding of findings) {
+    if (!maxSeverity || SEVERITY_RANK[finding.severity] > SEVERITY_RANK[maxSeverity]) {
+      maxSeverity = finding.severity;
+    }
+  }
+  return maxSeverity;
+}
 
 async function runDailyDigestGate(firstBootTick = false): Promise<void> {
   try {
@@ -48,18 +68,73 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
   notifications: { sent: number; deduped: number; scanned: number; skipped: number };
 }> {
   const aggregated = aggregateInsights().createdOrUpdated;
-  const securityFindings = runSecurityScan().findings.length;
-  const registryFindings = runRegistryScan().findings.length;
-  const budgetFindings = runBudgetScan().findings.length;
-  const anomalies = runAnomalyScan().anomalies;
+  const controlTick = {} as ControlTickSummary;
+  let securityFindings = 0;
+  try {
+    const securityResult = runSecurityScan();
+    securityFindings = securityResult.findings.length;
+    controlTick.security = {
+      ran: true,
+      error: false,
+      findingsCount: securityFindings,
+      maxSeverity: maxFindingSeverity(securityResult.findings),
+    };
+  } catch (error) {
+    controlTick.security = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
+    console.error("[insights] security scan failed", error);
+  }
+  let registryFindings = 0;
+  try {
+    const registryResult = runRegistryScan();
+    registryFindings = registryResult.findings.length;
+    controlTick.registry = {
+      ran: true,
+      error: false,
+      findingsCount: registryFindings,
+      maxSeverity: maxFindingSeverity(registryResult.findings),
+    };
+  } catch (error) {
+    controlTick.registry = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
+    console.error("[insights] registry scan failed", error);
+  }
+  let budgetFindings = 0;
+  try {
+    const budgetResult = runBudgetScan();
+    budgetFindings = budgetResult.findings.length;
+    controlTick.budget = {
+      ran: true,
+      error: false,
+      findingsCount: budgetFindings,
+      maxSeverity: maxFindingSeverity(budgetResult.findings),
+    };
+  } catch (error) {
+    controlTick.budget = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
+    console.error("[insights] budget scan failed", error);
+  }
+  let anomalies = 0;
+  try {
+    const anomalyResult = runAnomalyScan();
+    anomalies = anomalyResult.anomalies;
+    controlTick.anomaly = { ran: true, error: false, findingsCount: anomalies, maxSeverity: null };
+  } catch (error) {
+    controlTick.anomaly = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
+    console.error("[insights] anomaly scan failed", error);
+  }
   let sentinelIncidents = 0;
   try {
     const sentinelResult = runSentinelIncidentScan();
     sentinelIncidents = sentinelResult.createdOrUpdated;
+    controlTick.sentinelIncidents = {
+      ran: true,
+      error: false,
+      findingsCount: sentinelIncidents,
+      maxSeverity: null,
+    };
     if (sentinelResult.autoClosed > 0) {
       console.log(`[incidents] auto-closed ${sentinelResult.autoClosed} cleared sentinel incidents`);
     }
   } catch (error) {
+    controlTick.sentinelIncidents = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] sentinel incident scan failed", error);
   }
   let incidentsAutoResolved = 0;
@@ -97,46 +172,104 @@ export async function runInsightsScanOnce(opts: { firstBootTick?: boolean; diges
   }
   let opsFindings = 0;
   try {
-    opsFindings = runOpsScan().findings.length;
+    const opsResult = runOpsScan();
+    opsFindings = opsResult.findings.length;
+    controlTick.ops = {
+      ran: true,
+      error: false,
+      findingsCount: opsFindings,
+      maxSeverity: maxFindingSeverity(opsResult.findings),
+    };
   } catch (error) {
+    controlTick.ops = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] ops scan failed", error);
   }
   let slaFindings = 0;
   try {
-    slaFindings = runSlaScan().findings.length;
+    const slaResult = runSlaScan();
+    slaFindings = slaResult.findings.length;
+    controlTick.sla = {
+      ran: true,
+      error: false,
+      findingsCount: slaFindings,
+      maxSeverity: maxFindingSeverity(slaResult.findings),
+    };
   } catch (error) {
+    controlTick.sla = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] sla scan failed", error);
   }
   let discoveryFindings = 0;
   try {
-    discoveryFindings = runDiscoveryScan().findings.length;
+    const discoveryResult = runDiscoveryScan();
+    discoveryFindings = discoveryResult.findings.length;
+    controlTick.discovery = {
+      ran: true,
+      error: false,
+      findingsCount: discoveryFindings,
+      maxSeverity: maxFindingSeverity(discoveryResult.findings),
+    };
   } catch (error) {
+    controlTick.discovery = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] discovery scan failed", error);
   }
   let edgeFindings = 0;
   try {
-    edgeFindings = (await runEdgeScan()).findings.length;
+    const edgeResult = await runEdgeScan();
+    edgeFindings = edgeResult.findings.length;
+    controlTick.edge = {
+      ran: true,
+      error: false,
+      findingsCount: edgeFindings,
+      maxSeverity: maxFindingSeverity(edgeResult.findings),
+    };
   } catch (error) {
+    controlTick.edge = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] edge scan failed", error);
   }
   let governanceFindings = 0;
   try {
-    governanceFindings = runGovernanceScan().findings.length;
+    const governanceResult = runGovernanceScan();
+    governanceFindings = governanceResult.findings.length;
+    controlTick.governance = {
+      ran: true,
+      error: false,
+      findingsCount: governanceFindings,
+      maxSeverity: maxFindingSeverity(governanceResult.findings),
+    };
   } catch (error) {
+    controlTick.governance = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] governance scan failed", error);
   }
   let buildFindings = 0;
   try {
-    buildFindings = runBuildScan().findings.length;
+    const buildResult = runBuildScan();
+    buildFindings = buildResult.findings.length;
+    controlTick.build = {
+      ran: true,
+      error: false,
+      findingsCount: buildFindings,
+      maxSeverity: maxFindingSeverity(buildResult.findings),
+    };
   } catch (error) {
+    controlTick.build = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] build scan failed", error);
   }
   let modelRouteFindings = 0;
   try {
-    modelRouteFindings = runModelRoutesScan().findings.length;
+    const modelRouteResult = runModelRoutesScan();
+    modelRouteFindings = modelRouteResult.findings.length;
+    controlTick.modelRoutes = {
+      ran: true,
+      error: false,
+      findingsCount: modelRouteFindings,
+      maxSeverity: maxFindingSeverity(modelRouteResult.findings),
+    };
   } catch (error) {
+    controlTick.modelRoutes = { ran: false, error: true, findingsCount: 0, maxSeverity: null };
     console.error("[insights] model-routes scan failed", error);
   }
+
+  recordControlsTick(controlTick);
 
   let notifications = { sent: 0, deduped: 0, scanned: 0, skipped: 0 };
   try {
