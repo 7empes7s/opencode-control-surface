@@ -1829,6 +1829,30 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       ON agent_identity_profiles (tenant_id, updated_at DESC);
   `);
 
+  // ── Catalog S11: tenant-local AI provider risk declarations ─────────────
+  // Runtime/configuration evidence stays in its source tables. This is the
+  // only writable S11 data and it contains credential locations/names only,
+  // never credential values.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_provider_risk_profiles (
+      tenant_id TEXT NOT NULL,
+      provider_key TEXT NOT NULL,
+      data_classes_json TEXT NOT NULL DEFAULT '[]',
+      credential_location TEXT,
+      egress_boundary TEXT CHECK(egress_boundary IN ('external-provider', 'private-network', 'unknown')),
+      owner TEXT,
+      risk_likelihood INTEGER CHECK(risk_likelihood BETWEEN 1 AND 5),
+      risk_impact INTEGER CHECK(risk_impact BETWEEN 1 AND 5),
+      treatment TEXT CHECK(treatment IN ('accept', 'mitigate', 'transfer', 'avoid')),
+      last_reviewed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT,
+      PRIMARY KEY (tenant_id, provider_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_provider_risk_profiles_tenant_updated
+      ON ai_provider_risk_profiles (tenant_id, updated_at DESC);
+  `);
+
   // Normalize legacy seconds-valued timestamps to milliseconds. Brainstorm code
   // historically wrote `Math.floor(Date.now()/1000)` while the rest of the
   // dashboard uses ms, which made brainstorm-derived workflows/sessions sort to

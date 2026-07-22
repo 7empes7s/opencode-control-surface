@@ -19,6 +19,10 @@ function isIdentityDeclarationPath(pathname: string): boolean {
   return pathname === "/api/agent-identities" || pathname.startsWith("/api/agent-identities/");
 }
 
+function isAiProviderDeclarationPath(pathname: string): boolean {
+  return pathname === "/api/ai-provider-register" || pathname.startsWith("/api/ai-provider-register/");
+}
+
 export function isMutatingApiRequest(method: string, pathname: string): boolean {
   if (!MUTATING_METHODS.has(method.toUpperCase())) return false;
   if (!pathname.startsWith("/api/")) return false;
@@ -28,7 +32,7 @@ export function isMutatingApiRequest(method: string, pathname: string): boolean 
   // agent_identity_profiles. Their own updated_at/updated_by fields provide
   // the permitted change record; do not make the audit boundary write an
   // existing telemetry table for this otherwise read-only slice.
-  if (isIdentityDeclarationPath(pathname)) return false;
+  if (isIdentityDeclarationPath(pathname) || isAiProviderDeclarationPath(pathname)) return false;
   return true;
 }
 

@@ -262,6 +262,7 @@ import {
 import { gatewayTracesHandler } from "./traces.ts";
 import { agentRegistryListHandler, agentPassportHandler } from "./agentRegistry.ts";
 import { agentIdentityListHandler, agentIdentityUpdateHandler } from "./agentIdentities.ts";
+import { aiProviderRegisterListHandler, aiProviderRegisterUpdateHandler } from "./aiProviders.ts";
 import { agentSessionDetailHandler, agentSessionEventsHandler, agentSessionRunsHandler, agentSessionsListHandler } from "./agentSessions.ts";
 import { terminalSessionCreateHandler, terminalSessionStopHandler, terminalSessionsListHandler } from "./terminalSessions.ts";
 import {
@@ -716,6 +717,17 @@ if (method === "GET" && pathname === "/api/stream") {
     const denied = requireMutation(req);
     if (denied) return denied;
     return agentIdentityUpdateHandler(req, decodeURIComponent(agentIdentityMatch[1]));
+  }
+  if (method === "GET" && pathname === "/api/ai-provider-register") {
+    if (!checkToken(req)) return unauthorized();
+    return aiProviderRegisterListHandler(req);
+  }
+  const aiProviderRegisterMatch = pathname.match(/^\/api\/ai-provider-register\/([^/]+)$/);
+  if (method === "PUT" && aiProviderRegisterMatch) {
+    if (!checkToken(req)) return unauthorized();
+    const denied = requireMutation(req);
+    if (denied) return denied;
+    return aiProviderRegisterUpdateHandler(req, decodeURIComponent(aiProviderRegisterMatch[1]));
   }
   if (method === "POST" && pathname === "/api/insights/scan") {
     const denied = requireMutation(req);

@@ -61,6 +61,7 @@ const expectedTables = [
   "artifacts",
   "leases",
   "agent_identity_profiles",
+  "ai_provider_risk_profiles",
 ];
 
 let tempDir: string;
@@ -317,6 +318,7 @@ function registerDashboardDbTests(): void {
       "reasoner_incident_members", "reasoner_playbooks", "reasoner_playbook_runs",
       "orchestrator_instances", "orchestrator_history", "orchestrator_signals", "orchestrator_lanes",
       "agent_identity_profiles",
+      "ai_provider_risk_profiles",
     ];
 
     for (const table of tenantTables) {

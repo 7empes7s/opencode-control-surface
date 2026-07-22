@@ -157,10 +157,10 @@ export const CONTROL_CATALOG: ControlDefinition[] = [
   {
     id: "ai-provider-risk-register",
     name: "AI provider risk register",
-    description: "AI-provider vendor risks are not yet recorded in a reviewed risk register.",
+    description: "Observed AI-provider identifiers can be declared with data-flow, credential-location, egress, owner, risk, treatment, and review evidence; no periodic automated review check runs yet.",
     category: "Third-party risk",
     frameworkRefs: ["ISO 42001 Annex A.6.1", "SOC 2 CC9.2"],
-    binding: { kind: "not-covered", reason: "No vendor risk register for AI providers" },
+    binding: { kind: "not-covered", reason: "Provider declarations are reviewable, but no periodic automated provider-review control runs yet" },
   },
   {
     id: "external-saas-ai",

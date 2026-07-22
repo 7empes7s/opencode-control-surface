@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useState, type FormEvent } from "react";
 import { Shield, Download, FileText, Users, AlertTriangle } from "lucide-react";
 import { TableControls } from "../components/TableControls";
 import { useAuthApi } from "../hooks/useAuthApi";
@@ -62,8 +62,66 @@ interface ComplianceControlHistoryResult {
 
 type ControlSortKey = "name" | "category" | "status" | "findings" | "lastChecked";
 
+type ProviderDeclarationState = "undeclared" | "unreviewed" | "reviewed";
+type ProviderEgressBoundary = "external-provider" | "private-network" | "unknown";
+type ProviderTreatment = "accept" | "mitigate" | "transfer" | "avoid";
+
+interface AiProviderRegisterEntry {
+  key: string;
+  declaration: {
+    dataClasses: string[];
+    credentialLocation: string | null;
+    egressBoundary: ProviderEgressBoundary | null;
+    owner: string | null;
+    riskLikelihood: number | null;
+    riskImpact: number | null;
+    treatment: ProviderTreatment | null;
+    lastReviewedAt: number | null;
+    state: ProviderDeclarationState;
+    updatedAt: number | null;
+    updatedBy: string | null;
+  };
+  riskScore: number | null;
+  evidence: {
+    available: boolean;
+    configuredIdentifiers: string[];
+    gatewayIdentifiers: string[];
+    builderIdentifiers: string[];
+    gateway: {
+      calls: number;
+      successes: number;
+      successRate: number | null;
+      firstObservedAt: number | null;
+      lastObservedAt: number | null;
+      recentCalls: number;
+      recentSuccesses: number;
+      recentSuccessRate: number | null;
+      recentFirstObservedAt: number | null;
+      recentLastObservedAt: number | null;
+    };
+    builderPasses: {
+      passes: number;
+      successes: number;
+      successRate: number | null;
+      firstObservedAt: number | null;
+      lastObservedAt: number | null;
+    };
+    routeTruthFindingKinds: Array<"dead-route" | "degraded-route" | "probe-only-route" | "broken-paid-fallback">;
+    zeroSuccess17d: boolean;
+  };
+}
+
+interface AiProviderRegisterPayload {
+  providers: AiProviderRegisterEntry[];
+}
+
+interface RbacMe {
+  role: "owner" | "operator" | "auditor" | "viewer";
+  allowedActions: string[];
+}
+
 export function CompliancePage() {
-  const [activeTab, setActiveTab] = useState<"controls" | "reports" | "audit" | "tenant" | "dpa">("controls");
+  const [activeTab, setActiveTab] = useState<"controls" | "providers" | "reports" | "audit" | "tenant" | "dpa">("controls");
 
   return (
     <div className="dash-page">
@@ -80,6 +138,12 @@ export function CompliancePage() {
           onClick={() => setActiveTab("controls")}
         >
           Controls
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "providers" ? "active" : ""}`}
+          onClick={() => setActiveTab("providers")}
+        >
+          AI Providers
         </button>
         <button
           className={`tab-btn ${activeTab === "reports" ? "active" : ""}`}
@@ -108,6 +172,7 @@ export function CompliancePage() {
       </div>
 
       {activeTab === "controls" && <ControlsPanel />}
+      {activeTab === "providers" && <AiProviderRegisterPanel />}
       {activeTab === "reports" && <ReportsPanel />}
       {activeTab === "audit" && <AuditExportPanel />}
       {activeTab === "tenant" && <TenantSettingsPanel />}
@@ -302,6 +367,208 @@ function ControlsPanel() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function providerStateClass(state: ProviderDeclarationState): string {
+  if (state === "reviewed") return "green";
+  if (state === "unreviewed") return "amber";
+  return "gray";
+}
+
+function percent(value: number | null): string {
+  return value === null ? "no traffic" : `${Math.round(value * 100)}%`;
+}
+
+function providerDate(value: number | null): string {
+  return value ? new Date(value).toLocaleDateString() : "unreviewed";
+}
+
+function providerDateInput(value: number | null): string {
+  return value ? new Date(value).toISOString().slice(0, 10) : "";
+}
+
+function AiProviderDeclarationEditor({ provider, onSaved }: { provider: AiProviderRegisterEntry; onSaved: () => void }) {
+  const { declaration } = provider;
+  const [editing, setEditing] = useState(false);
+  const [dataClasses, setDataClasses] = useState(declaration.dataClasses.join("\n"));
+  const [credentialLocation, setCredentialLocation] = useState(declaration.credentialLocation ?? "");
+  const [egressBoundary, setEgressBoundary] = useState<ProviderEgressBoundary | "">(declaration.egressBoundary ?? "");
+  const [owner, setOwner] = useState(declaration.owner ?? "");
+  const [riskLikelihood, setRiskLikelihood] = useState(declaration.riskLikelihood?.toString() ?? "");
+  const [riskImpact, setRiskImpact] = useState(declaration.riskImpact?.toString() ?? "");
+  const [treatment, setTreatment] = useState<ProviderTreatment | "">(declaration.treatment ?? "");
+  const [reviewDate, setReviewDate] = useState(providerDateInput(declaration.lastReviewedAt));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveDeclaration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    const parseRisk = (value: string): number | null => value ? Number(value) : null;
+    try {
+      const response = await authFetch(`/api/ai-provider-register/${encodeURIComponent(provider.key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataClasses: dataClasses.split("\n").map((item) => item.trim()).filter(Boolean),
+          credentialLocation: credentialLocation.trim() || null,
+          egressBoundary: egressBoundary || null,
+          owner: owner.trim() || null,
+          riskLikelihood: parseRisk(riskLikelihood),
+          riskImpact: parseRisk(riskImpact),
+          treatment: treatment || null,
+          lastReviewedAt: reviewDate ? Date.parse(`${reviewDate}T00:00:00.000Z`) : null,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      setEditing(false);
+      onSaved();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return <button type="button" className="btn btn-ghost" onClick={() => setEditing(true)}>Update declaration</button>;
+  }
+
+  return (
+    <form className="agent-identity-editor" onSubmit={saveDeclaration}>
+      <label className="agent-identity-editor-wide">
+        data classes sent (one per line)
+        <textarea value={dataClasses} maxLength={5200} rows={3} onChange={(event) => setDataClasses(event.target.value)} placeholder="Undeclared" />
+      </label>
+      <label className="agent-identity-editor-wide">
+        credential location or variable name — never secret value
+        <input value={credentialLocation} maxLength={240} onChange={(event) => setCredentialLocation(event.target.value)} placeholder="process.env.PROVIDER_API_KEY" />
+      </label>
+      <label>
+        egress boundary
+        <select value={egressBoundary} onChange={(event) => setEgressBoundary(event.target.value as ProviderEgressBoundary | "")}>
+          <option value="">Undeclared</option>
+          <option value="external-provider">External provider</option>
+          <option value="private-network">Private network</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+      <label>
+        owner
+        <input value={owner} maxLength={200} onChange={(event) => setOwner(event.target.value)} placeholder="Undeclared" />
+      </label>
+      <label>
+        likelihood (1–5)
+        <select value={riskLikelihood} onChange={(event) => setRiskLikelihood(event.target.value)}>
+          <option value="">Undeclared</option>
+          {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>
+      <label>
+        impact (1–5)
+        <select value={riskImpact} onChange={(event) => setRiskImpact(event.target.value)}>
+          <option value="">Undeclared</option>
+          {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>
+      <label>
+        treatment
+        <select value={treatment} onChange={(event) => setTreatment(event.target.value as ProviderTreatment | "")}>
+          <option value="">Undeclared</option>
+          <option value="accept">Accept</option>
+          <option value="mitigate">Mitigate</option>
+          <option value="transfer">Transfer</option>
+          <option value="avoid">Avoid</option>
+        </select>
+      </label>
+      <label>
+        last review
+        <input type="date" value={reviewDate} onChange={(event) => setReviewDate(event.target.value)} />
+      </label>
+      <div className="agent-identity-editor-actions">
+        <button type="submit" className="btn" disabled={saving}>{saving ? "Saving…" : "Save declaration"}</button>
+        <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
+      </div>
+      {error && <div className="agent-identity-editor-error">{error}</div>}
+    </form>
+  );
+}
+
+function AiProviderRegisterPanel() {
+  const { data, loading, error, refresh } = useAuthApi<AiProviderRegisterPayload>("/api/ai-provider-register", 15_000);
+  const { data: me } = useAuthApi<RbacMe>("/api/governance/rbac/me", 60_000);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const canEdit = me?.role === "owner" || me?.role === "operator";
+
+  return (
+    <div className="space-y-4">
+      <div className="section-card">
+        <div className="section-card-header">
+          <div>
+            <h2 className="text-sm font-medium text-[var(--text)]">AI provider register</h2>
+            <p className="text-xs text-[var(--text-dim)]">Observed provider identifiers are evidence; data-flow and risk fields are operator declarations.</p>
+          </div>
+          <button className="btn btn-sm btn-ghost" onClick={refresh}>Refresh</button>
+        </div>
+        <div className="section-card-body compliance-section-body space-y-3">
+          <div className="compliance-summary-strip">
+            <Shield size={14} style={{ color: "var(--accent)" }} />
+            <div className="text-xs text-[var(--text)]">Credential fields accept a location or variable name only. Secret values are never requested, displayed, or stored.</div>
+          </div>
+          {!canEdit && me && <div className="text-xs text-[var(--text-dim)]">Only an owner or operator can update declarations.</div>}
+          {loading && !data && <div className="loading-panel">Loading observed AI providers…</div>}
+          {error && !data && <div className="loading-panel error">Provider register did not load: {error}</div>}
+          {data?.providers.length === 0 && <div className="empty-state">No provider identifiers have been observed in available gateway configuration or tenant telemetry.</div>}
+          <div className="space-y-3">
+            {(data?.providers ?? []).map((provider) => {
+              const isExpanded = expanded === provider.key;
+              return (
+                <article key={provider.key} className="agent-identity-card">
+                  <div className="agent-identity-card-head">
+                    <div>
+                      <div className="dash-section-title">observed provider / route identifier</div>
+                      <strong className="font-mono">{provider.key}</strong>
+                      <p className="text-xs text-[var(--text-dim)]">{provider.declaration.owner ?? "No owner declared"} · {provider.declaration.egressBoundary ?? "egress undeclared"}</p>
+                    </div>
+                    <span className={`pill ${providerStateClass(provider.declaration.state)}`}>{provider.declaration.state}</span>
+                  </div>
+                  <div className="agent-identity-declaration">
+                    <div className="agent-identity-fields">
+                      <div className="agent-identity-evidence-item"><span>risk score</span><strong>{provider.riskScore ?? "undeclared"}</strong></div>
+                      <div className="agent-identity-evidence-item"><span>treatment</span><strong>{provider.declaration.treatment ?? "undeclared"}</strong></div>
+                      <div className="agent-identity-evidence-item"><span>last review</span><strong>{providerDate(provider.declaration.lastReviewedAt)}</strong></div>
+                    </div>
+                    <div className="agent-identity-capabilities"><span>data classes sent</span><div>{provider.declaration.dataClasses.length ? provider.declaration.dataClasses.map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>undeclared</strong>}</div></div>
+                  </div>
+                  <div className="compliance-actions">
+                    <button type="button" className="btn btn-ghost" onClick={() => setExpanded((current) => current === provider.key ? null : provider.key)} aria-expanded={isExpanded}>{isExpanded ? "Hide evidence" : "Show evidence"}</button>
+                    {canEdit && <AiProviderDeclarationEditor provider={provider} onSaved={refresh} />}
+                  </div>
+                  {isExpanded && (
+                    <div className="agent-identity-evidence">
+                      <div className="agent-identity-fields">
+                        <div className="agent-identity-evidence-item"><span>gateway traffic</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.successes}/${provider.evidence.gateway.calls} successful (${percent(provider.evidence.gateway.successRate)})` : "not collected"}</strong></div>
+                        <div className="agent-identity-evidence-item"><span>last 17 days</span><strong>{provider.evidence.available ? `${provider.evidence.gateway.recentSuccesses}/${provider.evidence.gateway.recentCalls} successful (${percent(provider.evidence.gateway.recentSuccessRate)})` : "not collected"}</strong></div>
+                        <div className="agent-identity-evidence-item"><span>builder passes</span><strong>{provider.evidence.available ? `${provider.evidence.builderPasses.successes}/${provider.evidence.builderPasses.passes} successful (${percent(provider.evidence.builderPasses.successRate)})` : "not collected"}</strong></div>
+                        <div className="agent-identity-evidence-item"><span>S7 route-truth</span><strong>{provider.evidence.routeTruthFindingKinds.length ? provider.evidence.routeTruthFindingKinds.join(", ") : "none active"}</strong></div>
+                      </div>
+                      {provider.evidence.zeroSuccess17d && <div className="agent-identity-caveat text-xs">Reliability and governance finding: 0% success across 17 days. This is real gateway telemetry, not a diagnosis of cause.</div>}
+                      <div className="agent-identity-capabilities"><span>configured identifiers</span><div>{provider.evidence.configuredIdentifiers.length ? provider.evidence.configuredIdentifiers.map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>none</strong>}</div></div>
+                      <div className="agent-identity-capabilities"><span>telemetry identifiers</span><div>{[...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].length ? [...provider.evidence.gatewayIdentifiers, ...provider.evidence.builderIdentifiers].map((item) => <span className="pill gray" key={item}>{item}</span>) : <strong>none</strong>}</div></div>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         </div>
       </div>
