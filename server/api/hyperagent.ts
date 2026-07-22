@@ -23,6 +23,7 @@ import {
   hyperagentSpendConfigured,
   listHyperagentAgents,
 } from "../hyperagent/client.ts";
+import { evaluateExplicitConfirmation } from "../governance/approvalPrimitive.ts";
 
 const MAX_PROMPT_LENGTH = 4_000;
 const MAX_AGENT_ID_LENGTH = 200;
@@ -140,9 +141,10 @@ export async function hyperagentCreateThreadHandler(req: Request): Promise<Respo
     audit({ resultStatus: "failed", error: `maxCostUsd must be between 0 and ${MAX_PER_TASK_USD}` });
     return json({ error: `maxCostUsd must be between 0 and ${MAX_PER_TASK_USD}` }, 400);
   }
-  if (body.confirmed !== true) {
-    audit({ resultStatus: "failed", error: "confirmation required" });
-    return json({ error: "confirmation required" }, 400);
+  const confirmation = evaluateExplicitConfirmation({ confirmed: body.confirmed });
+  if (confirmation.allowed === false) {
+    audit({ resultStatus: "failed", error: confirmation.error });
+    return json({ error: confirmation.error }, 400);
   }
   if (!reason) {
     audit({ resultStatus: "failed", error: "reason required" });

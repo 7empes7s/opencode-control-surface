@@ -13,6 +13,8 @@
 // of this module must render it as inert text, never as markup or
 // instructions.
 
+import { issueAndConsumePermit } from "../governance/approvalPrimitive.ts";
+
 const BROKER_URL = "http://127.0.0.1:8787";
 const CALLER = "control-surface";
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -106,22 +108,32 @@ export async function createHyperagentThread(
 ): Promise<BrokerResult> {
   if (!hyperagentSpendConfigured()) return { ok: false, status: 503, error: "hyperagent broker spend credentials are not configured" };
   const args = { agentId, prompt };
-  const permit = await brokerFetch("/confirm", {
-    method: "POST",
-    headers: authHeaders({ "x-broker-confirmation": confirmationToken() }),
-    body: JSON.stringify({ tool: "create_thread", arguments: args, maxCostUsd }),
-  });
-  // Explicit `=== false` (not `!permit.ok`): with strict:false in this
-  // project's tsconfig, TS fails to narrow a boolean-literal discriminated
-  // union through negation, only through direct equality comparison.
-  if (permit.ok === false) return permit;
-  const confirmationTokenValue = permit.body.confirmationToken;
-  if (typeof confirmationTokenValue !== "string") {
-    return { ok: false, status: 502, error: "broker did not return a usable confirmation permit" };
-  }
-  return brokerFetch("/call", {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ tool: "create_thread", arguments: args, confirmationToken: confirmationTokenValue }),
+  return issueAndConsumePermit({
+    args,
+    issue: async (argumentsForPermit) => {
+      const permit = await brokerFetch("/confirm", {
+        method: "POST",
+        headers: authHeaders({ "x-broker-confirmation": confirmationToken() }),
+        body: JSON.stringify({ tool: "create_thread", arguments: argumentsForPermit, maxCostUsd }),
+      });
+      // Explicit `=== false` (not `!permit.ok`): with strict:false in this
+      // project's tsconfig, TS fails to narrow a boolean-literal discriminated
+      // union through negation, only through direct equality comparison.
+      if (permit.ok === false) return { issued: false, result: permit };
+      const confirmationTokenValue = permit.body.confirmationToken;
+      if (typeof confirmationTokenValue !== "string") {
+        return {
+          issued: false,
+          result: { ok: false, status: 502, error: "broker did not return a usable confirmation permit" },
+        };
+      }
+      return { issued: true, permit: confirmationTokenValue };
+    },
+    consume: (argumentsForPermit, confirmationTokenValue) => brokerFetch("/call", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ tool: "create_thread", arguments: argumentsForPermit, confirmationToken: confirmationTokenValue }),
+    }),
+    argumentsChanged: () => ({ ok: false, status: 502, error: "confirmation arguments changed before permit consumption" }),
   });
 }

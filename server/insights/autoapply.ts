@@ -13,6 +13,7 @@ import {
   type AutoApplyRollbackAffordance,
   type RiskTier,
 } from "./autoapplyPolicy.ts";
+import { evaluateUnattendedApproval } from "../governance/approvalPrimitive.ts";
 
 export { SAFE_AUTO_ACTIONS, isSafeAutoAction, riskTierFor, rollbackAffordanceForAction, type RiskTier };
 
@@ -243,7 +244,9 @@ export async function autoApplySafeInsights(insights: Insight[], limit = 4): Pro
     const now = nowProvider();
     let remaining = Math.max(0, policy.maxAutoAppliesPerHour - autoApplyCountInTrailingHour(now));
     if (remaining <= 0) return 0;
-    const candidates = insights.filter((i) => i.status === "open" && isSafeAutoAction(i.actionDescriptorId));
+    const candidates = insights.filter((insight) =>
+      insight.status === "open" && evaluateUnattendedApproval({ enabled: isSafeAutoAction(insight.actionDescriptorId) }).allowed,
+    );
     let applied = 0;
     for (const insight of candidates.slice(0, limit)) {
       if (remaining <= 0) break;
