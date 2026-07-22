@@ -21,6 +21,7 @@ function stageColor(stage: string): string {
   if (stage === "ops") return "red";
   if (stage === "security") return "amber";
   if (stage === "build") return "blue";
+  if (stage === "models") return "blue";
   return "gray";
 }
 
@@ -662,7 +663,7 @@ export function IncidentsPage() {
 
         <div className="insights-message" style={{ marginBottom: 12 }}>
           <Sparkles size={15} />
-          Incidents is a saved view of high-severity Detections across operations, security, and build failures.
+          Incidents is a saved view of high-severity Detections across operations, security, build, and model-routing failures.
           <Link href="/insights" className="btn btn-ghost" style={{ marginLeft: "auto", minHeight: 44 }}>
             <ExternalLink size={14} />
             Open Detections
@@ -673,7 +674,7 @@ export function IncidentsPage() {
           <div className="empty-state">
             <ShieldCheck size={24} />
             <strong>No incident-grade detections.</strong>
-            <span>High and critical operations, security, and build findings appear here automatically.</span>
+            <span>High and critical operations, security, build, and model-routing findings appear here automatically.</span>
           </div>
         ) : (
           <div className="table-wrap">

@@ -66,9 +66,10 @@ const DOMAIN_LABEL: Record<Insight["domain"], string> = {
   build: "Build",
   data: "Data",
   ops: "Operations",
+  models: "Models",
 };
 
-const DOMAIN_ORDER: Insight["domain"][] = ["ops", "security", "cost", "build", "data"];
+const DOMAIN_ORDER: Insight["domain"][] = ["ops", "models", "security", "cost", "build", "data"];
 
 const SEVERITY_RANK: Record<Insight["severity"], number> = {
   critical: 5,
@@ -941,7 +942,7 @@ export function InsightsPage() {
   }, [focusKey, data]);
 
   const grouped = useMemo(() => {
-    const groups: Record<Insight["domain"], InsightWithAi[]> = { cost: [], security: [], build: [], data: [], ops: [] };
+    const groups: Record<Insight["domain"], InsightWithAi[]> = { cost: [], security: [], build: [], data: [], ops: [], models: [] };
     for (const insight of data?.insights ?? []) {
       // Apply severity filter
       if (severityFilter !== "all" && insight.severity !== severityFilter) continue;
@@ -1009,7 +1010,7 @@ export function InsightsPage() {
     setMessage(null);
     try {
       await post("/api/insights/scan", {});
-      setMessage("The inbox was refreshed from operations, security, cost, build, and data signals.");
+      setMessage("The inbox was refreshed from operations, models, security, cost, build, and data signals.");
       refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "The scan could not be started.");
@@ -1196,7 +1197,7 @@ export function InsightsPage() {
           </button>
         ))}
         <span className="dim" style={{ fontSize: 12, marginLeft: 8 }}>Domain:</span>
-        {(["all", "ops", "security", "cost", "build", "data"] as DomainFilter[]).map((d) => (
+        {(["all", "ops", "models", "security", "cost", "build", "data"] as DomainFilter[]).map((d) => (
           <button
             key={d}
             type="button"
@@ -1296,7 +1297,7 @@ export function InsightsPage() {
               <div className="empty-state">
                 <ShieldCheck size={24} />
                 <strong>{statusFilter === "open" ? "No open insights right now." : `No ${STATUS_LABEL[statusFilter].toLowerCase()} insights.`}</strong>
-                {statusFilter === "open" && <span>Run a scan to refresh cost, security, build, and data checks.</span>}
+                {statusFilter === "open" && <span>Run a scan to refresh operations, model routing, security, cost, build, and data checks.</span>}
               </div>
             </div>
           )}

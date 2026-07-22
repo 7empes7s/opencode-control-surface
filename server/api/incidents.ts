@@ -211,7 +211,7 @@ export function sanitizePostMortemSuggestion(raw: string): { text: string; usabl
 
 function isIncidentGrade(insight: Insight): boolean {
   if (insight.status !== "open") return false;
-  if (!["ops", "security", "build"].includes(insight.domain)) return false;
+  if (!["ops", "security", "build", "models"].includes(insight.domain)) return false;
   if (insight.severity === "high" || insight.severity === "critical") return true;
   return (insight.sourceKey ?? "").startsWith("health:sentinel:");
 }

@@ -9,6 +9,7 @@ import {
   computeChainDiff,
   getModelChainSyncPayload,
 } from "./modelChainSync.ts";
+import type { ModelRouteStats } from "../insights/scanners/modelRoutes.ts";
 
 type ShellCall = { command: string; timeout?: number };
 
@@ -81,6 +82,7 @@ describe("model chain sync preview", () => {
       "configReadError",
       "anyChanges",
       "chains",
+      "routeAdvisories",
       "correctedYamlBlock",
       "applyCommand",
     ]);
@@ -201,5 +203,60 @@ describe("model chain sync preview", () => {
       expect(chain.removed).toEqual([]);
       expect(chain.reordered).toBe(false);
     }
+  });
+
+  test("prunes dead routes from every emitted chain and returns route advisories", () => {
+    writeHealth({
+      editorialHeavy: ["dead-model", "new-heavy"],
+      editorialFast: ["fast-ok", "dead-model"],
+    });
+    shellResponder = () => ({
+      ok: true,
+      stdout: JSON.stringify([
+        { "routing-cheap": ["dead-model", "cheap-ok"] },
+        { "editorial-heavy": ["dead-model", "old-heavy"] },
+        { "editorial-fast": ["fast-ok", "dead-model"] },
+      ]),
+    });
+    const routeStats: ModelRouteStats = {
+      routes: [{
+        routeName: "dead-model",
+        allCalls: 8,
+        allSuccesses: 0,
+        recentCalls: 8,
+        recentSuccesses: 0,
+        recentDistinctDays: 2,
+        recentPaidCalls: 0,
+        dominantRecentErrorClass: "auth",
+      }],
+      builderCapabilities: [{
+        provider: "opencode",
+        model: "opencode-go/kimi-k2.6",
+        passes: 10,
+        successes: 6,
+      }],
+    };
+
+    const payload = getModelChainSyncPayload(NOW, routeStats);
+    expect(payload.anyChanges).toBe(true);
+    const parsed = spawnSync("python3", [
+      "-c",
+      "import yaml,json,sys;print(json.dumps(yaml.safe_load(sys.stdin)))",
+    ], { input: payload.correctedYamlBlock, encoding: "utf8" });
+    expect(parsed.status).toBe(0);
+    const decoded = JSON.parse(parsed.stdout) as { router_settings: { fallbacks: Array<Record<string, string[]>> } };
+    for (const entry of decoded.router_settings.fallbacks) {
+      for (const chain of Object.values(entry)) expect(chain).not.toContain("dead-model");
+    }
+    expect(decoded.router_settings.fallbacks).toContainEqual({ "routing-cheap": ["cheap-ok"] });
+    expect(decoded.router_settings.fallbacks).toContainEqual({ "editorial-heavy": ["new-heavy"] });
+    expect(payload.chains.find((chain) => chain.role === "editorialFast")?.proposed).toEqual(["fast-ok"]);
+    expect(payload.routeAdvisories).toEqual({
+      deadRoutes: ["dead-model"],
+      orphanProposals: [{
+        suggestion: "coding-go-kimi-k2-6 → hosted_vllm/kimi-k2.6",
+        rationale: "opencode/opencode-go/kimi-k2.6 succeeded 6/10 builder passes, while no matching gateway route has recorded a success.",
+      }],
+    });
   });
 });

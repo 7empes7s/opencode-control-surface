@@ -27,4 +27,15 @@ describe("lookupInsightRunbook", () => {
     expect(row.apply).toContain("exact action descriptor");
     expect(row.revert).toContain("audit row");
   });
+
+  test("returns read-only guidance for model-route findings", () => {
+    const row = lookupInsightRunbook({
+      domain: "models",
+      sourceKey: "models:dead-route:github-gpt4o",
+    });
+
+    expect(row.key).toBe("models:*");
+    expect(row.apply).toContain("read-only");
+    expect(row.apply).toContain("Models chain-sync preview");
+  });
 });

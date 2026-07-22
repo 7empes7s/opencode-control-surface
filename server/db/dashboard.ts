@@ -1199,7 +1199,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
 
     CREATE TABLE IF NOT EXISTS insights (
       id TEXT PRIMARY KEY,
-      domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
+      domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops', 'models')),
       severity TEXT NOT NULL,
       title TEXT NOT NULL,
       plain_summary TEXT NOT NULL,
@@ -1595,7 +1595,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       db.exec(`
         CREATE TABLE insights_new (
           id TEXT PRIMARY KEY,
-          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops', 'models')),
           severity TEXT NOT NULL,
           title TEXT NOT NULL,
           plain_summary TEXT NOT NULL,
@@ -1648,7 +1648,7 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
       db.exec(`
         CREATE TABLE insights_ops_new (
           id TEXT PRIMARY KEY,
-          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops', 'models')),
           severity TEXT NOT NULL,
           title TEXT NOT NULL,
           plain_summary TEXT NOT NULL,
@@ -1681,6 +1681,52 @@ CREATE INDEX IF NOT EXISTS idx_gateway_calls_ts ON gateway_calls (ts);
     }
   } catch (err) {
     console.error("[dashboard] ops-domain insights migration failed", err);
+  }
+
+  // Migration: allow the 'models' insight domain. Keep this independent of
+  // schema_version because older installs may already be at the current
+  // version while still carrying the pre-Catalog-S7 CHECK constraint.
+  try {
+    const insightsTable = db.query(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='insights'",
+    ).get() as { sql: string } | null;
+    if (insightsTable && !insightsTable.sql.includes("'models'")) {
+      db.exec(`
+        CREATE TABLE insights_models_new (
+          id TEXT PRIMARY KEY,
+          domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops', 'models')),
+          severity TEXT NOT NULL,
+          title TEXT NOT NULL,
+          plain_summary TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          evidence_refs_json TEXT NOT NULL,
+          action_descriptor_id TEXT,
+          manual_page_href TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'applied', 'dismissed', 'resolved')),
+          tenant_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          source_key TEXT,
+          resolved_at INTEGER,
+          resolution TEXT
+        );
+        INSERT INTO insights_models_new (id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, resolved_at, resolution)
+        SELECT id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+          action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key, resolved_at, resolution
+        FROM insights;
+        DROP TABLE insights;
+        ALTER TABLE insights_models_new RENAME TO insights;
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_created
+          ON insights (tenant_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_insights_tenant_status_severity
+          ON insights (tenant_id, status, severity);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_insights_tenant_source
+          ON insights (tenant_id, source_key)
+          WHERE source_key IS NOT NULL;
+      `);
+    }
+  } catch (err) {
+    console.error("[dashboard] models-domain insights migration failed", err);
   }
 
   // ── SPEC 9 / ULTRAPLAN P2.3: backfill sla_due_at for open incidents ───────

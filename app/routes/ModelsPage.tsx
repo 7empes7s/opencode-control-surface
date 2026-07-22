@@ -326,9 +326,9 @@ function ChainDiffRow({ chain }: { chain: ChainDiff }) {
 
 function FallbackChainSyncSection() {
   const { data, loading, error, refresh } = useApi<ModelChainSyncDetail>("/api/models/chain-sync", 30_000);
-  const [copied, setCopied] = useState<"block" | "command" | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
-  async function copyText(kind: "block" | "command", text: string) {
+  async function copyText(kind: string, text: string) {
     await navigator.clipboard.writeText(text);
     setCopied(kind);
     window.setTimeout(() => setCopied((current) => current === kind ? null : current), 1800);
@@ -366,6 +366,40 @@ function FallbackChainSyncSection() {
               {data.chains.map((chain) => <ChainDiffRow key={chain.role} chain={chain} />)}
               {data.chains.length === 0 ? <div className="loading-dim">no editorial fallback chains in health file</div> : null}
             </div>
+            {(data.routeAdvisories.deadRoutes.length > 0 || data.routeAdvisories.orphanProposals.length > 0) ? (
+              <div className="chain-route-advisories">
+                <div className="chain-route-advisories-head">
+                  <strong>Route recommendations</strong>
+                  <span>Read-only telemetry guidance; nothing here changes LiteLLM.</span>
+                </div>
+                {data.routeAdvisories.deadRoutes.length > 0 ? (
+                  <div className="chain-route-advisory">
+                    <Pill color="red">pruned from preview</Pill>
+                    <div>
+                      <strong>Dead routes</strong>
+                      <div className="chain-models">
+                        {data.routeAdvisories.deadRoutes.map((route) => <ChainModelChip key={route} model={route} status="removed" />)}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {data.routeAdvisories.orphanProposals.map((proposal, index) => {
+                  const copyKey = `proposal:${index}`;
+                  return (
+                    <div className="chain-route-advisory" key={`${proposal.suggestion}-${index}`}>
+                      <Pill color="amber">suggested config</Pill>
+                      <div className="chain-route-proposal">
+                        <code>{proposal.suggestion}</code>
+                        <span>{proposal.rationale}</span>
+                      </div>
+                      <button className="btn btn-sm btn-ghost" onClick={() => copyText(copyKey, proposal.suggestion)}>
+                        <Copy size={14} /> {copied === copyKey ? "Copied" : "Copy line"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="chain-sync-copy">
               <div className="chain-sync-instruction">1) paste the block into <span className="mono">router_settings.fallbacks</span> in /etc/litellm/config.yaml, 2) run the apply command (backs up + reloads)</div>
               <div className="chain-sync-actions">
@@ -375,7 +409,7 @@ function FallbackChainSyncSection() {
                 <button className="btn btn-sm btn-ghost" onClick={() => copyText("command", data.applyCommand)}>
                   <Copy size={14} /> Copy apply command
                 </button>
-                {copied ? <span className="action-feedback ok">copied {copied === "block" ? "block" : "command"}</span> : null}
+                {copied === "block" || copied === "command" ? <span className="action-feedback ok">copied {copied}</span> : null}
               </div>
             </div>
           </>

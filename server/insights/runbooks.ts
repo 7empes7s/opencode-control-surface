@@ -59,6 +59,7 @@ function sourceFamily(sourceKey: string | null | undefined): string | null {
   if (sourceKey.startsWith("data:content_health:")) return "data:content_health:*";
   if (sourceKey.startsWith("security:")) return "security:*";
   if (sourceKey.startsWith("ops:")) return "ops:*";
+  if (sourceKey.startsWith("models:")) return "models:*";
   if (sourceKey.startsWith("edge:")) return "edge:*";
   return null;
 }
@@ -232,6 +233,12 @@ const RUNBOOKS: Record<string, InsightRunbook> = {
     "Apply runs only the attached allowlisted action; otherwise use the linked operational page and evidence.",
     "Use the action audit rollback hint when one exists; otherwise revert the underlying ops change manually.",
   ),
+  "models:*": runbook(
+    "models:*",
+    "The model-route scanner found a dead, degraded, paid-broken, probe-only, or orphaned model-routing condition in gateway and builder telemetry.",
+    "These findings are read-only. Review the Models chain-sync preview, copy the corrected fallback block or suggested config line, and investigate degraded routes before removing them.",
+    "The scanner does not mutate LiteLLM. If an operator-applied configuration change was wrong, restore the prior configuration from its independent backup and re-check route health.",
+  ),
   "edge:*": runbook(
     "edge:*",
     "The edge scanner found reachability, DNS, TLS, tunnel, or external runway degradation.",
@@ -248,6 +255,7 @@ export function lookupInsightRunbook(input: InsightRunbookInput): InsightRunbook
   if (input.domain === "security" && RUNBOOKS["security:*"]) return RUNBOOKS["security:*"];
   if (input.domain === "ops" && RUNBOOKS["ops:*"]) return RUNBOOKS["ops:*"];
   if (input.domain === "cost" && RUNBOOKS["cost:*"]) return RUNBOOKS["cost:*"];
+  if (input.domain === "models" && RUNBOOKS["models:*"]) return RUNBOOKS["models:*"];
   return FALLBACK_RUNBOOK;
 }
 

@@ -155,6 +155,57 @@ function registerDashboardDbTests(): void {
     expect(columns.some((column) => column.name === "resolved_at")).toBe(true);
   });
 
+  test("migration widens an existing insights domain constraint for models", () => {
+    process.env.DASHBOARD_DB = "1";
+    const path = tempDbPath();
+    const seed = new Database(path);
+    seed.exec(`
+      CREATE TABLE schema_version (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_version (version, applied_at) VALUES (${DASHBOARD_SCHEMA_VERSION}, 1);
+      CREATE TABLE insights (
+        id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL CHECK (domain IN ('cost', 'security', 'build', 'data', 'ops')),
+        severity TEXT NOT NULL,
+        title TEXT NOT NULL,
+        plain_summary TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        action_descriptor_id TEXT,
+        manual_page_href TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'applied', 'dismissed', 'resolved')),
+        tenant_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        source_key TEXT,
+        resolved_at INTEGER,
+        resolution TEXT
+      );
+      INSERT INTO insights (
+        id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+        action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key
+      ) VALUES (
+        'existing-ops', 'ops', 'high', 'Existing', 'Preserve me', 0.9, '[]',
+        NULL, '/infra', 'open', 'mimule', 100, 'ops:existing'
+      );
+    `);
+    seed.close();
+
+    expect(initDashboardDb({ path })).not.toBeNull();
+    const table = getDashboardDb()!.query(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'insights'",
+    ).get() as { sql: string };
+    expect(table.sql).toContain("'models'");
+    expect(getDashboardDb()!.query("SELECT domain FROM insights WHERE id = 'existing-ops'").get()).toEqual({ domain: "ops" });
+    expect(() => getDashboardDb()!.query(`
+      INSERT INTO insights (
+        id, domain, severity, title, plain_summary, confidence, evidence_refs_json,
+        action_descriptor_id, manual_page_href, status, tenant_id, created_at, source_key
+      ) VALUES (?, 'models', 'high', ?, ?, 0.9, '[]', NULL, '/models', 'open', 'mimule', 200, ?)
+    `).run("new-models", "Model route", "Routing summary", "models:test")).not.toThrow();
+  });
+
   test("operator_state write and read round-trips JSON values", () => {
     process.env.DASHBOARD_DB = "1";
     initDashboardDb({ path: tempDbPath() });

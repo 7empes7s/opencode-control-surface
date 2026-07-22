@@ -4807,6 +4807,47 @@ body {
   display: grid;
   gap: 10px;
 }
+.chain-route-advisories {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--blue) 5%, transparent);
+}
+.chain-route-advisories-head {
+  display: grid;
+  gap: 3px;
+}
+.chain-route-advisories-head strong,
+.chain-route-advisory strong {
+  color: var(--text-bright);
+  font-size: 12px;
+}
+.chain-route-advisories-head span,
+.chain-route-proposal span {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.chain-route-advisory {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.chain-route-advisory > div {
+  min-width: 0;
+  flex: 1;
+}
+.chain-route-proposal {
+  display: grid;
+  gap: 4px;
+}
+.chain-route-proposal code {
+  overflow-wrap: anywhere;
+  color: var(--accent);
+  font-size: 11px;
+}
 .chain-sync-row {
   padding: 12px;
   border: 1px solid var(--border);
@@ -4867,6 +4908,9 @@ body {
   }
   .chain-sync-cols {
     grid-template-columns: 1fr;
+  }
+  .chain-route-advisory {
+    flex-wrap: wrap;
   }
 }
 

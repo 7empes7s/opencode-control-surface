@@ -388,6 +388,10 @@ export interface ModelChainSyncDetail {
   configReadError: boolean;
   anyChanges: boolean;
   chains: ChainDiff[];
+  routeAdvisories: {
+    deadRoutes: string[];
+    orphanProposals: Array<{ suggestion: string; rationale: string }>;
+  };
   correctedYamlBlock: string;
   applyCommand: string;
 }

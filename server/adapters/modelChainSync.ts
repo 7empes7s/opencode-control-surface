@@ -1,5 +1,11 @@
 import { readJsonFileAtomic } from "../lib/atomicJson.ts";
 import { runShell } from "../api/shell.ts";
+import {
+  deriveRouteAdvisories,
+  getRouteStats,
+  type ModelRouteStats,
+  type RouteAdvisories,
+} from "../insights/scanners/modelRoutes.ts";
 
 export const ROLE_TO_LOGICAL = {
   editorialHeavy: "editorial-heavy",
@@ -33,6 +39,7 @@ export interface ModelChainSyncPayload {
   configReadError: boolean;
   anyChanges: boolean;
   chains: ChainDiff[];
+  routeAdvisories: RouteAdvisories;
   correctedYamlBlock: string;
   applyCommand: string;
 }
@@ -188,22 +195,37 @@ function buildCorrectedEntries(currentEntries: FallbackEntry[], proposed: Partia
   return next;
 }
 
-export function getModelChainSyncPayload(now = Date.now()): ModelChainSyncPayload {
+function pruneFallbacks<T extends Record<string, string[]>>(fallbacks: T, deadRoutes: Set<string>): T {
+  return Object.fromEntries(
+    Object.entries(fallbacks).map(([name, chain]) => [name, chain.filter((route) => !deadRoutes.has(route))]),
+  ) as T;
+}
+
+export function getModelChainSyncPayload(now = Date.now(), routeStats?: ModelRouteStats): ModelChainSyncPayload {
   const health = readProposedHealthFallbacks();
   const config = readLiteLLMFallbacks();
+  const routeAdvisories = deriveRouteAdvisories(routeStats ?? getRouteStats(now));
+  const deadRoutes = new Set(routeAdvisories.deadRoutes);
+  const proposedFallbacks = pruneFallbacks(health.fallbacks as Record<string, string[]>, deadRoutes) as Partial<Record<ChainRole, string[]>>;
   const chains = (Object.keys(ROLE_TO_LOGICAL) as ChainRole[])
-    .filter((role) => health.fallbacks[role])
-    .map((role) => computeChainDiff(role, config.flattened[ROLE_TO_LOGICAL[role]] ?? null, health.fallbacks[role] ?? []));
+    .filter((role) => proposedFallbacks[role])
+    .map((role) => computeChainDiff(role, config.flattened[ROLE_TO_LOGICAL[role]] ?? null, proposedFallbacks[role] ?? []));
   const healthAgeSec = health.lastFullCheckAt > 0 ? Math.max(0, Math.floor((now - health.lastFullCheckAt) / 1000)) : 0;
+  const correctedEntries = buildCorrectedEntries(config.entries, proposedFallbacks)
+    .map((entry) => pruneFallbacks(entry, deadRoutes));
+  const prunedConfiguredRoute = config.entries.some((entry) =>
+    Object.values(entry).some((chain) => chain.some((route) => deadRoutes.has(route)))
+  );
 
   return {
     generatedAt: now,
     healthAgeSec,
     stale: healthAgeSec > STALE_AFTER_SEC,
     configReadError: config.configReadError,
-    anyChanges: chains.some((chain) => !chain.inSync),
+    anyChanges: prunedConfiguredRoute || chains.some((chain) => !chain.inSync),
     chains,
-    correctedYamlBlock: serializeFallbackBlock(buildCorrectedEntries(config.entries, health.fallbacks)),
+    routeAdvisories,
+    correctedYamlBlock: serializeFallbackBlock(correctedEntries),
     applyCommand: LITELLM_APPLY_COMMAND,
   };
 }
