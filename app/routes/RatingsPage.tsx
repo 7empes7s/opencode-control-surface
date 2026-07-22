@@ -1,6 +1,14 @@
 import { useMemo, useState } from "react";
 import { SectionCard } from "../components/SectionCard";
-import type { ModelsDetail, WorkloadScores, RatingBreakdown } from "../../server/api/types";
+import { useApi } from "../hooks/useApi";
+import type {
+  ModelsDetail,
+  OutcomeAxisRate,
+  OutcomeLeaderboard,
+  OutcomeWindow,
+  RatingBreakdown,
+  WorkloadScores,
+} from "../../server/api/types";
 
 type ModelRow = ModelsDetail["models"][number];
 
@@ -117,6 +125,102 @@ function BreakdownCard({ m }: { m: ModelRow }) {
   );
 }
 
+function formatDuration(ms: number | null): string {
+  if (ms == null) return "—";
+  return ms < 1_000 ? `${Math.round(ms)}ms` : `${(ms / 1_000).toFixed(1)}s`;
+}
+
+function formatCost(usd: number | null): string {
+  if (usd == null) return "—";
+  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
+function formatMix(mix: Record<string, number>): string {
+  const values = Object.entries(mix).sort(([a], [b]) => a.localeCompare(b));
+  return values.length > 0 ? values.map(([label, n]) => `${label} ${n}`).join(" · ") : "—";
+}
+
+function OutcomeRate({ value }: { value: OutcomeAxisRate }) {
+  if (value === "insufficient-data") {
+    return <span style={{ color: "var(--text-dim)", fontSize: 11, fontStyle: "italic" }}>insufficient data</span>;
+  }
+  return scoreBar(value);
+}
+
+function OutcomeLeaderboardSection() {
+  const [window, setWindow] = useState<OutcomeWindow>("7d");
+  const { data, loading, error } = useApi<OutcomeLeaderboard>(`/api/ratings/outcomes?window=${window}`, 30_000);
+
+  return (
+    <SectionCard
+      title="Outcome leaderboard"
+      defaultOpen={true}
+      right={
+        <label style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-dim)", fontSize: 11 }}>
+          window
+          <select className="filter-select" value={window} onChange={(event) => setWindow(event.target.value as OutcomeWindow)} aria-label="Outcome leaderboard window">
+            <option value="7d">7d</option>
+            <option value="30d">30d</option>
+            <option value="all">all</option>
+          </select>
+        </label>
+      }
+    >
+      <div className="section-card-body">
+        <p style={{ margin: "0 0 12px", color: "var(--text-dim)", fontSize: 12 }}>
+          First-party outcomes from live builder passes and gateway traffic. Rates require at least five observations per axis.
+        </p>
+        {loading && !data && <div className="loading-dim">loading outcome telemetry…</div>}
+        {error && !data && <div className="loading-dim error">outcome telemetry unavailable: {error}</div>}
+        {data && data.models.length === 0 && <div className="loading-dim">no live outcome telemetry in this window</div>}
+        {data && data.models.length > 0 && (
+          <div className="ratings-grid">
+            {data.models.map((entry) => (
+              <div className="ratings-card" key={entry.model}>
+                <div className="ratings-card-header">
+                  <div className="ratings-card-name" style={{ overflowWrap: "anywhere" }}>{entry.model}</div>
+                  {entry.providers.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                      {entry.providers.map((provider) => <span className="pill gray" key={provider}>{provider}</span>)}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginTop: 12 }}>
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 10, color: "var(--text-dim)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Task axis</span>
+                      <span className="pill gray">n {entry.task.n}</span>
+                    </div>
+                    <OutcomeRate value={entry.task.successRate} />
+                    <div style={{ display: "grid", gap: 3, marginTop: 8, color: "var(--text-dim)", fontSize: 11 }}>
+                      <span>avg duration <span className="mono" style={{ color: "var(--text)" }}>{formatDuration(entry.task.averageDurationMs)}</span></span>
+                      <span title={formatMix(entry.task.failureClasses)}>failures <span style={{ color: "var(--text)" }}>{formatMix(entry.task.failureClasses)}</span></span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 10, color: "var(--text-dim)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Traffic axis</span>
+                      <span className="pill gray">n {entry.traffic.n}</span>
+                    </div>
+                    <OutcomeRate value={entry.traffic.successRate} />
+                    <div style={{ display: "grid", gap: 3, marginTop: 8, color: "var(--text-dim)", fontSize: 11 }}>
+                      <span>p50 / p95 <span className="mono" style={{ color: "var(--text)" }}>{formatDuration(entry.traffic.p50LatencyMs)} / {formatDuration(entry.traffic.p95LatencyMs)}</span></span>
+                      <span>cost <span className="mono" style={{ color: "var(--text)" }}>{formatCost(entry.traffic.totalCostUsd)} total · {formatCost(entry.traffic.costPerCallUsd)}/call</span></span>
+                      <span title={formatMix(entry.traffic.errorClasses)}>errors <span style={{ color: "var(--text)" }}>{formatMix(entry.traffic.errorClasses)}</span></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 export function RatingsSection({ models }: { models: ModelRow[] }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -161,14 +265,17 @@ export function RatingsSection({ models }: { models: ModelRow[] }) {
 
   return (
     <>
-      {!hasRatings && (
-        <div style={{ background: "var(--surface-2, #1a1f2e)", border: "1px solid var(--border)", borderRadius: 6, padding: "12px 16px", marginBottom: 16, fontSize: 12, color: "var(--amber)" }}>
-          No ratings yet — run a full model-health-check to populate workload scores and rating100.
-          <br /><code style={{ fontSize: 11 }}>systemctl start model-health-check.service</code>
-        </div>
-      )}
+      <OutcomeLeaderboardSection />
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+      <SectionCard title="Eval-derived breakdown (secondary)" defaultOpen={false}>
+        <div className="section-card-body">
+          {!hasRatings && (
+            <div style={{ background: "var(--surface-2, #1a1f2e)", border: "1px solid var(--border)", borderRadius: 6, padding: "12px 16px", marginBottom: 16, fontSize: 12, color: "var(--amber)" }}>
+              Eval-derived scores are not available yet. The outcome leaderboard above uses live telemetry instead.
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
         <input
           className="filter-input"
           type="search"
@@ -194,92 +301,94 @@ export function RatingsSection({ models }: { models: ModelRow[] }) {
         {selected.length > 0 && (
           <button className="btn btn-sm btn-ghost" onClick={() => setSelected([])}>clear</button>
         )}
-      </div>
-
-      {selectedModels.length > 0 && (
-        <SectionCard title={`Comparing ${selectedModels.length} / 6 · ${selectedModels.map(m => m.logicalName).join(" · ")}`} defaultOpen={true}
-          right={<button className="btn btn-sm btn-ghost" onClick={() => setSelected([])}>Clear</button>}
-        >
-          <div className="section-card-body">
-            <div className="ratings-grid">
-              {selectedModels.map(m => <BreakdownCard key={m.logicalName} m={m} />)}
-            </div>
           </div>
-        </SectionCard>
-      )}
 
-      <SectionCard
-        title="ratings"
-        defaultOpen={true}
-        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{rankedModels.length} shown</span>}
-      >
-        <div className="section-card-body table-wrap">
-          <table className="data-table ratings-table">
-            <colgroup>
-              <col className="rt-name-col" />
-              <col className="rt-cap-col" />
-              <col className="rt-rating-col" />
-              <col className="rt-json-col" />
-              <col className="rt-coding-col" />
-              <col className="rt-writing-col" />
-              <col className="rt-reasoning-col" />
-              <col className="rt-latency-col" />
-              <col className="rt-quality-col" />
-              <col className="rt-pricing-col" />
-              <col className="rt-conf-col" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>model</th>
-                <th>cap</th>
-                <th className="rt-rating-col" style={{ textAlign: "right" }}>rating</th>
-                <th className="rt-json-col" style={{ textAlign: "right" }}>json</th>
-                <th className="rt-coding-col" style={{ textAlign: "right" }}>coding</th>
-                <th className="rt-writing-col" style={{ textAlign: "right" }}>writing</th>
-                <th className="rt-reasoning-col" style={{ textAlign: "right" }}>reasoning</th>
-                <th className="rt-latency-col" style={{ textAlign: "right" }}>latency</th>
-                <th className="rt-quality-col">quality</th>
-                <th className="rt-pricing-col">pricing</th>
-                <th className="rt-conf-col">conf.</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rankedModels.map(m => {
-                const r100 = (m as { rating100?: number | null }).rating100;
-                const bd = (m as { ratingBreakdown?: RatingBreakdown | null }).ratingBreakdown;
-                const ws = (m as { workloadScores?: WorkloadScores | null }).workloadScores;
-                const isSelected = selected.includes(m.logicalName);
-                const tier = ((m as { pricingTier?: string }).pricingTier ?? "subscription") as PricingTier;
-                return (
-                  <tr
-                    key={m.logicalName}
-                    onClick={() => toggleSelect(m.logicalName)}
-                    style={{ cursor: "pointer", background: isSelected ? "var(--surface-2, rgba(91,126,201,0.08))" : undefined }}
-                  >
-                    <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>
-                      {isSelected && <span style={{ color: "var(--accent)", marginRight: 6 }}>●</span>}
-                      {m.logicalName}
-                    </td>
-                    <td><span className={`pill ${m.capability === "heavy" ? "blue" : "gray"}`}>{m.capability}</span></td>
-                    <td className="rt-rating-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: r100 != null ? (r100 >= 80 ? "var(--green)" : r100 >= 60 ? "var(--text)" : "var(--amber)") : "var(--text-dim)" }}>
-                      {r100 != null ? r100 : "—"}
-                    </td>
-                    <td className="rt-json-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.json ?? "—"}</td>
-                    <td className="rt-coding-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.coding ?? "—"}</td>
-                    <td className="rt-writing-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.writing ?? "—"}</td>
-                    <td className="rt-reasoning-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.reasoning ?? "—"}</td>
-                    <td className="rt-latency-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{m.latency != null ? `${m.latency}ms` : "—"}</td>
-                    <td className="rt-quality-col"><span className={`pill ${m.qualityStatus === "healthy" ? "green" : m.qualityStatus === "blocked" ? "red" : "amber"}`}>{m.qualityStatus}</span></td>
-                    <td className="rt-pricing-col"><span style={{ fontSize: 11, color: TIER_COLOR[tier] }}>{TIER_LABEL[tier]}</span></td>
-                    <td className="rt-conf-col" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{bd ? `${bd.confidence}%` : "—"}</td>
+          {selectedModels.length > 0 && (
+            <SectionCard title={`Comparing ${selectedModels.length} / 6 · ${selectedModels.map(m => m.logicalName).join(" · ")}`} defaultOpen={true}
+              right={<button className="btn btn-sm btn-ghost" onClick={() => setSelected([])}>Clear</button>}
+            >
+              <div className="section-card-body">
+                <div className="ratings-grid">
+                  {selectedModels.map(m => <BreakdownCard key={m.logicalName} m={m} />)}
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          <SectionCard
+            title="ratings"
+            defaultOpen={true}
+            right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{rankedModels.length} shown</span>}
+          >
+            <div className="section-card-body table-wrap">
+              <table className="data-table ratings-table">
+                <colgroup>
+                  <col className="rt-name-col" />
+                  <col className="rt-cap-col" />
+                  <col className="rt-rating-col" />
+                  <col className="rt-json-col" />
+                  <col className="rt-coding-col" />
+                  <col className="rt-writing-col" />
+                  <col className="rt-reasoning-col" />
+                  <col className="rt-latency-col" />
+                  <col className="rt-quality-col" />
+                  <col className="rt-pricing-col" />
+                  <col className="rt-conf-col" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>model</th>
+                    <th>cap</th>
+                    <th className="rt-rating-col" style={{ textAlign: "right" }}>rating</th>
+                    <th className="rt-json-col" style={{ textAlign: "right" }}>json</th>
+                    <th className="rt-coding-col" style={{ textAlign: "right" }}>coding</th>
+                    <th className="rt-writing-col" style={{ textAlign: "right" }}>writing</th>
+                    <th className="rt-reasoning-col" style={{ textAlign: "right" }}>reasoning</th>
+                    <th className="rt-latency-col" style={{ textAlign: "right" }}>latency</th>
+                    <th className="rt-quality-col">quality</th>
+                    <th className="rt-pricing-col">pricing</th>
+                    <th className="rt-conf-col">conf.</th>
                   </tr>
-                );
-              })}
-              {rankedModels.length === 0 && (
-                <tr><td colSpan={11} style={{ textAlign: "center", padding: 24, color: "var(--text-dim)" }}>no models match</td></tr>
-              )}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {rankedModels.map(m => {
+                    const r100 = (m as { rating100?: number | null }).rating100;
+                    const bd = (m as { ratingBreakdown?: RatingBreakdown | null }).ratingBreakdown;
+                    const ws = (m as { workloadScores?: WorkloadScores | null }).workloadScores;
+                    const isSelected = selected.includes(m.logicalName);
+                    const tier = ((m as { pricingTier?: string }).pricingTier ?? "subscription") as PricingTier;
+                    return (
+                      <tr
+                        key={m.logicalName}
+                        onClick={() => toggleSelect(m.logicalName)}
+                        style={{ cursor: "pointer", background: isSelected ? "var(--surface-2, rgba(91,126,201,0.08))" : undefined }}
+                      >
+                        <td className="mono" style={{ color: m.available ? "var(--text-bright)" : "var(--text-dim)" }}>
+                          {isSelected && <span style={{ color: "var(--accent)", marginRight: 6 }}>●</span>}
+                          {m.logicalName}
+                        </td>
+                        <td><span className={`pill ${m.capability === "heavy" ? "blue" : "gray"}`}>{m.capability}</span></td>
+                        <td className="rt-rating-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: r100 != null ? (r100 >= 80 ? "var(--green)" : r100 >= 60 ? "var(--text)" : "var(--amber)") : "var(--text-dim)" }}>
+                          {r100 != null ? r100 : "—"}
+                        </td>
+                        <td className="rt-json-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.json ?? "—"}</td>
+                        <td className="rt-coding-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.coding ?? "—"}</td>
+                        <td className="rt-writing-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.writing ?? "—"}</td>
+                        <td className="rt-reasoning-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{ws?.reasoning ?? "—"}</td>
+                        <td className="rt-latency-col" style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{m.latency != null ? `${m.latency}ms` : "—"}</td>
+                        <td className="rt-quality-col"><span className={`pill ${m.qualityStatus === "healthy" ? "green" : m.qualityStatus === "blocked" ? "red" : "amber"}`}>{m.qualityStatus}</span></td>
+                        <td className="rt-pricing-col"><span style={{ fontSize: 11, color: TIER_COLOR[tier] }}>{TIER_LABEL[tier]}</span></td>
+                        <td className="rt-conf-col" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{bd ? `${bd.confidence}%` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                  {rankedModels.length === 0 && (
+                    <tr><td colSpan={11} style={{ textAlign: "center", padding: 24, color: "var(--text-dim)" }}>no models match</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
         </div>
       </SectionCard>
     </>

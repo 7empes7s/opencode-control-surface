@@ -10,6 +10,39 @@ export function ok<T>(data: T, sources: Record<string, SourceStatus> = {}): ApiE
   return { generatedAt: new Date().toISOString(), sourceStatus: sources, data };
 }
 
+export type OutcomeWindow = "7d" | "30d" | "all";
+export type OutcomeAxisRate = number | "insufficient-data";
+
+export interface OutcomeTaskAxis {
+  n: number;
+  successRate: OutcomeAxisRate;
+  averageDurationMs: number | null;
+  failureClasses: Record<string, number>;
+}
+
+export interface OutcomeTrafficAxis {
+  n: number;
+  successRate: OutcomeAxisRate;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  errorClasses: Record<string, number>;
+  totalCostUsd: number;
+  costPerCallUsd: number | null;
+}
+
+export interface OutcomeLeaderboardModel {
+  model: string;
+  providers: string[];
+  task: OutcomeTaskAxis;
+  traffic: OutcomeTrafficAxis;
+}
+
+export interface OutcomeLeaderboard {
+  window: OutcomeWindow;
+  generatedAt: number;
+  models: OutcomeLeaderboardModel[];
+}
+
 // ── Shared primitives ─────────────────────────────────────────────────────
 
 export interface EvidenceRef {

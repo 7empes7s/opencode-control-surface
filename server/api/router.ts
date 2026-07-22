@@ -328,6 +328,7 @@ import {
 } from "../compliance/evidencePack.ts";
 import { writeActionAudit } from "../db/writer.ts";
 import { ok, type ApiEnvelope } from "./types.ts";
+import { getOutcomeLeaderboard, normalizeOutcomeWindow } from "../ratings/outcomes.ts";
 import { getActiveLicense } from "../licensing/index.ts";
 import { getTelemetryConsent, setTelemetryConsent, collectTelemetryPayload } from "../telemetry/index.ts";
 import { onboardingStatusHandler, onboardingStepHandler } from "./onboarding.ts";
@@ -838,6 +839,11 @@ if (method === "GET" && pathname === "/api/stream") {
   if (method === "GET" && pathname === "/api/models") {
     if (!checkToken(req)) return unauthorized();
     return modelsHandler();
+  }
+  if (method === "GET" && pathname === "/api/ratings/outcomes") {
+    if (!checkToken(req)) return unauthorized();
+    const window = normalizeOutcomeWindow(url.searchParams.get("window"));
+    return Response.json(ok(getOutcomeLeaderboard(window)));
   }
   if (method === "GET" && pathname === "/api/models/chain-sync") {
     if (!checkToken(req)) return unauthorized();
