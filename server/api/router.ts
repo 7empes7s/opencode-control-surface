@@ -330,6 +330,7 @@ import { complianceDpaHandler,
   complianceSoc2MappingHandler,
   complianceSummaryHandler,
   complianceControlsHandler,
+  complianceFrameworkMappingHandler,
   complianceControlsHistoryHandler,
   complianceEvidenceBundleHandler,
   complianceEvidenceZipHandler,
@@ -2296,6 +2297,10 @@ const geminiStopMatch = pathname.match(/^\/api\/gemini\/sessions\/([^/]+)\/stop$
   if (method === "GET" && pathname === "/api/compliance/controls") {
     if (!checkToken(req)) return unauthorized();
     return complianceControlsHandler(req);
+  }
+  if (method === "GET" && pathname === "/api/compliance/framework-mapping") {
+    if (!checkToken(req)) return unauthorized();
+    return complianceFrameworkMappingHandler(req);
   }
   if (method === "GET" && pathname === "/api/compliance/controls/history") {
     if (!checkToken(req)) return unauthorized();

@@ -100,6 +100,9 @@ describe("signed compliance evidence ZIP route", () => {
       "/api/compliance/subprocessors",
       "/api/compliance/soc2-mapping",
       "/api/compliance/summary",
+      "/api/compliance/controls",
+      "/api/compliance/controls/history",
+      "/api/compliance/framework-mapping",
       "/api/compliance/evidence-bundle",
       "/api/compliance/evidence-pack.zip",
     ];
@@ -108,6 +111,37 @@ describe("signed compliance evidence ZIP route", () => {
       const req = new Request(`http://localhost${route}`);
       const response = await handleApi(req, new URL(req.url));
       expect(response.status).toBe(401);
+    }
+  });
+
+  it("returns the token-gated read-only Annex A framework mapping", async () => {
+    const db = setupTestDb();
+    try {
+      db.query(`
+        INSERT INTO control_results
+          (tenant_id, control_id, ts, status, findings_count, max_severity, evidence)
+        VALUES ('mimule', 'security-posture', 1800000000000, 'pass', 0, NULL, NULL)
+      `).run();
+
+      const response = await handleApi(new Request("http://localhost/api/compliance/framework-mapping", {
+        headers: { "x-operator-token": TEST_OPERATOR_TOKEN },
+      }), new URL("http://localhost/api/compliance/framework-mapping"));
+      expect(response.status).toBe(200);
+      const json = await response.json() as {
+        data: {
+          coverage: { referenceClauseCount: number; mappedClauseCount: number; unmappedClauseCount: number };
+          mappedClauses: Array<{ clause: { id: string }; status: string | null }>;
+        };
+      };
+      expect(json.data.coverage).toEqual(expect.objectContaining({
+        referenceClauseCount: 50,
+        mappedClauseCount: 8,
+        unmappedClauseCount: 42,
+      }));
+      expect(json.data.mappedClauses.find((mapping) => mapping.clause.id === "A.6.2")?.status).toBe("pass");
+    } finally {
+      closeDashboardDb();
+      rmSync(TEST_DB, { force: true });
     }
   });
 

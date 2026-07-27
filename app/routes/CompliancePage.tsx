@@ -62,6 +62,47 @@ interface ComplianceControlHistoryResult {
 
 type ControlSortKey = "name" | "category" | "status" | "findings" | "lastChecked";
 
+interface FrameworkReferenceClause {
+  id: string;
+  title: string;
+}
+
+interface FrameworkMappedControl {
+  id: string;
+  name: string;
+  status: ControlStatus | null;
+  findingsCount: number;
+  maxSeverity: "info" | "low" | "medium" | "high" | "critical" | null;
+  lastCheckedAt: number | null;
+  stale: boolean;
+  binding: ComplianceControl["binding"];
+}
+
+interface FrameworkClauseMapping {
+  clause: FrameworkReferenceClause;
+  controls: FrameworkMappedControl[];
+  status: ControlStatus | null;
+}
+
+interface FrameworkMappingResult {
+  framework: {
+    id: "iso-iec-42001-annex-a";
+    name: "ISO/IEC 42001:2023 Annex A";
+    referenceIndexLabel: "Annex A reference index (static, code-maintained)";
+  };
+  mappedClauses: FrameworkClauseMapping[];
+  unmappedClauses: FrameworkReferenceClause[];
+  coverage: {
+    referenceClauseCount: number;
+    mappedClauseCount: number;
+    unmappedClauseCount: number;
+    mappedControlCount: number;
+  };
+}
+
+type FrameworkSortKey = "clause" | "title" | "status" | "controls";
+type UnmappedClauseSortKey = "clause" | "title";
+
 type ProviderDeclarationState = "undeclared" | "unreviewed" | "reviewed";
 type ProviderEgressBoundary = "external-provider" | "private-network" | "unknown";
 type ProviderTreatment = "accept" | "mitigate" | "transfer" | "avoid";
@@ -148,7 +189,7 @@ interface RbacMe {
 }
 
 export function CompliancePage() {
-  const [activeTab, setActiveTab] = useState<"controls" | "providers" | "reports" | "audit" | "tenant" | "dpa">("controls");
+  const [activeTab, setActiveTab] = useState<"controls" | "framework" | "providers" | "reports" | "audit" | "tenant" | "dpa">("controls");
 
   return (
     <div className="dash-page">
@@ -165,6 +206,12 @@ export function CompliancePage() {
           onClick={() => setActiveTab("controls")}
         >
           Controls
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "framework" ? "active" : ""}`}
+          onClick={() => setActiveTab("framework")}
+        >
+          Framework
         </button>
         <button
           className={`tab-btn ${activeTab === "providers" ? "active" : ""}`}
@@ -199,6 +246,7 @@ export function CompliancePage() {
       </div>
 
       {activeTab === "controls" && <ControlsPanel />}
+      {activeTab === "framework" && <FrameworkPanel />}
       {activeTab === "providers" && <AiProviderRegisterPanel />}
       {activeTab === "reports" && <ReportsPanel />}
       {activeTab === "audit" && <AuditExportPanel />}
@@ -391,6 +439,185 @@ function ControlsPanel() {
                   <tr>
                     <td colSpan={6} className="loading-dim">no controls match the current filter</td>
                   </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FrameworkPanel() {
+  const { data, loading, error, refresh } = useAuthApi<FrameworkMappingResult>("/api/compliance/framework-mapping", 0);
+  const mappedClauses = data?.mappedClauses ?? [];
+  const unmappedClauses = data?.unmappedClauses ?? [];
+  const coverage = data?.coverage;
+
+  const mappedTable = useTableControls<FrameworkClauseMapping, FrameworkSortKey>({
+    rows: mappedClauses,
+    rowKey: (mapping) => mapping.clause.id,
+    pageSize: 25,
+    defaultSort: { key: "clause", dir: "asc" },
+    filterText: (mapping) => [
+      mapping.clause.id,
+      mapping.clause.title,
+      mapping.status,
+      ...mapping.controls.flatMap((control) => [
+        control.id,
+        control.name,
+        control.status,
+        control.binding.kind === "scanner" ? control.binding.scanner : control.binding.reason,
+      ]),
+    ],
+    sortValue: (mapping, key) => {
+      switch (key) {
+        case "clause": return mapping.clause.id;
+        case "title": return mapping.clause.title;
+        case "status": return mapping.status;
+        case "controls": return mapping.controls.length;
+        default: return "";
+      }
+    },
+    tieBreak: ["clause"],
+  });
+
+  const unmappedTable = useTableControls<FrameworkReferenceClause, UnmappedClauseSortKey>({
+    rows: unmappedClauses,
+    rowKey: (clause) => clause.id,
+    pageSize: 25,
+    defaultSort: { key: "clause", dir: "asc" },
+    filterText: (clause) => [clause.id, clause.title],
+    sortValue: (clause, key) => key === "clause" ? clause.id : clause.title,
+    tieBreak: ["clause"],
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="section-card">
+        <div className="section-card-header">
+          <h2 className="text-sm font-medium text-[var(--text)]">ISO/IEC 42001 Annex A mapping</h2>
+          <button className="btn btn-sm btn-ghost" onClick={refresh}>Refresh</button>
+        </div>
+        <div className="section-card-body compliance-section-body space-y-4">
+          <div className="compliance-summary-strip">
+            <AlertTriangle size={14} style={{ color: "var(--amber-warn)" }} />
+            <div className="text-xs text-[var(--text)]">
+              <strong>Self-assessment mapping only</strong> — not an audit or certification. Live statuses are S9 control results; this view does not establish ISO/IEC 42001 conformity.
+            </div>
+          </div>
+
+          {coverage && (
+            <div className="text-xs text-[var(--text-dim)]">
+              <strong className="text-[var(--text)]">{coverage.mappedClauseCount} of {coverage.referenceClauseCount} {data?.framework.referenceIndexLabel.toLowerCase()} clauses have an explicit S9 mapping</strong> — {coverage.unmappedClauseCount} are not mapped by the catalog ({coverage.mappedControlCount} S9 controls participate).
+            </div>
+          )}
+
+          {error && !data && (
+            <div className="loading-panel error">Framework mapping did not load: {error}</div>
+          )}
+          {loading && !data && <div className="loading-panel">Loading framework mapping...</div>}
+
+          <div className="table-container">
+            <div className="section-card-header">
+              <h3 className="text-sm font-medium text-[var(--text)]">Mapped Annex A clauses</h3>
+            </div>
+            <TableControls {...mappedTable.controlsProps} searchPlaceholder="Search mapped clauses..." />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th {...mappedTable.sortHeaderProps("clause")}>
+                    clause <span className="sortable-th-arrow">{mappedTable.sort.key === "clause" ? (mappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...mappedTable.sortHeaderProps("title")}>
+                    reference title <span className="sortable-th-arrow">{mappedTable.sort.key === "title" ? (mappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...mappedTable.sortHeaderProps("status")}>
+                    live rollup <span className="sortable-th-arrow">{mappedTable.sort.key === "status" ? (mappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...mappedTable.sortHeaderProps("controls")}>
+                    mapped controls <span className="sortable-th-arrow">{mappedTable.sort.key === "controls" ? (mappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappedTable.rows.map((mapping) => {
+                  const expanded = mappedTable.isExpanded(mapping.clause.id);
+                  return (
+                    <Fragment key={mapping.clause.id}>
+                      <tr>
+                        <td>
+                          <button className="btn btn-xs btn-ghost" onClick={() => mappedTable.toggleExpanded(mapping.clause.id)} aria-expanded={expanded}>
+                            {expanded ? "▾" : "▸"} {mapping.clause.id}
+                          </button>
+                        </td>
+                        <td className="text-xs text-[var(--text-dim)]">{mapping.clause.title}</td>
+                        <td><span className={`pill ${controlStatusClass(mapping.status)}`}>{controlStatusLabel(mapping.status)}</span></td>
+                        <td className="font-mono text-xs">{mapping.controls.length}</td>
+                      </tr>
+                      {expanded && (
+                        <tr>
+                          <td colSpan={4} className="text-xs text-[var(--text-dim)]">
+                            <div className="space-y-2 py-1">
+                              <div>Worst live S9 result wins: error, fail, not-covered, then pass.</div>
+                              <ul className="space-y-1">
+                                {mapping.controls.map((control) => (
+                                  <li key={control.id}>
+                                    <span className="font-medium text-[var(--text)]">{control.name}</span>{" "}
+                                    <span className={`pill ${controlStatusClass(control.status)}`}>{controlStatusLabel(control.status)}</span>
+                                    {control.stale && <span className="pill amber ml-1">stale</span>}
+                                    <span> — {formatControlTimestamp(control.lastCheckedAt)}; {control.findingsCount} findings; </span>
+                                    {control.binding.kind === "scanner"
+                                      ? <span>scanner: <span className="font-mono">{control.binding.scanner}</span></span>
+                                      : <span>not covered: {control.binding.reason}</span>}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+                {mappedTable.filteredCount === 0 && (
+                  <tr><td colSpan={4} className="loading-dim">no mapped clauses match the current filter</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="section-card">
+        <div className="section-card-header">
+          <h2 className="text-sm font-medium text-[var(--text)]">Not mapped in the S9 catalog</h2>
+          <span className="text-xs text-[var(--text-dim)]">Annex A reference index (static, code-maintained)</span>
+        </div>
+        <div className="section-card-body compliance-section-body">
+          <div className="table-container">
+            <TableControls {...unmappedTable.controlsProps} searchPlaceholder="Search not-mapped clauses..." />
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th {...unmappedTable.sortHeaderProps("clause")}>
+                    clause <span className="sortable-th-arrow">{unmappedTable.sort.key === "clause" ? (unmappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th {...unmappedTable.sortHeaderProps("title")}>
+                    reference title <span className="sortable-th-arrow">{unmappedTable.sort.key === "title" ? (unmappedTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {unmappedTable.rows.map((clause) => (
+                  <tr key={clause.id}>
+                    <td className="font-mono text-xs">{clause.id}</td>
+                    <td className="text-xs text-[var(--text-dim)]">{clause.title}</td>
+                  </tr>
+                ))}
+                {unmappedTable.filteredCount === 0 && (
+                  <tr><td colSpan={2} className="loading-dim">no not-mapped clauses match the current filter</td></tr>
                 )}
               </tbody>
             </table>

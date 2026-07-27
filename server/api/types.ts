@@ -91,6 +91,36 @@ export interface ComplianceControlHistoryResponse {
   history: ComplianceControlHistoryRow[];
 }
 
+export interface ComplianceFrameworkReferenceClause {
+  id: string;
+  title: string;
+}
+
+export interface ComplianceFrameworkClauseMapping {
+  clause: ComplianceFrameworkReferenceClause;
+  controls: Array<Pick<
+    ComplianceCatalogControl,
+    "id" | "name" | "status" | "findingsCount" | "maxSeverity" | "lastCheckedAt" | "stale" | "binding"
+  >>;
+  status: ComplianceControlStatus | null;
+}
+
+export interface ComplianceFrameworkMappingResponse {
+  framework: {
+    id: "iso-iec-42001-annex-a";
+    name: "ISO/IEC 42001:2023 Annex A";
+    referenceIndexLabel: "Annex A reference index (static, code-maintained)";
+  };
+  mappedClauses: ComplianceFrameworkClauseMapping[];
+  unmappedClauses: ComplianceFrameworkReferenceClause[];
+  coverage: {
+    referenceClauseCount: number;
+    mappedClauseCount: number;
+    unmappedClauseCount: number;
+    mappedControlCount: number;
+  };
+}
+
 // ── Shared primitives ─────────────────────────────────────────────────────
 
 export interface EvidenceRef {

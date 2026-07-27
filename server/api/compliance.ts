@@ -6,6 +6,7 @@ import {
   type ApiEnvelope,
   type ComplianceControlHistoryResponse,
   type ComplianceControlsResponse,
+  type ComplianceFrameworkMappingResponse,
 } from "./types.ts";
 import { exportAuditLog } from "../governance/audit/export.ts";
 import { getDashboardDb, isDashboardDbEnabled } from "../db/dashboard.ts";
@@ -13,6 +14,7 @@ import { writeActionAudit } from "../db/writer.ts";
 import { buildEvidenceZip } from "../compliance/zipPack.ts";
 import { buildComplianceControlStatuses } from "../compliance/evidencePack.ts";
 import { listCatalogControls, listControlHistory } from "../compliance/controls.ts";
+import { listFrameworkMapping } from "../compliance/frameworkMapping.ts";
 
 export function complianceDpaHandler(req: Request): Response {
   const ctx = getTenantContext(req);
@@ -58,6 +60,15 @@ export function complianceControlsHandler(req: Request): Response {
   const ctx = getTenantContext(req);
   const data = listCatalogControls(Date.now(), ctx);
   const envelope: ApiEnvelope<ComplianceControlsResponse> = ok(data);
+  return new Response(JSON.stringify(envelope), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function complianceFrameworkMappingHandler(req: Request): Response {
+  const ctx = getTenantContext(req);
+  const data = listFrameworkMapping(Date.now(), ctx);
+  const envelope: ApiEnvelope<ComplianceFrameworkMappingResponse> = ok(data);
   return new Response(JSON.stringify(envelope), {
     headers: { "Content-Type": "application/json" },
   });
