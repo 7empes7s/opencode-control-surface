@@ -213,10 +213,6 @@ startServer().catch(console.error);
 
 const PORT = parseInt(process.env.PORT || "3000");
 
-// Connection bounding for SSE streams
-const MAX_SSE_CONNECTIONS = 100;
-let currentSseConnections = 0;
-
 const server = Bun.serve<TerminalWebSocketData>({
   port: PORT,
   hostname: "0.0.0.0",

@@ -1,8 +1,17 @@
 import { homeHandler } from "./home.ts";
 
+type StreamHandlerOptions = {
+  homeHandler?: typeof homeHandler;
+  pushIntervalMs?: number;
+  heartbeatIntervalMs?: number;
+};
+
 // GET /api/stream — SSE endpoint for live home data
-export function streamHandler(): Response {
+export function streamHandler(options: StreamHandlerOptions = {}): Response {
   const encoder = new TextEncoder();
+  const buildHomeResponse = options.homeHandler ?? homeHandler;
+  const pushIntervalMs = options.pushIntervalMs ?? 15_000;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 25_000;
   let pushInterval: ReturnType<typeof setInterval> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
@@ -27,7 +36,7 @@ export function streamHandler(): Response {
       };
       const push = async () => {
         try {
-          const resp = await homeHandler();
+          const resp = await buildHomeResponse();
           const text = await resp.text();
           enqueue(`data: ${text}\n\n`);
         } catch {
@@ -36,10 +45,14 @@ export function streamHandler(): Response {
       };
 
       await push();
-      pushInterval = setInterval(push, 15_000);
+      // The client can disconnect while the initial home build is in flight.
+      // cancel() has already run in that case, so starting timers here would
+      // create a permanent background pump with no client to clear it.
+      if (closed) return;
+      pushInterval = setInterval(push, pushIntervalMs);
       heartbeat = setInterval(
         () => enqueue(": heartbeat\n\n"),
-        25_000,
+        heartbeatIntervalMs,
       );
     },
     cancel() {

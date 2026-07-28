@@ -401,6 +401,9 @@ import {
 import { getUsageSummary, recordUsageEvents } from "../usage/analytics.ts";
 import { getModuleUsage } from "../usage/analytics.ts";
 
+const MAX_SSE_CONNECTIONS = 100;
+let currentSseConnections = 0;
+
 export const handleApi = withTenantContext(withRequestAuthContext(handleApiOuter));
 
 function handleApiOuter(req: Request, url: URL): Promise<Response> {
@@ -533,75 +536,68 @@ async function handleApiInner(req: Request, url: URL): Promise<Response> {
   if (method === "GET" && pathname === "/api/public-status") return publicStatusHandler();
 
   // ── Read endpoints ─────────────────────────────────────────────────────────
-  // Connection bounding for SSE streams
-const MAX_SSE_CONNECTIONS = 100;
-let currentSseConnections = 0;
-
-// ── Read endpoints ─────────────────────────────────────────────────────────
-if (method === "GET" && pathname === "/api/stream") {
-  if (!checkToken(req)) return unauthorized();
-  if (currentSseConnections >= MAX_SSE_CONNECTIONS) {
-    return new Response(JSON.stringify({ error: "too many concurrent SSE connections" }), {
-      status: 429,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-  currentSseConnections++;
-  const response = streamHandler();
-  // Override the response to decrement the counter when the connection closes
-  const originalBody = response.body;
-  if (originalBody) {
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    const wrappedBody = new ReadableStream({
-      async start(controller) {
-        reader = originalBody.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+  if (method === "GET" && pathname === "/api/stream") {
+    if (!checkToken(req)) return unauthorized();
+    if (currentSseConnections >= MAX_SSE_CONNECTIONS) {
+      return new Response(JSON.stringify({ error: "too many concurrent SSE connections" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    currentSseConnections++;
+    const response = streamHandler();
+    const originalBody = response.body;
+    if (originalBody) {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let released = false;
+      const releaseConnection = () => {
+        if (released) return;
+        released = true;
+        currentSseConnections = Math.max(0, currentSseConnections - 1);
+      };
+      const wrappedBody = new ReadableStream({
+        async start(controller) {
+          reader = originalBody.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              try {
+                controller.enqueue(value);
+              } catch {
+                break;
+              }
+            }
+          } catch (err) {
+            console.error("SSE stream error:", err);
+          } finally {
+            releaseConnection();
             try {
-              controller.enqueue(value);
-            } catch (enqueueErr) {
-              // Controller was cancelled/closed underneath us; stop quietly.
-              break;
+              controller.close();
+            } catch {
+              // Controller may already be closed/cancelled.
+            }
+            try {
+              reader.releaseLock();
+            } catch {
+              // Reader may already be released.
             }
           }
-        } catch (err) {
-          console.error("SSE stream error:", err);
-        } finally {
-          currentSseConnections--;
-          try {
-            controller.close();
-          } catch {
-            // Controller may already be closed/cancelled (e.g. client disconnected).
-            // Swallow — there's nothing useful we can do here.
-          }
-          try {
-            reader.releaseLock();
-          } catch {
-            // Reader may already be released; ignore.
-          }
-        }
-      },
-      cancel() {
-        currentSseConnections--;
-        // Propagate the client disconnect to the inner stream so its
-        // homeHandler push intervals stop (otherwise: immortal zombie pumps).
-        try {
-          reader?.cancel();
-        } catch {
-          // Inner stream may already be closed; nothing to do.
-        }
-      }
-    });
-    return new Response(wrappedBody, {
-      headers: response.headers,
-      status: response.status,
-    });
+        },
+        cancel() {
+          releaseConnection();
+          // Propagate the disconnect so the inner stream can stop its timers.
+          return reader?.cancel().catch(() => undefined);
+        },
+      });
+      return new Response(wrappedBody, {
+        headers: response.headers,
+        status: response.status,
+      });
+    }
+    currentSseConnections--;
+    return response;
   }
-  currentSseConnections--; // Decrement if we somehow don't have a body
-  return response;
-}
   if (method === "GET" && pathname === "/api/actions/catalog") {
     if (!checkToken(req)) return unauthorized();
     return actionCatalogHandler(url);
