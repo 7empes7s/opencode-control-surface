@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Copy, Download, FileDown, FileText, Play, RefreshCw, Upload } from "lucide-react";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { TableControls } from "../components/TableControls";
 import { AnimatedNumber, Reveal, Stat } from "../components/v5/ui";
 import { useApi } from "../hooks/useApi";
@@ -24,6 +25,8 @@ type ReportsArchiveResponse = {
 type RangePreset = "24h" | "7d" | "30d";
 type ModuleRangePreset = "7d" | "30d" | "90d";
 type ExportFormat = "pdf" | "pptx" | "docx";
+type ActivityMetric = "rows" | "runs";
+type ActivityStatusFilter = "all" | "success" | "failed" | "running";
 
 type ModuleUsageRow = {
   path: string;
@@ -66,6 +69,11 @@ function formatPeriod(run: ReportRun): string | null {
   const params = run.params as { fromTs?: number; toTs?: number } | undefined;
   if (!params || typeof params.fromTs !== "number" || typeof params.toTs !== "number") return null;
   return `${new Date(params.fromTs).toLocaleDateString()} → ${new Date(params.toTs).toLocaleDateString()}`;
+}
+
+function dayKey(ts: number): string {
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function statusTone(status: string): "ok" | "warn" | "err" | "info" {
@@ -162,8 +170,64 @@ export function ReportsPage() {
     ]);
   }, [templates]);
 
+  const [activityTemplate, setActivityTemplate] = useState<string>("all");
+  const [activityStatus, setActivityStatus] = useState<ActivityStatusFilter>("all");
+  const [activityMetric, setActivityMetric] = useState<ActivityMetric>("rows");
+
+  const activityTemplates = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of summary) counts.set(row.templateId, (counts.get(row.templateId) ?? 0) + row.count);
+    if (counts.size === 0) {
+      for (const run of runs) counts.set(run.templateId, (counts.get(run.templateId) ?? 0) + 1);
+    }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([template]) => template);
+    if (activityTemplate !== "all" && !top.includes(activityTemplate)) return [activityTemplate, ...top].slice(0, 6);
+    return top;
+  }, [summary, runs, activityTemplate]);
+
+  const activityRuns = useMemo(() => {
+    return runs.filter((run) => {
+      if (activityTemplate !== "all" && run.templateId !== activityTemplate) return false;
+      if (activityStatus !== "all" && run.status !== activityStatus) return false;
+      return true;
+    });
+  }, [runs, activityTemplate, activityStatus]);
+
+  const activitySeries = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const days = Array.from({ length: 14 }, (_, index) => {
+      const date = new Date(today);
+      date.setDate(today.getDate() - (13 - index));
+      return {
+        key: dayKey(date.getTime()),
+        label: date.toLocaleDateString(undefined, { month: "numeric", day: "numeric" }),
+        value: 0,
+      };
+    });
+    const indexByKey = new Map(days.map((day, index) => [day.key, index]));
+    for (const run of activityRuns) {
+      if (!run.startedAt) continue;
+      const index = indexByKey.get(dayKey(run.startedAt));
+      if (index === undefined) continue;
+      days[index].value += activityMetric === "rows" ? (run.rowCount ?? 0) : 1;
+    }
+    return days;
+  }, [activityRuns, activityMetric]);
+
+  const activityTotal = useMemo(() => activitySeries.reduce((sum, day) => sum + day.value, 0), [activitySeries]);
+
+  const toggleActivityTemplate = (template: string) => {
+    setActivityTemplate((current) => (current === template ? "all" : template));
+  };
+
+  const clearActivityFilters = () => {
+    setActivityTemplate("all");
+    setActivityStatus("all");
+  };
+
   const visibleRuns = useTableControls<ReportRun, "startedAt">({
-    rows: runs,
+    rows: activityRuns,
     pageSize: 12,
     defaultSort: { key: "startedAt", dir: "desc" },
     filterText: (run) => [
@@ -376,6 +440,67 @@ export function ReportsPage() {
         </div>
       </Reveal>
 
+      <Reveal delay={0.06}>
+        <section className="v5-section">
+          <div className="v5-card v5-activity-card">
+            <div className="v5-activity-head">
+              <div>
+                <div className="v5-card-label">Interactive reporting</div>
+                <div className="v5-activity-title">Report activity, live</div>
+                <div className="v5-activity-sub">Filter the archive by template/status, switch metrics, and hover the series for exact daily values.</div>
+              </div>
+              <div className="v5-segmented" role="group" aria-label="Activity metric">
+                <button type="button" aria-pressed={activityMetric === "rows"} className={activityMetric === "rows" ? "active" : ""} onClick={() => setActivityMetric("rows")}>Rows</button>
+                <button type="button" aria-pressed={activityMetric === "runs"} className={activityMetric === "runs" ? "active" : ""} onClick={() => setActivityMetric("runs")}>Runs</button>
+              </div>
+            </div>
+
+            <div className="v5-chip-row" role="group" aria-label="Template filters">
+              <button type="button" aria-pressed={activityTemplate === "all"} className={`v5-chip${activityTemplate === "all" ? " active" : ""}`} onClick={() => setActivityTemplate("all")}>all templates</button>
+              {activityTemplates.map((template) => (
+                <button key={template} type="button" aria-pressed={activityTemplate === template} className={`v5-chip${activityTemplate === template ? " active" : ""}`} onClick={() => toggleActivityTemplate(template)}>
+                  {templateNames.get(template) ?? template}
+                </button>
+              ))}
+            </div>
+            <div className="v5-chip-row" role="group" aria-label="Status filters">
+              {(["all", "success", "failed", "running"] as const).map((status) => (
+                <button key={status} type="button" aria-pressed={activityStatus === status} className={`v5-chip${activityStatus === status ? " active" : ""}`} onClick={() => setActivityStatus(status)}>
+                  {status}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ height: 220, position: "relative" }}>
+              <ResponsiveContainer width="100%" height="100%" minHeight={180}>
+                <AreaChart data={activitySeries} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="reportActivityFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.42} />
+                      <stop offset="100%" stopColor="var(--accent-2)" stopOpacity={0.03} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 11 }} />
+                  <YAxis allowDecimals={false} width={34} tickLine={false} axisLine={false} tick={{ fill: "var(--text-muted)", fontSize: 11 }} />
+                  <Tooltip
+                    cursor={{ stroke: "var(--border-bright)" }}
+                    contentStyle={{ background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 12, fontSize: 12 }}
+                    formatter={(value) => [Number(value).toLocaleString(), activityMetric === "rows" ? "rows" : "runs"]}
+                    labelFormatter={(label) => `Day ${label}`}
+                  />
+                  <Area type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={2.4} fill="url(#reportActivityFill)" animationDuration={900} dot={{ r: 2.4, fill: "var(--accent)" }} activeDot={{ r: 5, fill: "var(--accent-2)" }} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="v5-activity-foot">
+              <span>{activityTotal.toLocaleString()} {activityMetric === "rows" ? "rows" : "runs"} in the last 14 days · {activityRuns.length} total filtered runs</span>
+              <button type="button" className="v5-btn ghost" onClick={clearActivityFilters} disabled={activityTemplate === "all" && activityStatus === "all"}>Clear activity filters</button>
+            </div>
+          </div>
+        </section>
+      </Reveal>
+
       <Reveal delay={0.08}>
         <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flex: "1 1 280px", minWidth: 220 }}>
@@ -473,14 +598,21 @@ export function ReportsPage() {
             </div>
             <div className="v5-grid cards">
               {summary.slice(0, 6).map((row) => (
-                <div className="v5-card flat-hover" key={`${row.templateId}-${row.status}`}>
-                  <div className="v5-card-label">{templateNames.get(row.templateId) ?? row.templateId}</div>
-                  <div className="v5-stat-value"><AnimatedNumber value={row.count} /></div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                <button
+                  className={`v5-card v5-click-card${activityTemplate === row.templateId ? " active" : ""}`}
+                  key={`${row.templateId}-${row.status}`}
+                  type="button"
+                  aria-pressed={activityTemplate === row.templateId}
+                  onClick={() => toggleActivityTemplate(row.templateId)}
+                  title="Filter the interactive chart and archive to this template"
+                >
+                  <span className="v5-card-label">{templateNames.get(row.templateId) ?? row.templateId}</span>
+                  <span className="v5-stat-value" style={{ display: "block" }}><AnimatedNumber value={row.count} /></span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
                     <span className={`v5-pill ${statusTone(row.status)}`}>{row.status}</span>
                     <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{formatDate(row.latestStartedAt)}</span>
-                  </div>
-                </div>
+                  </span>
+                </button>
               ))}
             </div>
           </section>
@@ -570,7 +702,7 @@ export function ReportsPage() {
         <section className="v5-section">
           <div className="v5-section-head">
             <div className="v5-section-title">Archive</div>
-            <span className="v5-pill info">{visibleRuns.filteredCount} / {runs.length}</span>
+            <span className="v5-pill info">{visibleRuns.filteredCount} / {activityRuns.length} in scope · {runs.length} total</span>
           </div>
 
           <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
@@ -588,13 +720,17 @@ export function ReportsPage() {
           )}
 
           <div style={{ display: "grid", gap: 12 }}>
-            {visibleRuns.rows.map((run) => {
+            {visibleRuns.rows.map((run, index) => {
               const templateName = templateNames.get(run.templateId) ?? run.templateId;
               const canExport = run.status === "success";
               const period = formatPeriod(run);
               const exportingThis = exportingDoc?.id === run.id;
               return (
-                <article className="v5-card flat-hover" key={run.id} style={{ display: "flex", flexWrap: "wrap", gap: 14, justifyContent: "space-between" }}>
+                <article
+                  className="v5-card v5-archive-card"
+                  key={run.id}
+                  style={{ display: "flex", flexWrap: "wrap", gap: 14, justifyContent: "space-between", animationDelay: `${Math.min(index * 0.035, 0.35)}s` }}
+                >
                   <div style={{ display: "flex", gap: 12, flex: "1 1 320px", minWidth: 0 }}>
                     <div style={{ flex: "none", width: 34, height: 34, borderRadius: "var(--r-md)", display: "grid", placeItems: "center", background: "var(--grad-accent-soft)", color: "var(--accent)" }}>
                       <FileText size={16} />
