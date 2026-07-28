@@ -41,13 +41,23 @@ export function TranscriptControls({
   onActionFilterChange: (filter: ActionFilter) => void;
 }) {
   return (
-    <div className="transcript-controls" aria-label="Transcript visibility controls">
+    <div
+      className="transcript-controls"
+      aria-label="Transcript visibility controls"
+      style={{
+        background: "var(--glass)",
+        backdropFilter: "blur(14px) saturate(1.25)",
+        WebkitBackdropFilter: "blur(14px) saturate(1.25)",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
       <div className="transcript-mode-group">
         {MODES.map((item) => (
           <button
             key={item.id}
             type="button"
             className={`transcript-chip${mode === item.id ? " active" : ""}`}
+            style={{ borderRadius: 999, minHeight: 32 }}
             onClick={() => onModeChange(item.id)}
             title={item.title}
           >
@@ -72,6 +82,7 @@ export function TranscriptControls({
               key={item.id}
               type="button"
               className={`transcript-chip small${actionFilter === item.id ? " active" : ""}`}
+              style={{ borderRadius: 999 }}
               onClick={() => onActionFilterChange(item.id)}
             >
               {item.label}

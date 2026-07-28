@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { AlertTriangle, BellOff, BellRing, CheckCircle2, ChevronDown, ChevronRight, Clock3, ExternalLink, FileText, Hammer, LoaderCircle, Save, ShieldCheck, Sparkles, User, UserX } from "lucide-react";
 import { TableControls } from "../components/TableControls";
+import { Reveal } from "../components/v5/ui";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { useTableControls } from "../hooks/useTableControls";
@@ -38,8 +39,11 @@ function fmtDuration(ms: number | null): string {
   return `${Math.round(seconds / 86400)}d`;
 }
 
+const V5_TONE: Record<string, string> = { green: "ok", amber: "warn", red: "err", blue: "info", gray: "" };
+
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = V5_TONE[color] ?? "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
 }
 
 function SlaTile({
@@ -48,19 +52,16 @@ function SlaTile({
   value,
   detail,
 }: {
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   label: string;
   value: string;
   detail: string;
 }) {
   return (
-    <div className="stat-card" style={{ minHeight: 108 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)" }}>
-        {icon}
-        <span>{label}</span>
-      </div>
-      <strong style={{ display: "block", fontSize: 24, marginTop: 10 }}>{value}</strong>
-      <div className="dim" style={{ marginTop: 4 }}>{detail}</div>
+    <div className="v5-card flat-hover v5-stat">
+      <div className="v5-card-label">{icon}{label}</div>
+      <div className="v5-stat-value">{value}</div>
+      <div className="v5-stat-cap">{detail}</div>
     </div>
   );
 }
@@ -184,7 +185,7 @@ function IncidentLifecycleCard({
   }
 
   return (
-    <div className="dash-card" style={{ padding: 16, display: "grid", gap: 14 }}>
+    <div className="v5-card flat-hover" style={{ display: "grid", gap: 14 }}>
       <div style={{ display: "flex", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -200,7 +201,7 @@ function IncidentLifecycleCard({
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="v5-btn ghost"
             onClick={acknowledge}
             disabled={ack.loading || incident.acknowledgedAt !== null}
             style={{ minHeight: 44 }}
@@ -210,7 +211,7 @@ function IncidentLifecycleCard({
           </button>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="v5-btn ghost"
             onClick={mitigateIncident}
             disabled={mitigate.loading || incident.status === "resolved" || incident.mitigatedAt !== null}
             style={{ minHeight: 44 }}
@@ -220,7 +221,7 @@ function IncidentLifecycleCard({
           </button>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="v5-btn ghost"
             onClick={resolveIncident}
             disabled={resolve.loading || incident.status === "resolved"}
             style={{ minHeight: 44 }}
@@ -230,7 +231,7 @@ function IncidentLifecycleCard({
           </button>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="v5-btn ghost"
             onClick={escalateIncident}
             disabled={escalate.loading || incident.escalatedWorkflowId !== null}
             style={{ minHeight: 44 }}
@@ -241,7 +242,7 @@ function IncidentLifecycleCard({
           {incident.muteActive ? (
             <button
               type="button"
-              className="btn btn-ghost"
+              className="v5-btn ghost"
               onClick={unmuteIncident}
               disabled={unmute.loading}
               style={{ minHeight: 44 }}
@@ -252,7 +253,7 @@ function IncidentLifecycleCard({
           ) : (
             <button
               type="button"
-              className="btn btn-ghost"
+              className="v5-btn ghost"
               onClick={muteIncident}
               disabled={mute.loading || incident.status === "resolved"}
               style={{ minHeight: 44 }}
@@ -265,14 +266,14 @@ function IncidentLifecycleCard({
       </div>
 
       {(ack.error || mitigate.error || resolve.error || escalate.error || mute.error || unmute.error || assign.error || savePostMortem.error) && (
-        <div className="loading-dim error">{ack.error ?? mitigate.error ?? resolve.error ?? escalate.error ?? mute.error ?? unmute.error ?? assign.error ?? savePostMortem.error}</div>
+        <div style={{ fontSize: 12, color: "var(--red)" }}>{ack.error ?? mitigate.error ?? resolve.error ?? escalate.error ?? mute.error ?? unmute.error ?? assign.error ?? savePostMortem.error}</div>
       )}
       {(ack.success || mitigate.success || resolve.success || escalate.success || mute.success || unmute.success || assign.success || savePostMortem.success) && (
-        <div className="loading-dim">{ack.success ?? mitigate.success ?? resolve.success ?? escalate.success ?? mute.success ?? unmute.success ?? assign.success ?? savePostMortem.success}</div>
+        <div style={{ fontSize: 12, color: "var(--green)" }}>{ack.success ?? mitigate.success ?? resolve.success ?? escalate.success ?? mute.success ?? unmute.success ?? assign.success ?? savePostMortem.success}</div>
       )}
 
       {incident.autoClosed && (
-        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+        <div className="v5-card flat-hover" style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--text-dim)" }}>
           <CheckCircle2 size={15} />
           <div>
             <strong>Auto-closed by system</strong>
@@ -289,13 +290,13 @@ function IncidentLifecycleCard({
       )}
 
       {incident.escalatedWorkflowId && (
-        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+        <div className="v5-card flat-hover" style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--text-dim)" }}>
           <Hammer size={15} />
           <div>
             <strong>Escalated to workflow</strong>
             <div className="mono dim" style={{ marginTop: 4, fontSize: 11 }}>{incident.escalatedWorkflowId}</div>
             <div style={{ marginTop: 6 }}>
-              <Link href="/builder" className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
+              <Link href="/builder" className="v5-btn ghost" style={{ minHeight: 44 }}>
                 <ExternalLink size={13} />
                 Open in Builder
               </Link>
@@ -305,7 +306,7 @@ function IncidentLifecycleCard({
       )}
 
       {incident.muteActive && incident.mutedAt !== null && (
-        <div className="insights-message" style={{ alignItems: "flex-start" }}>
+        <div className="v5-card flat-hover" style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--text-dim)" }}>
           <BellOff size={15} />
           <div>
             <strong>Muted</strong>
@@ -320,18 +321,18 @@ function IncidentLifecycleCard({
         </div>
       )}
 
-      <div className="insights-message" style={{ alignItems: "flex-start" }}>
+      <div className="v5-card flat-hover" style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, color: "var(--text-dim)" }}>
         <Sparkles size={15} />
         <div>
           <strong>RCA</strong>
           <div style={{ marginTop: 4 }}>{incident.rootCause ?? "No representative diagnosis has been recorded yet."}</div>
           <div className="dim" style={{ marginTop: 6 }}>Next: {suggestedActionText(incident.suggestedActions)}</div>
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            <a href={incident.diagnosisHref} className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
+            <a href={incident.diagnosisHref} className="v5-btn ghost" style={{ minHeight: 44 }}>
               <ExternalLink size={13} />
               Incident detail
             </a>
-            <a href={incident.passEvidenceHref} className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
+            <a href={incident.passEvidenceHref} className="v5-btn ghost" style={{ minHeight: 44 }}>
               <ExternalLink size={13} />
               Pass evidence
             </a>
@@ -392,7 +393,7 @@ function IncidentLifecycleCard({
           />
           <button
             type="button"
-            className="btn btn-ghost"
+            className="v5-btn ghost"
             onClick={assignOwner}
             disabled={assign.loading || ownerInput.trim() === (incident.owner ?? "")}
             style={{ minHeight: 44 }}
@@ -403,7 +404,7 @@ function IncidentLifecycleCard({
           {incident.owner && (
             <button
               type="button"
-              className="btn btn-ghost"
+              className="v5-btn ghost"
               onClick={unassignOwner}
               disabled={assign.loading}
               style={{ minHeight: 44 }}
@@ -428,14 +429,14 @@ function IncidentLifecycleCard({
         />
       </label>
       {suggestionNote && (
-        <div className={`loading-dim${suggestionNote.toLowerCase().includes("http") ? " error" : ""}`}>
+        <div style={{ fontSize: 12, color: suggestionNote.toLowerCase().includes("http") ? "var(--red)" : "var(--text-muted)" }}>
           {suggestionNote}
         </div>
       )}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button
           type="button"
-          className="btn btn-ghost"
+          className="v5-btn ghost"
           onClick={suggestPostMortem}
           disabled={suggesting}
           style={{ minHeight: 44 }}
@@ -445,7 +446,7 @@ function IncidentLifecycleCard({
         </button>
         <button
           type="button"
-          className="btn btn-ghost"
+          className="v5-btn ghost"
           onClick={saveNote}
           disabled={savePostMortem.loading || suggesting}
           style={{ minHeight: 44 }}
@@ -593,25 +594,47 @@ export function IncidentsPage() {
     }
   }
 
-  if (loading && !data) return <div className="loading-dim">loading incidents…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-skeleton" style={{ height: 30, width: 220, marginBottom: 16 }} />
+        <div className="v5-grid stats" style={{ marginBottom: 14 }}>
+          {[0, 1, 2, 3].map((i) => <div key={i} className="v5-skeleton" style={{ height: 96 }} />)}
+        </div>
+        <div className="v5-skeleton" style={{ height: 260 }} />
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-card flat-hover" style={{ fontSize: 13, color: "var(--red)" }}>Incidents did not load: {error}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="dash-page">
-      <div className="page-header" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <div className="dash-section-title">saved view · detections</div>
-          <div className="page-title">Incidents</div>
-        </div>
-        <Pill color={entries.length > 0 ? "red" : "green"}>{entries.length} incident-grade</Pill>
-        {openCriticals > 0 && <Pill color="red">{openCriticals} critical</Pill>}
-        <button type="button" className="btn btn-ghost" onClick={refresh} style={{ minHeight: 44 }}>
-          Refresh
-        </button>
-      </div>
+      <Reveal>
+        <header className="v5-pagehead">
+          <div className="v5-pagehead-row">
+            <div>
+              <div className="v5-pagehead-title">Incidents</div>
+              <p className="v5-pagehead-sub">A saved view of high-severity detections across operations, security, build, and model-routing failures.</p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <Pill color={entries.length > 0 ? "red" : "green"}>{entries.length} incident-grade</Pill>
+              {openCriticals > 0 && <Pill color="red">{openCriticals} critical</Pill>}
+              <button type="button" className="v5-btn" onClick={refresh}>
+                Refresh
+              </button>
+            </div>
+          </div>
+        </header>
+      </Reveal>
 
-      <section className="dash-section">
-        <div className="stats-grid" style={{ marginBottom: 12 }}>
+      <Reveal delay={0.04}>
+        <div className="v5-grid stats">
           <SlaTile
             icon={<Clock3 size={16} />}
             label={`MTTA (trailing ${mttxWindowDays}d)`}
@@ -660,265 +683,270 @@ export function IncidentsPage() {
               : "nothing keeps coming back"}
           />
         </div>
+      </Reveal>
 
-        <div className="insights-message" style={{ marginBottom: 12 }}>
-          <Sparkles size={15} />
+      <Reveal delay={0.08}>
+        <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13, color: "var(--text-dim)" }}>
+          <Sparkles size={15} style={{ color: "var(--accent)", flex: "none" }} />
           Incidents is a saved view of high-severity Detections across operations, security, build, and model-routing failures.
-          <Link href="/insights" className="btn btn-ghost" style={{ marginLeft: "auto", minHeight: 44 }}>
+          <Link href="/insights" className="v5-btn ghost" style={{ marginLeft: "auto" }}>
             <ExternalLink size={14} />
             Open Detections
           </Link>
         </div>
+      </Reveal>
 
-        {entries.length === 0 ? (
-          <div className="empty-state">
-            <ShieldCheck size={24} />
-            <strong>No incident-grade detections.</strong>
-            <span>High and critical operations, security, build, and model-routing findings appear here automatically.</span>
-          </div>
-        ) : (
-          <div className="table-wrap">
-            <TableControls {...controls.controlsProps} searchPlaceholder="Filter incidents..." />
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th className="expander-col" aria-label="details"></th>
-                  <th {...controls.sortHeaderProps("severity")} style={{ width: 150 }}>severity</th>
-                  <th {...controls.sortHeaderProps("stage")} style={{ width: 150 }}>domain</th>
-                  <th>incident</th>
-                  <th {...controls.sortHeaderProps("ts")} style={{ width: 160 }}>detected</th>
-                  <th style={{ width: 170 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {controls.rows.map((entry) => {
-                  const focus = entry.sourceKey ?? entry.insightId ?? entry.slug;
-                  const href = entry.detectionsHref ?? `/insights?focus=${encodeURIComponent(focus)}`;
-                  const key = controls.getRowKey(entry);
-                  const expanded = controls.isExpanded(key);
-                  return (
-                    <Fragment key={key}>
-                      <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
-                        <td className="expander-col">
-                          <button type="button" className="table-expander" aria-label={expanded ? "Collapse details" : "Expand details"}>
-                            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                          </button>
-                        </td>
-                        <td>
-                          <Pill color={entry.severity === "error" ? "red" : "amber"}>
-                            {entry.errorType}
-                          </Pill>
-                        </td>
-                        <td><Pill color={stageColor(entry.stage)}>{entry.stage}</Pill></td>
-                        <td>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {entry.severity === "error" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}
-                            <strong>{entry.title ?? entry.slug}</strong>
-                          </div>
-                          <div className="mono dim" style={{ fontSize: 11, marginTop: 3 }}>{focus}</div>
-                        </td>
-                        <td className="mono dim">{relTime(entry.ts)}</td>
-                        <td style={{ textAlign: "right" }} onClick={(event) => event.stopPropagation()}>
-                          <Link href={href} className="btn btn-sm btn-ghost" style={{ minHeight: 44 }}>
-                            <ExternalLink size={13} />
-                            View detection
-                          </Link>
-                        </td>
-                      </tr>
-                      {expanded && (
-                        <tr key={`${key}:detail`} className="data-row-detail">
-                          <td colSpan={6}>
-                            <div className="data-row-detail-inner">
-                              <div className="data-row-detail-grid">
-                                <div><span>source</span><strong>{focus}</strong></div>
-                                <div><span>manual page</span><strong>{entry.manualPageHref ?? "/insights"}</strong></div>
-                                <div><span>detected</span><strong>{new Date(entry.ts).toISOString()}</strong></div>
+      <Reveal delay={0.12}>
+        <section className="v5-section">
+          {entries.length === 0 ? (
+            <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+              No incident-grade detections — high and critical findings appear here automatically.
+            </p>
+          ) : (
+            <>
+              <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+                <TableControls {...controls.controlsProps} searchPlaceholder="Filter incidents..." />
+              </div>
+              <div className="v5-table-wrap">
+                <table className="v5-table responsive">
+                  <thead>
+                    <tr>
+                      <th className="expander-col" aria-label="details"></th>
+                      <th {...controls.sortHeaderProps("severity")} style={{ width: 150 }}>severity</th>
+                      <th {...controls.sortHeaderProps("stage")} style={{ width: 150 }}>domain</th>
+                      <th>incident</th>
+                      <th {...controls.sortHeaderProps("ts")} style={{ width: 160 }}>detected</th>
+                      <th style={{ width: 170 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {controls.rows.map((entry) => {
+                      const focus = entry.sourceKey ?? entry.insightId ?? entry.slug;
+                      const href = entry.detectionsHref ?? `/insights?focus=${encodeURIComponent(focus)}`;
+                      const key = controls.getRowKey(entry);
+                      const expanded = controls.isExpanded(key);
+                      return (
+                        <Fragment key={key}>
+                          <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
+                            <td className="expander-col" data-no-label>
+                              <button type="button" className="table-expander" aria-label={expanded ? "Collapse details" : "Expand details"}>
+                                {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                              </button>
+                            </td>
+                            <td data-label="Severity">
+                              <Pill color={entry.severity === "error" ? "red" : "amber"}>
+                                {entry.errorType}
+                              </Pill>
+                            </td>
+                            <td data-label="Domain"><Pill color={stageColor(entry.stage)}>{entry.stage}</Pill></td>
+                            <td data-label="Incident">
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                {entry.severity === "error" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}
+                                <strong>{entry.title ?? entry.slug}</strong>
                               </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-                {controls.filteredCount === 0 && (
-                  <tr>
-                    <td colSpan={6} className="loading-dim">no incidents match the current filter</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="dash-section">
-        <div className="dash-section-title" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span>reasoner incidents · SLA workflow</span>
-          {mutedHiddenCount > 0 && (
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost"
-              onClick={() => setShowSnoozed((current) => !current)}
-              style={{ minHeight: 32 }}
-            >
-              <BellOff size={13} />
-              {showSnoozed ? `showing ${mutedHiddenCount} snoozed — hide` : `${mutedHiddenCount} snoozed hidden — show`}
-            </button>
-          )}
-        </div>
-        {loading && !data ? (
-          <div className="loading-dim">loading incident workflow...</div>
-        ) : reasonerIncidents.length === 0 ? (
-          <div className="empty-state">
-            <ShieldCheck size={24} />
-            <strong>No durable incident rows.</strong>
-            <span>Reasoner and sentinel incidents with lifecycle state appear here after they are detected.</span>
-          </div>
-        ) : (
-          <div className="table-wrap incidents-workflow-table">
-            {selectedIds.size > 0 && (
-              <div className="insights-message" style={{ marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
-                <strong>{selectedIds.size} selected</strong>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={bulkBusy}
-                    onClick={() => runBulk("acknowledge")}
-                    style={{ minHeight: 44 }}
-                  >
-                    <CheckCircle2 size={15} />
-                    Acknowledge
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={bulkBusy}
-                    onClick={() => runBulk("resolve", { reason: "Bulk resolved from incidents page" })}
-                    style={{ minHeight: 44 }}
-                  >
-                    <ShieldCheck size={15} />
-                    Resolve
-                  </button>
-                  <select
-                    value={bulkMuteDuration}
-                    onChange={(event) => setBulkMuteDuration(event.currentTarget.value)}
-                    className="incident-text-input"
-                    aria-label="Snooze duration for selected incidents"
-                    style={{ minHeight: 44 }}
-                  >
-                    {MUTE_DURATIONS.map((d) => (
-                      <option key={d.ms} value={String(d.ms)}>{d.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      const ms = Number(bulkMuteDuration);
-                      runBulk("mute", { reason: "Bulk muted from incidents page", ...(ms > 0 ? { durationMs: ms } : {}) });
-                    }}
-                    style={{ minHeight: 44 }}
-                  >
-                    <BellOff size={15} />
-                    Snooze
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={bulkBusy}
-                    onClick={() => setSelectedIds(new Set())}
-                    style={{ minHeight: 44 }}
-                  >
-                    Clear selection
-                  </button>
-                </div>
-              </div>
-            )}
-            {bulkMessage && (
-              <div className={`loading-dim${/fail|error/i.test(bulkMessage) ? " error" : ""}`} style={{ marginBottom: 12 }}>
-                {bulkMessage}
-              </div>
-            )}
-            <TableControls {...reasonerControls.controlsProps} searchPlaceholder="Filter workflow incidents..." />
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th className="checkbox-col" aria-label="select">
-                    <input
-                      type="checkbox"
-                      checked={allOnPageSelected}
-                      onChange={(event) => toggleSelectAllOnPage(event.target.checked)}
-                      aria-label="Select all incidents on this page"
-                    />
-                  </th>
-                  <th className="expander-col" aria-label="details"></th>
-                  <th {...reasonerControls.sortHeaderProps("status")} style={{ width: 140 }}>status</th>
-                  <th>incident</th>
-                  <th {...reasonerControls.sortHeaderProps("failureClass")} style={{ width: 160 }}>class</th>
-                  <th style={{ width: 150 }}>owner</th>
-                  <th {...reasonerControls.sortHeaderProps("count")} style={{ width: 120 }}>count</th>
-                  <th {...reasonerControls.sortHeaderProps("lastSeen")} style={{ width: 150 }}>last seen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reasonerControls.rows.map((incident) => {
-                  const key = reasonerControls.getRowKey(incident);
-                  const expanded = reasonerControls.isExpanded(key);
-                  return (
-                    <Fragment key={key}>
-                      <tr className="data-row-clickable" onClick={() => reasonerControls.toggleExpanded(key)}>
-                        <td className="checkbox-col" onClick={(event) => event.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(incident.id)}
-                            onChange={(event) => toggleSelected(incident.id, event.target.checked)}
-                            aria-label={`Select ${incident.title}`}
-                          />
-                        </td>
-                        <td className="expander-col">
-                          <button type="button" className="table-expander" aria-label={expanded ? "Collapse lifecycle" : "Expand lifecycle"}>
-                            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                          </button>
-                        </td>
-                        <td>
-                          <Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill>
-                          {incident.autoClosed && <Pill color="gray">auto-closed</Pill>}
-                          {incident.muteActive && <Pill color="gray">muted</Pill>}
-                        </td>
-                        <td>
-                          <strong>{incident.title}</strong>
-                          <div className="mono dim" style={{ marginTop: 3, fontSize: 11 }}>{incident.id}</div>
-                        </td>
-                        <td><Pill color="blue">{incident.failureClass}</Pill></td>
-                        <td>{incident.owner ? incident.owner : <span className="dim">unassigned</span>}</td>
-                        <td className="mono">{incident.occurrenceCount}</td>
-                        <td className="mono dim">{relTime(incident.lastSeen)}</td>
+                              <div className="mono dim" style={{ fontSize: 11, marginTop: 3 }}>{focus}</div>
+                            </td>
+                            <td data-label="Detected" className="mono dim">{relTime(entry.ts)}</td>
+                            <td data-no-label style={{ textAlign: "right" }} onClick={(event) => event.stopPropagation()}>
+                              <Link href={href} className="v5-btn ghost">
+                                <ExternalLink size={13} />
+                                View detection
+                              </Link>
+                            </td>
+                          </tr>
+                          {expanded && (
+                            <tr key={`${key}:detail`} className="data-row-detail">
+                              <td colSpan={6} data-no-label>
+                                <div className="data-row-detail-inner">
+                                  <div className="data-row-detail-grid">
+                                    <div><span>source</span><strong>{focus}</strong></div>
+                                    <div><span>manual page</span><strong>{entry.manualPageHref ?? "/insights"}</strong></div>
+                                    <div><span>detected</span><strong>{new Date(entry.ts).toISOString()}</strong></div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    {controls.filteredCount === 0 && (
+                      <tr>
+                        <td colSpan={6} data-no-label style={{ color: "var(--text-muted)" }}>no incidents match the current filter</td>
                       </tr>
-                      {expanded && (
-                        <tr key={`${key}:detail`} className="data-row-detail">
-                          <td colSpan={8}>
-                            <div className="data-row-detail-inner">
-                              <IncidentLifecycleCard incident={incident} onChanged={refresh} />
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-                {reasonerControls.filteredCount === 0 && (
-                  <tr>
-                    <td colSpan={8} className="loading-dim">no workflow incidents match the current filter</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      </Reveal>
+
+      <Reveal delay={0.16}>
+        <section className="v5-section">
+          <div className="v5-section-head">
+            <div className="v5-section-title">Reasoner incidents · SLA workflow</div>
+            {mutedHiddenCount > 0 && (
+              <button
+                type="button"
+                className="v5-btn ghost"
+                onClick={() => setShowSnoozed((current) => !current)}
+              >
+                <BellOff size={13} />
+                {showSnoozed ? `showing ${mutedHiddenCount} snoozed — hide` : `${mutedHiddenCount} snoozed hidden — show`}
+              </button>
+            )}
           </div>
-        )}
-      </section>
+          {reasonerIncidents.length === 0 ? (
+            <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+              No durable incident rows — reasoner and sentinel incidents with lifecycle state appear here after they are detected.
+            </p>
+          ) : (
+            <>
+              {selectedIds.size > 0 && (
+                <div className="v5-card flat-hover" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
+                  <strong style={{ color: "var(--text-bright)" }}>{selectedIds.size} selected</strong>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+                    <button
+                      type="button"
+                      className="v5-btn ghost"
+                      disabled={bulkBusy}
+                      onClick={() => runBulk("acknowledge")}
+                    >
+                      <CheckCircle2 size={15} />
+                      Acknowledge
+                    </button>
+                    <button
+                      type="button"
+                      className="v5-btn ghost"
+                      disabled={bulkBusy}
+                      onClick={() => runBulk("resolve", { reason: "Bulk resolved from incidents page" })}
+                    >
+                      <ShieldCheck size={15} />
+                      Resolve
+                    </button>
+                    <select
+                      value={bulkMuteDuration}
+                      onChange={(event) => setBulkMuteDuration(event.currentTarget.value)}
+                      className="incident-text-input"
+                      aria-label="Snooze duration for selected incidents"
+                      style={{ minHeight: 40 }}
+                    >
+                      {MUTE_DURATIONS.map((d) => (
+                        <option key={d.ms} value={String(d.ms)}>{d.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="v5-btn ghost"
+                      disabled={bulkBusy}
+                      onClick={() => {
+                        const ms = Number(bulkMuteDuration);
+                        runBulk("mute", { reason: "Bulk muted from incidents page", ...(ms > 0 ? { durationMs: ms } : {}) });
+                      }}
+                    >
+                      <BellOff size={15} />
+                      Snooze
+                    </button>
+                    <button
+                      type="button"
+                      className="v5-btn ghost"
+                      disabled={bulkBusy}
+                      onClick={() => setSelectedIds(new Set())}
+                    >
+                      Clear selection
+                    </button>
+                  </div>
+                </div>
+              )}
+              {bulkMessage && (
+                <div className="v5-card flat-hover" style={{ marginBottom: 12, fontSize: 13, color: /fail|error/i.test(bulkMessage) ? "var(--red)" : "var(--text-dim)" }}>
+                  {bulkMessage}
+                </div>
+              )}
+              <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+                <TableControls {...reasonerControls.controlsProps} searchPlaceholder="Filter workflow incidents..." />
+              </div>
+              <div className="v5-table-wrap">
+                <table className="v5-table responsive">
+                  <thead>
+                    <tr>
+                      <th className="checkbox-col" aria-label="select">
+                        <input
+                          type="checkbox"
+                          checked={allOnPageSelected}
+                          onChange={(event) => toggleSelectAllOnPage(event.target.checked)}
+                          aria-label="Select all incidents on this page"
+                        />
+                      </th>
+                      <th className="expander-col" aria-label="details"></th>
+                      <th {...reasonerControls.sortHeaderProps("status")} style={{ width: 140 }}>status</th>
+                      <th>incident</th>
+                      <th {...reasonerControls.sortHeaderProps("failureClass")} style={{ width: 160 }}>class</th>
+                      <th style={{ width: 150 }}>owner</th>
+                      <th {...reasonerControls.sortHeaderProps("count")} style={{ width: 120 }}>count</th>
+                      <th {...reasonerControls.sortHeaderProps("lastSeen")} style={{ width: 150 }}>last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reasonerControls.rows.map((incident) => {
+                      const key = reasonerControls.getRowKey(incident);
+                      const expanded = reasonerControls.isExpanded(key);
+                      return (
+                        <Fragment key={key}>
+                          <tr className="data-row-clickable" onClick={() => reasonerControls.toggleExpanded(key)}>
+                            <td className="checkbox-col" data-no-label onClick={(event) => event.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(incident.id)}
+                                onChange={(event) => toggleSelected(incident.id, event.target.checked)}
+                                aria-label={`Select ${incident.title}`}
+                              />
+                            </td>
+                            <td className="expander-col" data-no-label>
+                              <button type="button" className="table-expander" aria-label={expanded ? "Collapse lifecycle" : "Expand lifecycle"}>
+                                {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                              </button>
+                            </td>
+                            <td data-label="Status">
+                              <Pill color={incident.status === "resolved" ? "green" : "red"}>{incident.status}</Pill>
+                              {incident.autoClosed && <Pill color="gray">auto-closed</Pill>}
+                              {incident.muteActive && <Pill color="gray">muted</Pill>}
+                            </td>
+                            <td data-label="Incident">
+                              <strong>{incident.title}</strong>
+                              <div className="mono dim" style={{ marginTop: 3, fontSize: 11 }}>{incident.id}</div>
+                            </td>
+                            <td data-label="Class"><Pill color="blue">{incident.failureClass}</Pill></td>
+                            <td data-label="Owner">{incident.owner ? incident.owner : <span className="dim">unassigned</span>}</td>
+                            <td data-label="Count" className="mono">{incident.occurrenceCount}</td>
+                            <td data-label="Last seen" className="mono dim">{relTime(incident.lastSeen)}</td>
+                          </tr>
+                          {expanded && (
+                            <tr key={`${key}:detail`} className="data-row-detail">
+                              <td colSpan={8} data-no-label>
+                                <div className="data-row-detail-inner">
+                                  <IncidentLifecycleCard incident={incident} onChanged={refresh} />
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    {reasonerControls.filteredCount === 0 && (
+                      <tr>
+                        <td colSpan={8} data-no-label style={{ color: "var(--text-muted)" }}>no workflow incidents match the current filter</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      </Reveal>
     </div>
   );
 }

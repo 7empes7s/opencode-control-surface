@@ -52,6 +52,20 @@ type StreamItem = {
 
 type CodexSession = CodexSessionMeta & { messages: CodexMessage[] };
 
+/** ≤900px → sessions sidebar collapses behind the topbar toggle (drawer mode). */
+function useMobileDrawer() {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 900px)").matches : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 900px)");
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isMobile;
+}
+
 function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated: (s: CodexSession) => void }) {
   const [dir, setDir] = useState("/opt");
   const [title, setTitle] = useState("");
@@ -78,7 +92,17 @@ function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-box oc-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-box oc-modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--glass)",
+          backdropFilter: "blur(20px) saturate(1.3)",
+          WebkitBackdropFilter: "blur(20px) saturate(1.3)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-lg)",
+        }}
+      >
         <div className="modal-title">New Codex session</div>
         <div className="modal-message">Working directory shapes everything Codex sees.</div>
 
@@ -86,6 +110,7 @@ function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated:
           <label className="modal-input-label">Directory</label>
           <input
             className="modal-input"
+            style={{ borderRadius: "var(--r-md)", minHeight: 44 }}
             value={dir}
             onChange={(e) => setDir(e.target.value)}
             placeholder="/opt/newsbites"
@@ -96,6 +121,7 @@ function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated:
           <label className="modal-input-label">Title (optional)</label>
           <input
             className="modal-input"
+            style={{ borderRadius: "var(--r-md)", minHeight: 44 }}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g. Investigate doctor errors"
@@ -106,7 +132,7 @@ function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated:
           <div className="oc-dir-group-label">Presets</div>
           <div className="oc-dir-chips">
             {PRESET_DIRS.map((d) => (
-              <button key={d} type="button" className="oc-dir-chip" onClick={() => setDir(d)}>
+              <button key={d} type="button" className="oc-dir-chip" style={{ borderRadius: 999, minHeight: 32 }} onClick={() => setDir(d)}>
                 <FolderOpen size={11} /> {d}
               </button>
             ))}
@@ -116,8 +142,8 @@ function NewCodexModal({ onClose, onCreated }: { onClose: () => void; onCreated:
         {err && <div className="modal-error">{err}</div>}
 
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" onClick={submit} disabled={busy}>
+          <button className="v5-btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="v5-btn primary" onClick={submit} disabled={busy}>
             {busy ? "Creating…" : "Create"}
           </button>
         </div>
@@ -141,6 +167,7 @@ export function CodexPage() {
   const [actionFilter, setActionFilter] = useState<ActionFilter>("all");
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const isMobile = useMobileDrawer();
 
   const loadList = async () => {
     try {
@@ -361,16 +388,37 @@ export function CodexPage() {
   }, [active?.messages, liveItems]);
 
   return (
-    <div className="oc-shell codex-shell">
-      <header className="oc-topbar">
-        <button className="oc-icon-btn" aria-label="Sessions" onClick={() => setDrawerOpen(true)}>
+    <div
+      className="oc-shell codex-shell"
+      style={isMobile ? {
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gridTemplateRows: "52px minmax(0, 1fr)",
+        gridTemplateAreas: '"topbar" "main"',
+      } : undefined}
+    >
+      <header
+        className="oc-topbar"
+        style={{
+          background: "var(--glass)",
+          backdropFilter: "blur(18px) saturate(1.3)",
+          WebkitBackdropFilter: "blur(18px) saturate(1.3)",
+          borderBottom: "1px solid var(--border)",
+          ...(isMobile ? { height: 52 } : {}),
+        }}
+      >
+        <button
+          className="oc-icon-btn"
+          aria-label="Sessions"
+          onClick={() => setDrawerOpen(true)}
+          style={{ borderRadius: "var(--r-md)", ...(isMobile ? {} : { display: "none" }) }}
+        >
           <Menu size={18} strokeWidth={1.75} />
         </button>
         <div className="oc-topbar-titles">
-          <div className="oc-topbar-title">{active?.title ?? "Codex"}</div>
+          <div className="oc-topbar-title" style={{ fontFamily: "var(--display)" }}>{active?.title ?? "Codex"}</div>
           {active?.directory && <div className="oc-topbar-dir">{active.directory}</div>}
         </div>
-        <span className="oc-model-btn" style={{ cursor: "default" }}>
+        <span className="oc-model-btn" style={{ cursor: "default", borderRadius: "var(--r-md)" }}>
           <Cpu size={13} strokeWidth={1.75} />
           <span className="oc-model-label">codex-cli</span>
           <ChevronDown size={12} style={{ opacity: 0.3 }} />
@@ -396,19 +444,54 @@ export function CodexPage() {
         )}
       </header>
 
-      <aside className={`oc-sessions${drawerOpen ? " open" : ""}`}>
-        <div className="oc-sessions-head">
+      <aside
+        className={`oc-sessions${drawerOpen ? " open" : ""}`}
+        style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0,
+          width: "min(86vw, 340px)", maxWidth: 340, height: "100dvh", zIndex: 100,
+          transform: drawerOpen ? "translateX(0)" : "translateX(-100%)",
+          transition: "transform 0.28s var(--ease-out)",
+          background: "var(--bg-panel)",
+          borderRight: "1px solid var(--border)",
+        } : {
+          background: "var(--glass)",
+          backdropFilter: "blur(14px) saturate(1.2)",
+          WebkitBackdropFilter: "blur(14px) saturate(1.2)",
+        }}
+      >
+        <div className="oc-sessions-head" style={isMobile ? { display: "flex" } : undefined}>
           <span className="oc-sessions-title">Codex sessions</span>
-          <button className="oc-icon-btn oc-drawer-close" aria-label="Close" onClick={() => setDrawerOpen(false)}>
+          <button
+            className="oc-icon-btn oc-drawer-close"
+            aria-label="Close"
+            onClick={() => setDrawerOpen(false)}
+            style={{ borderRadius: "var(--r-md)", ...(isMobile ? { display: "flex" } : {}) }}
+          >
             <X size={16} strokeWidth={1.75} />
           </button>
         </div>
         <div className="oc-panel">
-          <button className="oc-new-session" onClick={openNewSession}>
+          <button
+            className="oc-new-session"
+            onClick={openNewSession}
+            style={{
+              borderRadius: "var(--r-md)",
+              minHeight: 44,
+              border: "1px solid var(--border-glow)",
+              background: "var(--grad-accent-soft)",
+              color: "var(--text-bright)",
+            }}
+          >
             <Plus size={14} strokeWidth={2} /> New session
           </button>
           <div className="oc-session-list">
-            {loading && <div className="oc-session-empty">loading…</div>}
+            {loading && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 2px" }}>
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="v5-skeleton" style={{ height: 54 }} />
+                ))}
+              </div>
+            )}
             {!loading && orderedSessions.length === 0 && (
               <div className="oc-session-empty">no sessions yet</div>
             )}
@@ -419,10 +502,26 @@ export function CodexPage() {
                   key={s.id}
                   className={`oc-session-item${isActive ? " active" : ""}`}
                   onClick={() => selectSession(s.id)}
+                  style={{
+                    border: `1px solid ${isActive ? "var(--border-glow)" : "var(--border)"}`,
+                    borderRadius: "var(--r-md)",
+                    background: isActive ? "var(--grad-accent-soft)" : "var(--bg-sub)",
+                    padding: "10px 12px",
+                    marginBottom: 8,
+                    alignItems: "center",
+                  }}
                 >
                   <div className="oc-session-content">
-                    <div className="oc-session-title">{s.title}</div>
-                    <div className="oc-session-meta">
+                    <div
+                      className="oc-session-title"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                    >
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</span>
+                      {s.running
+                        ? <span className="v5-pill ok" style={{ flexShrink: 0 }}>running</span>
+                        : <span className="v5-pill" style={{ flexShrink: 0 }}>idle</span>}
+                    </div>
+                    <div className="oc-session-meta" style={{ marginTop: 4 }}>
                       <span className="oc-session-dir">{s.directory}</span>
                       <span>
                         {s.messageCount} msg · {formatDistanceToNowStrict(s.updatedAt, { addSuffix: true })}
@@ -432,6 +531,7 @@ export function CodexPage() {
                   <button
                     className="oc-session-del"
                     aria-label="Delete"
+                    style={{ borderRadius: "var(--r-sm)" }}
                     onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                   >
                     <Trash2 size={13} />
@@ -442,7 +542,7 @@ export function CodexPage() {
           </div>
         </div>
       </aside>
-      {drawerOpen && <div className="oc-drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
+      {isMobile && drawerOpen && <div className="oc-drawer-backdrop" style={{ display: "block" }} onClick={() => setDrawerOpen(false)} />}
 
       <main className="oc-main">
         <AgentDiscoveryStrip agent="codex" onInsert={(t) => setInput((prev) => prev + t)} />
@@ -460,7 +560,7 @@ export function CodexPage() {
             <FileText size={32} strokeWidth={1.25} />
             <div className="oc-empty-title">No session</div>
             <div className="oc-empty-sub">Open the menu to pick a session, or start a new one.</div>
-            <button className="btn btn-primary" onClick={openNewSession}>
+            <button className="v5-btn primary" onClick={openNewSession}>
               <Plus size={14} /> New session
             </button>
             <div className="oc-codex-note">
@@ -479,7 +579,7 @@ export function CodexPage() {
               if (isUser) {
                 return (
                   <div key={m.id} className="msg-wrap">
-                    <div className="msg-user"><div className="msg-user-bubble">{m.content}</div></div>
+                    <div className="msg-user"><div className="msg-user-bubble v5-msg user">{m.content}</div></div>
                   </div>
                 );
               }
@@ -491,7 +591,7 @@ export function CodexPage() {
               if (!showContent && visibleItems.length === 0 && !isSystem) return null;
               return (
                 <div key={m.id} className="msg-wrap">
-                  <div className="msg-assistant">
+                  <div className="msg-assistant v5-msg">
                     <div className={`msg-label model${isSystem ? " err" : ""}`}>
                       {isSystem ? "codex (error)" : "codex"}
                     </div>
@@ -505,7 +605,7 @@ export function CodexPage() {
             })}
             {sending && (
               <div className="msg-wrap">
-                <div className="msg-assistant">
+                <div className="msg-assistant v5-msg">
                   <div className="msg-label model">codex</div>
                   {active.running && liveItems.length === 0 ? (
                     <div className="part-text oc-codex-thinking">
@@ -626,7 +726,7 @@ function CodexLiveItem({ item }: { item: StreamItem }) {
   if (t === "reasoning") {
     const detail = codexItemDetail(item);
     return (
-      <div className="codex-item codex-item-reasoning">
+      <div className="codex-item codex-item-reasoning" style={{ borderRadius: "var(--r-md)" }}>
         <div className="codex-item-head">
           <Brain size={11} strokeWidth={2} /> reasoning
         </div>
@@ -637,10 +737,10 @@ function CodexLiveItem({ item }: { item: StreamItem }) {
   if (t === "command_execution" || t === "command" || t === "tool_call") {
     const detail = codexItemDetail(item);
     return (
-      <div className="codex-item codex-item-tool">
+      <div className="codex-item codex-item-tool" style={{ borderRadius: "var(--r-md)" }}>
         <div className="codex-item-head">
           <Wrench size={11} strokeWidth={2} /> {t.replace(/_/g, " ")}
-          <span className={`codex-item-kind ${codexActionCategory(item)}`}>{codexActionCategory(item)}</span>
+          <span className={`codex-item-kind ${codexActionCategory(item)}`} style={{ borderRadius: 999 }}>{codexActionCategory(item)}</span>
         </div>
         {detail && <div className="codex-item-body mono">{detail}</div>}
       </div>
@@ -649,10 +749,10 @@ function CodexLiveItem({ item }: { item: StreamItem }) {
   // Unknown item type — show a compact pill so we don't lose visibility.
   const detail = codexItemDetail(item);
   return (
-    <div className="codex-item codex-item-unknown">
+    <div className="codex-item codex-item-unknown" style={{ borderRadius: "var(--r-md)" }}>
       <div className="codex-item-head">
         <MessageSquare size={11} strokeWidth={2} /> {t}
-        {isCodexActionItem(item) && <span className={`codex-item-kind ${codexActionCategory(item)}`}>{codexActionCategory(item)}</span>}
+        {isCodexActionItem(item) && <span className={`codex-item-kind ${codexActionCategory(item)}`} style={{ borderRadius: 999 }}>{codexActionCategory(item)}</span>}
       </div>
       {detail && <div className="codex-item-body">{detail}</div>}
     </div>

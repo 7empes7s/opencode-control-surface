@@ -1,13 +1,13 @@
 import { Fragment, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, Copy, GitBranch, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Boxes, ChevronDown, ChevronRight, Copy, GitBranch, KeyRound, Radar, ShieldCheck, Snowflake, Waypoints } from "lucide-react";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { authFetch } from "../lib/authFetch";
 import { ConfirmModal } from "../components/ConfirmModal";
-import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls } from "../hooks/useTableControls";
 import { RatingsSection } from "./RatingsPage";
+import { Reveal } from "../components/v5/ui";
 import {
   credentialHealthView,
   groupVisibleModels,
@@ -23,7 +23,24 @@ import type { ChainDiff, ModelChainSyncDetail, ModelsDetail } from "../../server
 export type { ModelsSortKey } from "./modelsHealthView";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = color === "green" ? "ok" : color === "amber" ? "warn" : color === "red" ? "err" : color === "blue" ? "info" : "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
+}
+
+function V5Section({ id, title, icon, right, delay = 0, children }: {
+  id?: string; title: string; icon?: React.ReactNode; right?: React.ReactNode; delay?: number; children: React.ReactNode;
+}) {
+  return (
+    <Reveal delay={delay}>
+      <div className="v5-section" id={id}>
+        <div className="v5-section-head">
+          <div className="v5-section-title">{icon}{title}</div>
+          {right}
+        </div>
+        <div className="v5-card flat-hover">{children}</div>
+      </div>
+    </Reveal>
+  );
 }
 
 function qualityColor(s: string): string {
@@ -171,7 +188,7 @@ function ModelLifecyclePanel({
       <div className="model-lifecycle-panel">
         {healthEvidence}
         <div className="loading-dim error">Lifecycle did not load: {error}</div>
-        <button className="btn btn-sm btn-ghost model-lifecycle-action" onClick={refresh}>Retry</button>
+        <button className="v5-btn ghost model-lifecycle-action" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={refresh}>Retry</button>
       </div>
     );
   }
@@ -251,7 +268,8 @@ function ModelLifecyclePanel({
             <div className="model-lifecycle-note">No promotion approval exists for this model.</div>
           )}
           <button
-            className="btn btn-sm btn-primary model-lifecycle-action"
+            className="v5-btn primary model-lifecycle-action"
+            style={{ minHeight: 36, padding: "7px 14px", fontSize: 12 }}
             disabled={gate !== "needs-approval"}
             onClick={() => onRequestPromotion(logicalName)}
           >
@@ -337,9 +355,10 @@ function FallbackChainSyncSection() {
   const changedCount = data?.chains.filter((chain) => !chain.inSync).length ?? 0;
 
   return (
-    <SectionCard
-      title="fallback chain sync"
-      defaultOpen={true}
+    <V5Section
+      title="Fallback chain sync"
+      icon={<GitBranch size={16} />}
+      delay={0.18}
       right={data ? (
         <div className="chain-sync-summary">
           <Pill color={data.anyChanges ? "amber" : "green"}>
@@ -349,12 +368,17 @@ function FallbackChainSyncSection() {
         </div>
       ) : null}
     >
-      <div className="section-card-body chain-sync-body">
-        {loading && !data ? <div className="loading-dim">loading chain sync preview...</div> : null}
+      <div className="chain-sync-body">
+        {loading && !data ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <div className="v5-skeleton" style={{ height: 18 }} />
+            <div className="v5-skeleton" style={{ height: 18, width: "70%" }} />
+          </div>
+        ) : null}
         {error && !data ? (
           <div className="chain-sync-error">
             <span>Chain sync preview did not load: {error}</span>
-            <button className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button>
+            <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={refresh}>Retry</button>
           </div>
         ) : null}
         {data ? (
@@ -392,7 +416,7 @@ function FallbackChainSyncSection() {
                         <code>{proposal.suggestion}</code>
                         <span>{proposal.rationale}</span>
                       </div>
-                      <button className="btn btn-sm btn-ghost" onClick={() => copyText(copyKey, proposal.suggestion)}>
+                      <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => copyText(copyKey, proposal.suggestion)}>
                         <Copy size={14} /> {copied === copyKey ? "Copied" : "Copy line"}
                       </button>
                     </div>
@@ -403,10 +427,10 @@ function FallbackChainSyncSection() {
             <div className="chain-sync-copy">
               <div className="chain-sync-instruction">1) paste the block into <span className="mono">router_settings.fallbacks</span> in /etc/litellm/config.yaml, 2) run the apply command (backs up + reloads)</div>
               <div className="chain-sync-actions">
-                <button className="btn btn-sm btn-ghost" onClick={() => copyText("block", data.correctedYamlBlock)}>
+                <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => copyText("block", data.correctedYamlBlock)}>
                   <Copy size={14} /> Copy corrected block
                 </button>
-                <button className="btn btn-sm btn-ghost" onClick={() => copyText("command", data.applyCommand)}>
+                <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => copyText("command", data.applyCommand)}>
                   <Copy size={14} /> Copy apply command
                 </button>
                 {copied === "block" || copied === "command" ? <span className="action-feedback ok">copied {copied}</span> : null}
@@ -415,7 +439,7 @@ function FallbackChainSyncSection() {
           </>
         ) : null}
       </div>
-    </SectionCard>
+    </V5Section>
   );
 }
 
@@ -434,21 +458,14 @@ function CredentialsSection({ credentials }: { credentials: ModelsDetail["creden
   };
 
   return (
-    <SectionCard
+    <V5Section
       title="Credentials / API keys"
-      defaultOpen={true}
-      right={<span className="models-row-count">{rows.length} fresh observation{rows.length === 1 ? "" : "s"}</span>}
+      icon={<KeyRound size={16} />}
+      delay={0.1}
+      right={<span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-muted)" }}>{rows.length} fresh observation{rows.length === 1 ? "" : "s"}</span>}
     >
-      <div className="section-card-body table-wrap">
-        <table className="data-table credential-health-table">
-          <colgroup>
-            <col className="credential-env-col" />
-            <col className="credential-status-col" />
-            <col className="credential-freshness-col" />
-            <col className="credential-checked-col" />
-            <col className="credential-models-col" />
-            <col className="credential-guidance-col" />
-          </colgroup>
+      <div className="v5-table-wrap">
+        <table className="v5-table responsive">
           <thead>
             <tr>
               <th>Environment name</th>
@@ -461,21 +478,21 @@ function CredentialsSection({ credentials }: { credentials: ModelsDetail["creden
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={6} className="model-health-empty">No fresh credential-health evidence is available.</td></tr>
+              <tr><td colSpan={6} data-no-label style={{ color: "var(--text-muted)" }}>No fresh credential-health evidence is available.</td></tr>
             ) : rows.map((credential) => (
               <tr key={credential.envName}>
-                <td className="mono">{credential.envName}</td>
-                <td><Pill color={credential.statusColor}>{credential.statusLabel}</Pill></td>
-                <td><Pill color={credential.freshnessColor}>{credential.freshnessLabel}</Pill></td>
-                <td className="mono dim">{credential.checkedAge}</td>
-                <td className="mono credential-models-cell">{gatedModels(credential.gatedModels)}</td>
-                <td className="credential-guidance-cell">{credential.guidance}</td>
+                <td data-label="Environment" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{credential.envName}</td>
+                <td data-label="Status"><Pill color={credential.statusColor}>{credential.statusLabel}</Pill></td>
+                <td data-label="Freshness"><Pill color={credential.freshnessColor}>{credential.freshnessLabel}</Pill></td>
+                <td data-label="Checked" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{credential.checkedAge}</td>
+                <td data-label="Gated models" className="mono credential-models-cell">{gatedModels(credential.gatedModels)}</td>
+                <td data-label="Guidance" className="credential-guidance-cell">{credential.guidance}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </SectionCard>
+    </V5Section>
   );
 }
 
@@ -499,8 +516,31 @@ export function ModelsPage() {
     defaultSort: { key: "logicalName", dir: "asc" },
   });
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-pagehead">
+          <div className="v5-pagehead-title">Models</div>
+          <div className="v5-pagehead-sub">Inventory, health, discovery.</div>
+        </div>
+        <div className="v5-grid stats">
+          {[0, 1, 2, 3, 4].map((i) => <div key={i} className="v5-skeleton" style={{ height: 92 }} />)}
+        </div>
+        <div className="v5-section"><div className="v5-skeleton" style={{ height: 260 }} /></div>
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-pagehead">
+          <div className="v5-pagehead-title">Models</div>
+          <div className="v5-pagehead-sub">Inventory, health, discovery.</div>
+        </div>
+        <div className="v5-card" style={{ color: "var(--red)", fontSize: 13 }}>Models data did not load: {error}</div>
+      </div>
+    );
+  }
   if (!data) return null;
 
   const d = data;
@@ -509,31 +549,51 @@ export function ModelsPage() {
 
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Models</div>
-        <div className="stat-row">
-          <div className="stat-item">
-            <div className="stat-lbl">best heavy</div>
-            <div className="models-stat-value accent">{s.bestCloudHeavy ?? "—"}</div>
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-row">
+          <div>
+            <div className="v5-pagehead-title">Models</div>
+            <div className="v5-pagehead-sub">Inventory, health, discovery.</div>
           </div>
-          <div className="stat-item">
-            <div className="stat-lbl">best fast</div>
-            <div className="models-stat-value">{s.bestCloudFast ?? "—"}</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-lbl">best local</div>
-            <div className="models-stat-value">{s.bestLocal ?? "—"}</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-lbl">full check</div>
-            <div className="models-stat-value dim">{fmtAge(s.lastFullCheckAgo)}</div>
-          </div>
-          <div className="stat-item">
-            <div className="stat-lbl">quick check</div>
-            <div className="models-stat-value dim">{fmtAge(s.lastQuickCheckAgo)}</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button className="v5-btn ghost" onClick={() => setModal({ type: "run-check" })}>
+              Run health check
+            </button>
           </div>
         </div>
+        {(action.success || action.error || promotionState.success) && (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            {action.success && <span className="action-feedback ok">{action.success}</span>}
+            {action.error && <span className="action-feedback err">{action.error}</span>}
+            {promotionState.success && <span className="action-feedback ok">{promotionState.success}</span>}
+          </div>
+        )}
       </div>
+
+      <Reveal delay={0.02}>
+        <div className="v5-grid stats">
+          <div className="v5-card flat-hover v5-stat">
+            <div className="v5-card-label">best heavy</div>
+            <div className="v5-stat-value gradient" style={{ fontSize: "clamp(16px, 1.8vw, 22px)", wordBreak: "break-all" }}>{s.bestCloudHeavy ?? "—"}</div>
+          </div>
+          <div className="v5-card flat-hover v5-stat">
+            <div className="v5-card-label">best fast</div>
+            <div className="v5-stat-value" style={{ fontSize: "clamp(16px, 1.8vw, 22px)", wordBreak: "break-all" }}>{s.bestCloudFast ?? "—"}</div>
+          </div>
+          <div className="v5-card flat-hover v5-stat">
+            <div className="v5-card-label">best local</div>
+            <div className="v5-stat-value" style={{ fontSize: "clamp(16px, 1.8vw, 22px)", wordBreak: "break-all" }}>{s.bestLocal ?? "—"}</div>
+          </div>
+          <div className="v5-card flat-hover v5-stat">
+            <div className="v5-card-label">full check</div>
+            <div className="v5-stat-value" style={{ fontSize: "clamp(16px, 1.8vw, 22px)" }}>{fmtAge(s.lastFullCheckAgo)}</div>
+          </div>
+          <div className="v5-card flat-hover v5-stat">
+            <div className="v5-card-label">quick check</div>
+            <div className="v5-stat-value" style={{ fontSize: "clamp(16px, 1.8vw, 22px)" }}>{fmtAge(s.lastQuickCheckAgo)}</div>
+          </div>
+        </div>
+      </Reveal>
 
       {modal && (
         <ConfirmModal
@@ -610,44 +670,39 @@ export function ModelsPage() {
         />
       )}
 
-      <div className="models-summary-bar">
-        <div className="models-summary-group" aria-label="Health summary">
-          {healthSummaryItems(s.healthBucketSummary).map((item) => (
-            <Pill key={item.bucket} color={item.color}>{item.label} {item.count}</Pill>
-          ))}
+      <Reveal delay={0.06}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} aria-label="Health summary">
+            {healthSummaryItems(s.healthBucketSummary).map((item) => (
+              <Pill key={item.bucket} color={item.color}>{item.label} {item.count}</Pill>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} aria-label="Inventory and quality summary">
+            <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
+            <Pill color="gray">medium {s.availableByCapability.medium}</Pill>
+            <Pill color="gray">light {s.availableByCapability.light}</Pill>
+            {s.qualitySummary.blocked > 0 && <Pill color="red">blocked {s.qualitySummary.blocked}</Pill>}
+            {s.qualitySummary.degraded > 0 && <Pill color="amber">degraded {s.qualitySummary.degraded}</Pill>}
+            {s.qualitySummary.probation > 0 && <Pill color="amber">probation {s.qualitySummary.probation}</Pill>}
+            {s.newModelsAdded.length > 0 && <Pill color="green">+{s.newModelsAdded.length} new</Pill>}
+          </div>
         </div>
-        <div className="models-summary-group models-summary-inventory" aria-label="Inventory and quality summary">
-          <Pill color="blue">heavy {s.availableByCapability.heavy}</Pill>
-          <Pill color="gray">medium {s.availableByCapability.medium}</Pill>
-          <Pill color="gray">light {s.availableByCapability.light}</Pill>
-          {s.qualitySummary.blocked > 0 && <Pill color="red">blocked {s.qualitySummary.blocked}</Pill>}
-          {s.qualitySummary.degraded > 0 && <Pill color="amber">degraded {s.qualitySummary.degraded}</Pill>}
-          {s.qualitySummary.probation > 0 && <Pill color="amber">probation {s.qualitySummary.probation}</Pill>}
-          {s.newModelsAdded.length > 0 && <Pill color="green">+{s.newModelsAdded.length} new</Pill>}
-        </div>
-      </div>
-
-      <div className="action-bar models-action-bar">
-        <button className="btn btn-ghost" onClick={() => setModal({ type: "run-check" })}>
-          Run health check
-        </button>
-        {action.success && <span className="action-feedback ok">{action.success}</span>}
-        {action.error && <span className="action-feedback err">{action.error}</span>}
-        {promotionState.success && <span className="action-feedback ok">{promotionState.success}</span>}
-      </div>
+      </Reveal>
 
       <CredentialsSection credentials={d.credentials ?? []} />
 
       {/* All models table */}
-      <SectionCard
-        title="all models"
+      <V5Section
+        title="All models"
+        icon={<Boxes size={16} />}
+        delay={0.14}
         id="current"
-        defaultOpen={true}
-        right={<span className="models-row-count">{modelsCtrl.rows.length} on page · {modelsCtrl.filteredCount} match</span>}
+        right={<span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-muted)" }}>{modelsCtrl.rows.length} on page · {modelsCtrl.filteredCount} match</span>}
       >
-        <div className="section-card-body table-wrap">
+        <div>
           <TableControls {...modelsCtrl.controlsProps} searchPlaceholder="Filter by model, provider, or health..." />
-          <table className="data-table models-table">
+          <div className="v5-table-wrap" style={{ marginTop: 10 }}>
+          <table className="v5-table responsive models-table">
             <colgroup>
               <col className="name-col" />
               <col className="health-col" />
@@ -679,7 +734,7 @@ export function ModelsPage() {
             {modelsCtrl.rows.length === 0 ? (
               <tbody>
                 <tr>
-                  <td className="model-health-empty" colSpan={14}>
+                  <td data-no-label style={{ color: "var(--text-muted)" }} colSpan={14}>
                     {modelsCtrl.query.trim() ? "No models match this filter." : "No model evidence is available yet."}
                   </td>
                 </tr>
@@ -699,7 +754,7 @@ export function ModelsPage() {
                   const health = modelHealthView(m);
                   return <Fragment key={m.logicalName}>
                     <tr className={expandedModel === m.logicalName ? "model-row expanded" : "model-row"}>
-                    <td className={`mono model-name-cell ${m.available ? "available" : "unavailable"}`}>
+                    <td data-label="Model" className={`mono model-name-cell ${m.available ? "available" : "unavailable"}`}>
                       <button
                         className="model-expand-btn"
                         onClick={() => setExpandedModel(expandedModel === m.logicalName ? null : m.logicalName)}
@@ -710,44 +765,44 @@ export function ModelsPage() {
                       </button>
                       <span title={m.logicalName}>{m.logicalName}</span>
                     </td>
-                    <td className="health-col"><Pill color={health.badge.color}>{health.badge.label}</Pill></td>
-                    <td><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
-                    <td className="quality-col"><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
-                    <td className="actions-col">
+                    <td data-label="Health" className="health-col"><Pill color={health.badge.color}>{health.badge.label}</Pill></td>
+                    <td data-label="Capability"><Pill color={m.capability === "heavy" ? "blue" : "gray"}>{m.capability}</Pill></td>
+                    <td data-label="Quality" className="quality-col"><Pill color={qualityColor(m.qualityStatus)}>{m.qualityStatus}</Pill></td>
+                    <td data-label="Actions" className="actions-col">
                       <div className="model-row-actions">
                         {m.qualityStatus === "blocked" ? (
-                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
+                          <button className="v5-btn primary" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12 }} onClick={() => setModal({ type: "unblock", model: m.logicalName })}>unblock</button>
                         ) : m.qualityStatus === "probation" ? (
                           <>
-                            <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
-                            <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                            <button className="v5-btn primary" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12 }} onClick={() => setModal({ type: "probation-clear", model: m.logicalName })}>clear</button>
+                            <button className="v5-btn ghost" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12, color: "var(--red)" }} onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
                           </>
                         ) : (
-                          <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
+                          <button className="v5-btn ghost" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12, color: "var(--red)" }} onClick={() => setModal({ type: "block", model: m.logicalName })}>block</button>
                         )}
                       </div>
                     </td>
-                    <td className="price-col">
+                    <td data-label="Pricing" className="price-col">
                       <div className="model-pricing-cell">
                         {m.isFree && <Pill color="green">free</Pill>}
                         {m.isPaid && !m.isFree && <Pill color="amber">paid</Pill>}
                         {m.isOpenCode && <Pill color="blue">OpenCode</Pill>}
                       </div>
                     </td>
-                    <td className="type-col"><Pill>{m.providerType}</Pill></td>
-                    <td className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
-                    <td className="dim mono models-col-provider provider-col">{m.provider}</td>
-                    <td className="mono dim ctx-col">{fmtContextWindow(m.contextWindow)}</td>
-                    <td className="mono dim rating-col">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
-                    <td className="mono dim latency-col models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
-                    <td className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
-                    <td className="mono dim models-col-failures">
+                    <td data-label="Type" className="type-col"><Pill>{m.providerType}</Pill></td>
+                    <td data-label="CLI" className="cli-col">{m.isCli ? <Pill color="blue">CLI</Pill> : "—"}</td>
+                    <td data-label="Provider" className="dim mono models-col-provider provider-col">{m.provider}</td>
+                    <td data-label="Context" className="mono dim ctx-col">{fmtContextWindow(m.contextWindow)}</td>
+                    <td data-label="Rating" className="mono dim rating-col">{(m as any).rating ? (m as any).rating.toFixed(1) : "—"}</td>
+                    <td data-label="Latency" className="mono dim latency-col models-col-latency">{m.latency != null ? `${m.latency}ms` : "—"}</td>
+                    <td data-label="JSON" className="models-col-json"><Pill color={m.jsonOk ? "green" : "red"}>{m.jsonOk ? "✓" : "✗"}</Pill></td>
+                    <td data-label="Failures" className="mono dim models-col-failures">
                       {m.recentFailures > 0 ? <span className="text-red">{m.recentFailures}</span> : "0"}
                     </td>
                     </tr>
                     {expandedModel === m.logicalName ? (
                       <tr className="model-lifecycle-row">
-                        <td colSpan={14}>
+                        <td colSpan={14} data-no-label>
                           <ModelLifecyclePanel
                             logicalName={m.logicalName}
                             health={health}
@@ -762,14 +817,15 @@ export function ModelsPage() {
               </tbody>
             ))}
           </table>
+          </div>
         </div>
-      </SectionCard>
+      </V5Section>
 
       <FallbackChainSyncSection />
 
       {/* Fallback chains */}
-      <SectionCard title="fallback chains" defaultOpen={false}>
-        <div className="section-card-body" style={{ padding: "12px 14px" }}>
+      <V5Section title="Fallback chains" icon={<Waypoints size={16} />} delay={0.22}>
+        <div>
           <div className="chain-list">
             {Object.entries(d.fallbacks).map(([chain, models]) => (
               <div key={chain} className="chain-item">
@@ -781,72 +837,77 @@ export function ModelsPage() {
                 </div>
               </div>
             ))}
-            {Object.keys(d.fallbacks).length === 0 && <div className="loading-dim">no fallback chains in health file</div>}
+            {Object.keys(d.fallbacks).length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No fallback chains in health file.</div>}
           </div>
         </div>
-      </SectionCard>
+      </V5Section>
 
       {/* Cooldowns */}
-      <SectionCard
-        title="active cooldowns"
+      <V5Section
+        title="Active cooldowns"
+        icon={<Snowflake size={16} />}
+        delay={0.26}
         id="cooldowns"
-        defaultOpen={false}
-        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.cooldowns.length}</span>}
+        right={<span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-muted)" }}>{d.cooldowns.length}</span>}
       >
-        <div className="section-card-body table-wrap">
+        <div>
           {d.cooldowns.length === 0 ? (
-            <div className="loading-dim">no active cooldowns</div>
+            <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No active cooldowns.</div>
           ) : (
-            <table className="data-table">
-              <thead><tr><th>model</th><th>expires</th><th>reason</th><th></th></tr></thead>
-              <tbody>
-                {d.cooldowns.map((c) => (
-                  <tr key={c.model}>
-                    <td className="mono">{c.model}</td>
-                    <td className="mono dim">{new Date(c.expiresAt).toISOString().slice(0, 19).replace("T", " ")} UTC</td>
-                    <td className="dim">{c.reason ?? "—"}</td>
-                    <td>
-                      <button
-                        className="btn btn-sm btn-ghost"
-                        style={{ minHeight: 44 }}
-                        onClick={() => setModal({ type: "cooldown-clear", model: c.model })}
-                      >
-                        clear
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="v5-table-wrap">
+              <table className="v5-table responsive">
+                <thead><tr><th>Model</th><th>Expires</th><th>Reason</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {d.cooldowns.map((c) => (
+                    <tr key={c.model}>
+                      <td data-label="Model" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{c.model}</td>
+                      <td data-label="Expires" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{new Date(c.expiresAt).toISOString().slice(0, 19).replace("T", " ")} UTC</td>
+                      <td data-label="Reason" style={{ color: "var(--text-dim)" }}>{c.reason ?? "—"}</td>
+                      <td data-label="Actions">
+                        <button
+                          className="v5-btn ghost"
+                          style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }}
+                          onClick={() => setModal({ type: "cooldown-clear", model: c.model })}
+                        >
+                          clear
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-      </SectionCard>
+      </V5Section>
 
       {/* Discovery log */}
-      <SectionCard title="discovery log" id="new" defaultOpen={false}>
-        <div className="section-card-body table-wrap">
+      <V5Section title="Discovery log" icon={<Radar size={16} />} delay={0.3} id="new">
+        <div>
           {d.discoveryLog.length === 0 ? (
-            <div className="loading-dim">discovery log not yet created — will appear after next full model-health-check run</div>
+            <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Discovery log not yet created — will appear after next full model-health-check run.</div>
           ) : (
-            <table className="data-table">
-              <thead><tr><th>time</th><th>new models</th><th>total</th></tr></thead>
-              <tbody>
-                {[...d.discoveryLog].reverse().map((entry, i) => (
-                  <tr key={i}>
-                    <td className="mono dim">{entry.ts.slice(0, 19).replace("T", " ")}</td>
-                    <td>
-                      {entry.newModelsAdded.length > 0
-                        ? entry.newModelsAdded.map((m) => <span key={m} className="chain-model" style={{ marginRight: 4 }}>{m}</span>)
-                        : <span className="dim">none</span>}
-                    </td>
-                    <td className="mono dim">{entry.totalModelCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="v5-table-wrap">
+              <table className="v5-table responsive">
+                <thead><tr><th>Time</th><th>New models</th><th>Total</th></tr></thead>
+                <tbody>
+                  {[...d.discoveryLog].reverse().map((entry, i) => (
+                    <tr key={i}>
+                      <td data-label="Time" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{entry.ts.slice(0, 19).replace("T", " ")}</td>
+                      <td data-label="New models">
+                        {entry.newModelsAdded.length > 0
+                          ? entry.newModelsAdded.map((m) => <span key={m} className="chain-model" style={{ marginRight: 4 }}>{m}</span>)
+                          : <span style={{ color: "var(--text-dim)" }}>none</span>}
+                      </td>
+                      <td data-label="Total" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>{entry.totalModelCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-      </SectionCard>
+      </V5Section>
 
       <RatingsSection models={d.models} />
     </div>

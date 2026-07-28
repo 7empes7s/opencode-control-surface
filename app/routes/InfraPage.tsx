@@ -3,23 +3,46 @@ import { Link } from "wouter";
 import { useApi, fmtAge } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
-import { SectionCard } from "../components/SectionCard";
 import { authFetch } from "../lib/authFetch";
 import type { InfraDetail } from "../../server/api/types";
+import { Reveal, SectionHead } from "../components/v5/ui";
+import { Activity, Cloud, Cpu, Server, Timer, Wrench } from "lucide-react";
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = color === "green" ? "ok" : color === "amber" ? "warn" : color === "red" ? "err" : color === "blue" ? "info" : "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
 }
 
 function PctBar({ pct, warn = 80, crit = 95 }: { pct: number; warn?: number; crit?: number }) {
   const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0;
-  const tone = safePct >= crit ? "crit" : safePct >= warn ? "warn" : "ok";
+  const fill = safePct >= crit ? "var(--red)" : safePct >= warn ? "var(--amber-warn)" : "var(--grad-accent)";
   return (
-    <div className={`resource-meter ${tone}`} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePct)}>
-      <div className="resource-meter-track">
-        <div className="resource-meter-fill" style={{ width: `${safePct}%` }} />
+    <div
+      role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePct)}
+      style={{ display: "flex", alignItems: "center", gap: 10 }}
+    >
+      <div style={{ flex: 1, height: 6, borderRadius: 999, background: "var(--bg-sub)", overflow: "hidden" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${safePct}%`,
+            borderRadius: 999,
+            background: fill,
+            transition: "width 0.9s var(--ease-out, ease)",
+          }}
+        />
       </div>
-      <span className="resource-meter-value">{Math.round(safePct)}%</span>
+      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", minWidth: 36, textAlign: "right" }}>
+        {Math.round(safePct)}%
+      </span>
+    </div>
+  );
+}
+
+function CardLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 5, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+      {children}
     </div>
   );
 }
@@ -44,6 +67,8 @@ async function execAction(actionId: string, reason: string): Promise<{ ok: boole
   }
 }
 
+const SMALL_BTN = { minHeight: 34, padding: "6px 12px", fontSize: 12 } as const;
+
 export function InfraPage() {
   const { data, loading, error, refresh } = useApi<InfraDetail>("/api/infra", 30_000);
   const [modal, setModal] = useState<Modal | null>(null);
@@ -53,8 +78,31 @@ export function InfraPage() {
   const svcAction = useAction("/api/infra/service-restart");
   const timerAction = useAction("/api/infra/run-timer");
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-pagehead">
+          <div className="v5-pagehead-title">Infrastructure</div>
+          <div className="v5-pagehead-sub">Hetzner / Vast / GPU / services.</div>
+        </div>
+        <div className="v5-grid cards">
+          {[0, 1, 2].map((i) => <div key={i} className="v5-skeleton" style={{ height: 180 }} />)}
+        </div>
+        <div className="v5-section"><div className="v5-skeleton" style={{ height: 220 }} /></div>
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-pagehead">
+          <div className="v5-pagehead-title">Infrastructure</div>
+          <div className="v5-pagehead-sub">Hetzner / Vast / GPU / services.</div>
+        </div>
+        <div className="v5-card" style={{ color: "var(--red)", fontSize: 13 }}>Infrastructure data did not load: {error}</div>
+      </div>
+    );
+  }
   if (!data) return null;
 
   const d = data;
@@ -64,8 +112,9 @@ export function InfraPage() {
 
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Infrastructure</div>
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-title">Infrastructure</div>
+        <div className="v5-pagehead-sub">Hetzner / Vast / GPU / services.</div>
       </div>
 
       {modal && (
@@ -142,103 +191,103 @@ export function InfraPage() {
       )}
 
       {/* Operations */}
-      <SectionCard title="operations" id="ops" defaultOpen={true}>
-        <div className="section-card-body" style={{ padding: "12px 14px" }}>
-          {execSuccess && (
-            <div className="action-feedback ok" style={{ marginBottom: 8, fontSize: 12 }}>{execSuccess}</div>
-          )}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button
-              className="btn btn-sm btn-ghost"
-              style={{ minHeight: 44 }}
-              onClick={() => {
-                setExecSuccess(null);
-                setModal({
-                  type: "exec-action",
-                  actionId: "start-job:infra:vast-reconcile",
-                  title: "Run vast-reconcile?",
-                  message: "Runs /usr/local/sbin/vast-reconcile.sh to reconcile the Vast GPU tunnel state.",
-                });
-              }}
-            >
-              Vast reconcile
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              style={{ minHeight: 44 }}
-              onClick={() => {
-                setExecSuccess(null);
-                setModal({
-                  type: "exec-action",
-                  actionId: "start-job:infra:doctor-log-rotate",
-                  title: "Rotate doctor log?",
-                  message: "Compresses the current doctor-log.jsonl and resets it. Useful when the log exceeds the retention limit.",
-                });
-              }}
-            >
-              Rotate doctor log
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              style={{ minHeight: 44 }}
-              onClick={() => {
-                setExecSuccess(null);
-                setModal({
-                  type: "exec-action",
-                  actionId: "start-job:infra:litellm-reload",
-                  title: "Reload LiteLLM config?",
-                  message: "Restarts the LiteLLM service so it picks up config changes. Brief (~10s) gateway downtime expected.",
-                  danger: true,
-                });
-              }}
-            >
-              LiteLLM reload
-            </button>
-            <button
-              className="btn btn-sm btn-danger"
-              style={{ minHeight: 44 }}
-              onClick={() => {
-                setExecSuccess(null);
-                setModal({
-                  type: "service-restart",
-                  service: "cloudflared",
-                });
-              }}
-            >
-              Cloudflared restart
-            </button>
+      <Reveal delay={0.02}>
+        <div className="v5-section" id="ops" style={{ marginTop: 0 }}>
+          <SectionHead title="Operations" icon={<Wrench size={16} />} />
+          <div className="v5-card flat-hover">
+            {execSuccess && (
+              <div className="action-feedback ok" style={{ marginBottom: 10, fontSize: 12 }}>{execSuccess}</div>
+            )}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                className="v5-btn ghost"
+                onClick={() => {
+                  setExecSuccess(null);
+                  setModal({
+                    type: "exec-action",
+                    actionId: "start-job:infra:vast-reconcile",
+                    title: "Run vast-reconcile?",
+                    message: "Runs /usr/local/sbin/vast-reconcile.sh to reconcile the Vast GPU tunnel state.",
+                  });
+                }}
+              >
+                Vast reconcile
+              </button>
+              <button
+                className="v5-btn ghost"
+                onClick={() => {
+                  setExecSuccess(null);
+                  setModal({
+                    type: "exec-action",
+                    actionId: "start-job:infra:doctor-log-rotate",
+                    title: "Rotate doctor log?",
+                    message: "Compresses the current doctor-log.jsonl and resets it. Useful when the log exceeds the retention limit.",
+                  });
+                }}
+              >
+                Rotate doctor log
+              </button>
+              <button
+                className="v5-btn ghost"
+                onClick={() => {
+                  setExecSuccess(null);
+                  setModal({
+                    type: "exec-action",
+                    actionId: "start-job:infra:litellm-reload",
+                    title: "Reload LiteLLM config?",
+                    message: "Restarts the LiteLLM service so it picks up config changes. Brief (~10s) gateway downtime expected.",
+                    danger: true,
+                  });
+                }}
+              >
+                LiteLLM reload
+              </button>
+              <button
+                className="v5-btn ghost"
+                style={{ color: "var(--red)" }}
+                onClick={() => {
+                  setExecSuccess(null);
+                  setModal({
+                    type: "service-restart",
+                    service: "cloudflared",
+                  });
+                }}
+              >
+                Cloudflared restart
+              </button>
+            </div>
           </div>
         </div>
-      </SectionCard>
+      </Reveal>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginBottom: 16 }}>
+      <Reveal delay={0.06}>
+        <div className="v5-grid cards" style={{ marginTop: 18 }}>
 
-        {/* Hetzner */}
-        <SectionCard title="hetzner CX32" id="hetzner" defaultOpen={true}>
-          <div className="section-card-body" style={{ padding: "12px 14px" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Hetzner */}
+          <div className="v5-card flat-hover" id="hetzner">
+            <div className="v5-card-label"><Server size={13} /> hetzner CX32</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div>
-                <div className="w-label">memory ({memUsedGb} / {memGb} GB)</div>
+                <CardLabel>memory ({memUsedGb} / {memGb} GB)</CardLabel>
                 <PctBar pct={h.memUsedPct} />
               </div>
               <div>
-                <div className="w-label">disk ({h.diskUsedGb} / {h.diskTotalGb} GB)</div>
+                <CardLabel>disk ({h.diskUsedGb} / {h.diskTotalGb} GB)</CardLabel>
                 <PctBar pct={h.diskUsedPct} />
               </div>
               <div>
-                <div className="w-label">load avg</div>
+                <CardLabel>load avg</CardLabel>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)" }}>
                   {h.load1.toFixed(2)} · {h.load5.toFixed(2)} · {h.load15.toFixed(2)}
                 </div>
               </div>
             </div>
           </div>
-        </SectionCard>
 
-        {/* GPU / vast */}
-        <SectionCard title="gpu tunnel" id="gpu" defaultOpen={true}>
-          <div className="section-card-body" style={{ padding: "12px 14px" }}>
-            <div className="w-row" style={{ marginBottom: 8 }}>
+          {/* GPU / vast */}
+          <div className="v5-card flat-hover" id="gpu">
+            <div className="v5-card-label"><Cpu size={13} /> gpu tunnel</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <Pill color={d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : d.gpu.status === "off" ? "gray" : "amber"}>{d.gpu.status}</Pill>
               {d.gpu.gpuUtil !== null && <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{d.gpu.gpuUtil}% util</span>}
             </div>
@@ -256,14 +305,13 @@ export function InfraPage() {
               </div>
             )}
           </div>
-        </SectionCard>
 
-        {/* Vast instance */}
-        <SectionCard title="vast.ai instance" id="vast" defaultOpen={true}>
-          <div className="section-card-body" style={{ padding: "12px 14px" }}>
+          {/* Vast instance */}
+          <div className="v5-card flat-hover" id="vast">
+            <div className="v5-card-label"><Cloud size={13} /> vast.ai instance</div>
             {d.vastInstance ? (
               <div>
-                <div className="w-row" style={{ marginBottom: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                   <Pill color={d.vastInstance.status === "running" ? "green" : "amber"}>{d.vastInstance.status}</Pill>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)" }}>{d.vastInstance.gpu}</span>
                 </div>
@@ -274,10 +322,10 @@ export function InfraPage() {
                 </div>
               </div>
             ) : (
-              <div className="loading-dim">instance unavailable</div>
+              <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Instance unavailable.</div>
             )}
             {d.vastBalance && (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-bright)" }}>
                   ${((d.vastBalance.balance) + (d.vastBalance.credit)).toFixed(2)} total
                 </div>
@@ -288,16 +336,25 @@ export function InfraPage() {
                 )}
               </div>
             )}
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-              <div className="w-label">remote host stats</div>
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              <CardLabel>remote host stats</CardLabel>
               {d.vastHost && d.vastHost.status === "ok" ? (
                 <>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>CPU</span><PctBar pct={d.vastHost.cpuPct ?? 0} /></div>
-                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>RAM</span><PctBar pct={d.vastHost.ramPct ?? 0} /></div>
-                    <div><span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 11, marginRight: 6 }}>GPU</span><PctBar pct={d.vastHost.gpuUtilPct ?? 0} /></div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>CPU</span>
+                      <PctBar pct={d.vastHost.cpuPct ?? 0} />
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>RAM</span>
+                      <PctBar pct={d.vastHost.ramPct ?? 0} />
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>GPU</span>
+                      <PctBar pct={d.vastHost.gpuUtilPct ?? 0} />
+                    </div>
                   </div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 6 }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 8 }}>
                     sampled {fmtAge(Math.round((Date.now() - d.vastHost.sampledAt) / 1000))}
                   </div>
                 </>
@@ -318,70 +375,87 @@ export function InfraPage() {
               )}
             </div>
           </div>
-        </SectionCard>
-      </div>
+        </div>
+      </Reveal>
 
       {/* Services */}
-      <SectionCard title="services" id="services" defaultOpen={true}>
-        <div className="section-card-body" style={{ padding: "12px 14px" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {d.services.map((s) => (
-              <div key={s.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span className={`svc-pill ${s.status}`}>
-                  <span className="dot" />
-                  {s.name}
-                </span>
-                <button
-                  className="btn btn-sm btn-danger"
-                  style={{ minHeight: 44 }}
-                  onClick={() => setModal({ type: "service-restart", service: s.name })}
+      <Reveal delay={0.1}>
+        <div className="v5-section" id="services">
+          <SectionHead title="Services" icon={<Activity size={16} />} />
+          <div className="v5-card flat-hover">
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {d.services.map((s, i) => (
+                <div
+                  key={s.name}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                    padding: "9px 0",
+                    borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                    flexWrap: "wrap",
+                  }}
                 >
-                  restart
-                </button>
-              </div>
-            ))}
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)" }}>
+                    <span className={`v5-dot ${s.status === "active" ? "ok" : s.status === "failed" ? "err" : "warn"}`} />
+                    {s.name}
+                    <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{s.status}</span>
+                  </span>
+                  <button
+                    className="v5-btn ghost"
+                    style={{ ...SMALL_BTN, color: "var(--red)" }}
+                    onClick={() => setModal({ type: "service-restart", service: s.name })}
+                  >
+                    restart
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      </SectionCard>
+      </Reveal>
 
       {/* Timers */}
-      <SectionCard title="timers" defaultOpen={false}>
-        <div className="section-card-body table-wrap">
-          <table className="data-table">
-            <thead><tr>
-              <th>timer</th><th>state</th><th>last trigger</th><th>next elapse</th><th>last result</th><th></th>
-            </tr></thead>
-            <tbody>
-              {d.timers.map((t) => (
-                <tr key={t.name}>
-                  <td className="mono">{t.name}</td>
-                  <td><Pill color={t.active ? "green" : "red"}>{t.active ? "active" : "inactive"}</Pill></td>
-                  <td className="mono dim" style={{ fontSize: 11 }}>{t.lastTrigger ?? "—"}</td>
-                  <td className="mono dim" style={{ fontSize: 11 }}>{t.nextElapse ?? "—"}</td>
-                  <td>
-                    {t.lastResult ? (
-                      <Pill color={t.lastResult === "success" ? "green" : "amber"}>{t.lastResult}</Pill>
-                    ) : "—"}
-                  </td>
-                  <td>
-                    {t.runnable ? (
-                      <button
-                        className="btn btn-sm btn-ghost"
-                        style={{ minHeight: 44 }}
-                        onClick={() => setModal({ type: "run-timer", timer: t.name })}
-                      >
-                        run now
-                      </button>
-                    ) : (
-                      <span className="dim" style={{ fontSize: 10 }}>not allowed</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <Reveal delay={0.14}>
+        <div className="v5-section">
+          <SectionHead title="Timers" icon={<Timer size={16} />} />
+          <div className="v5-card flat-hover">
+            <div className="v5-table-wrap">
+              <table className="v5-table responsive">
+                <thead><tr>
+                  <th>Timer</th><th>State</th><th>Last trigger</th><th>Next elapse</th><th>Last result</th><th>Actions</th>
+                </tr></thead>
+                <tbody>
+                  {d.timers.map((t) => (
+                    <tr key={t.name}>
+                      <td data-label="Timer" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{t.name}</td>
+                      <td data-label="State"><Pill color={t.active ? "green" : "red"}>{t.active ? "active" : "inactive"}</Pill></td>
+                      <td data-label="Last trigger" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{t.lastTrigger ?? "—"}</td>
+                      <td data-label="Next elapse" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)" }}>{t.nextElapse ?? "—"}</td>
+                      <td data-label="Last result">
+                        {t.lastResult ? (
+                          <Pill color={t.lastResult === "success" ? "green" : "amber"}>{t.lastResult}</Pill>
+                        ) : "—"}
+                      </td>
+                      <td data-label="Actions">
+                        {t.runnable ? (
+                          <button
+                            className="v5-btn ghost"
+                            style={SMALL_BTN}
+                            onClick={() => setModal({ type: "run-timer", timer: t.name })}
+                          >
+                            run now
+                          </button>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)", fontSize: 11 }}>not allowed</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </SectionCard>
+      </Reveal>
     </div>
   );
 }

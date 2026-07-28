@@ -4,6 +4,7 @@ import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { useAction } from "../hooks/useAction";
 import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
+import { AnimatedNumber, Reveal, Stat } from "../components/v5/ui";
 import { useTableControls } from "../hooks/useTableControls";
 import type { JobRow } from "../../server/db/writer";
 
@@ -13,8 +14,11 @@ interface JobsData {
   reason?: string;
 }
 
+const V5_TONE: Record<string, string> = { green: "ok", amber: "warn", red: "err", blue: "info", gray: "" };
+
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = V5_TONE[color] ?? "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
 }
 
 function statusColor(status: string): string {
@@ -54,7 +58,9 @@ function JobActions({ job, onDone }: { job: JobRow; onDone: () => void }) {
     <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
       {job.status === "running" && (
         <button
-          className="btn btn-sm btn-danger"
+          type="button"
+          className="v5-btn"
+          style={{ color: "var(--red)", borderColor: "oklch(72% 0.19 25 / 0.35)" }}
           disabled={cancel.loading}
           onClick={() => cancel.run({}).then((ok) => { if (ok) onDone(); })}
         >
@@ -63,15 +69,16 @@ function JobActions({ job, onDone }: { job: JobRow; onDone: () => void }) {
       )}
       {(job.status === "failed" || job.status === "canceled") && job.retryCount < job.maxRetries && (
         <button
-          className="btn btn-sm btn-secondary"
+          type="button"
+          className="v5-btn"
           disabled={retry.loading}
           onClick={() => retry.run({}).then((ok) => { if (ok) onDone(); })}
         >
           {retry.loading ? "retrying…" : `Retry (${job.retryCount}/${job.maxRetries})`}
         </button>
       )}
-      {cancel.error && <span className="error" style={{ fontSize: 12 }}>{cancel.error}</span>}
-      {retry.error && <span className="error" style={{ fontSize: 12 }}>{retry.error}</span>}
+      {cancel.error && <span style={{ fontSize: 12, color: "var(--red)" }}>{cancel.error}</span>}
+      {retry.error && <span style={{ fontSize: 12, color: "var(--red)" }}>{retry.error}</span>}
     </div>
   );
 }
@@ -110,8 +117,24 @@ export function JobsPage() {
     defaultSort: { key: "startedAt", dir: "desc" },
   });
 
-  if (loading && !data) return <div className="loading-dim">loading...</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-skeleton" style={{ height: 30, width: 160, marginBottom: 16 }} />
+        <div className="v5-grid stats" style={{ marginBottom: 14 }}>
+          {[0, 1, 2, 3].map((i) => <div key={i} className="v5-skeleton" style={{ height: 96 }} />)}
+        </div>
+        <div className="v5-skeleton" style={{ height: 300 }} />
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-card flat-hover" style={{ fontSize: 13, color: "var(--red)" }}>Jobs did not load: {error}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="dash-page">
@@ -186,68 +209,90 @@ export function JobsPage() {
         </div>
       )}
 
-      <div className="page-header">
-        <div className="page-title">Jobs</div>
-        <button className="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>
-          <RefreshCw size={14} /> refresh
-        </button>
-      </div>
+      <Reveal>
+        <header className="v5-pagehead">
+          <div className="v5-pagehead-row">
+            <div>
+              <div className="v5-pagehead-title">Jobs</div>
+              <p className="v5-pagehead-sub">Background job execution — starts, finishes, durations, and retry/cancel controls.</p>
+            </div>
+            <button type="button" className="v5-btn" onClick={refresh} disabled={loading}>
+              <RefreshCw size={14} /> Refresh
+            </button>
+          </div>
+        </header>
+      </Reveal>
 
-      <div className="stat-row">
-        <div className="stat-item"><div className="stat-val">{jobs.length}</div><div className="stat-lbl">loaded</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.running}</div><div className="stat-lbl">running</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.success}</div><div className="stat-lbl">success</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.failed}</div><div className="stat-lbl">failed</div></div>
-      </div>
-
-      {data?.degraded && <div className="loading-dim error">degraded: {data.reason}</div>}
-
-      <div className="action-bar audit-filter-bar">
-        <select className="audit-select" defaultValue="" onChange={(event) => setStatus(event.target.value)}>
-          <option value="">all statuses</option>
-          <option value="running">running</option>
-          <option value="success">success</option>
-          <option value="failed">failed</option>
-        </select>
-        <select className="audit-select" defaultValue="" onChange={(event) => setKind(event.target.value)}>
-          <option value="">all kinds</option>
-          {kinds.map((value) => <option key={value} value={value}>{value}</option>)}
-        </select>
-      </div>
-
-      <SectionCard
-        title="recent jobs"
-        defaultOpen={true}
-        right={<span className="mono dim">{jobsCtrl.filteredCount} of {jobs.length} shown</span>}
-      >
-        <div className="section-card-body table-wrap">
-          {jobs.length === 0 ? (
-            <div className="loading-dim">no jobs</div>
-          ) : (
-            <>
-            <TableControls {...jobsCtrl.controlsProps} searchPlaceholder="Filter jobs..." />
-            <table className="data-table jobs-table">
-              <thead><tr><th {...jobsCtrl.sortHeaderProps("startedAt")} className="job-date-col">started <span className="sortable-th-arrow">{jobsCtrl.sort.key === "startedAt" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{jobsCtrl.sort.key === "status" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{jobsCtrl.sort.key === "kind" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th>target</th><th className="job-dur-col">duration</th><th className="job-actor-col">actor</th><th></th></tr></thead>
-              <tbody>
-                {jobsCtrl.rows.map((job) => (
-                  <tr key={job.id}>
-                    <td className="mono dim job-date-col">{fmtTs(job.startedAt)}</td>
-                    <td><Pill color={statusColor(job.status)}>{job.status}</Pill></td>
-                    <td className="mono">{job.kind}</td>
-                    <td className="mono trunc">{job.targetId ?? job.targetType ?? "-"}</td>
-                    <td className="mono dim job-dur-col">{fmtDuration(job.startedAt, job.finishedAt)}</td>
-                    <td className="mono dim job-actor-col">{job.actor ?? "-"}</td>
-                    <td style={{ textAlign: "right" }}>
-                      <button className="btn btn-sm btn-ghost" onClick={() => setSelected(job)}>details</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </>
-          )}
+      <Reveal delay={0.04}>
+        <div className="v5-grid stats">
+          <Stat label="Loaded" value={<AnimatedNumber value={jobs.length} />} />
+          <Stat label="Running" value={<AnimatedNumber value={counts.running} />} />
+          <Stat label="Success" value={<AnimatedNumber value={counts.success} />} tone="ok" />
+          <Stat label="Failed" value={<AnimatedNumber value={counts.failed} />} tone={counts.failed > 0 ? "err" : "idle"} />
         </div>
-      </SectionCard>
+      </Reveal>
+
+      {data?.degraded && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--amber-warn)" }}>degraded: {data.reason}</div>
+      )}
+
+      <Reveal delay={0.08}>
+        <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <span className="v5-card-label" style={{ marginRight: 2 }}>Filters</span>
+          <select className="audit-select" defaultValue="" onChange={(event) => setStatus(event.target.value)} style={{ minHeight: 40 }}>
+            <option value="">all statuses</option>
+            <option value="running">running</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+          </select>
+          <select className="audit-select" defaultValue="" onChange={(event) => setKind(event.target.value)} style={{ minHeight: 40 }}>
+            <option value="">all kinds</option>
+            {kinds.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
+      </Reveal>
+
+      <Reveal delay={0.12}>
+        <div className="v5-section">
+          <SectionCard
+            title="recent jobs"
+            defaultOpen={true}
+            right={<span className="mono dim">{jobsCtrl.filteredCount} of {jobs.length} shown</span>}
+          >
+            <div className="section-card-body">
+              {jobs.length === 0 ? (
+                <p style={{ color: "var(--text-muted)", fontSize: 13 }}>No jobs have run yet.</p>
+              ) : (
+                <>
+                <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+                  <TableControls {...jobsCtrl.controlsProps} searchPlaceholder="Filter jobs..." />
+                </div>
+                <div className="v5-table-wrap">
+                  <table className="v5-table responsive jobs-table">
+                    <thead><tr><th {...jobsCtrl.sortHeaderProps("startedAt")} className="job-date-col">started <span className="sortable-th-arrow">{jobsCtrl.sort.key === "startedAt" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("status")}>status <span className="sortable-th-arrow">{jobsCtrl.sort.key === "status" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th {...jobsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{jobsCtrl.sort.key === "kind" ? (jobsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th><th>target</th><th className="job-dur-col">duration</th><th className="job-actor-col">actor</th><th></th></tr></thead>
+                    <tbody>
+                      {jobsCtrl.rows.map((job) => (
+                        <tr key={job.id}>
+                          <td data-label="Started" className="mono dim job-date-col">{fmtTs(job.startedAt)}</td>
+                          <td data-label="Status"><Pill color={statusColor(job.status)}>{job.status}</Pill></td>
+                          <td data-label="Kind" className="mono">{job.kind}</td>
+                          <td data-label="Target" className="mono trunc">{job.targetId ?? job.targetType ?? "-"}</td>
+                          <td data-label="Duration" className="mono dim job-dur-col">{fmtDuration(job.startedAt, job.finishedAt)}</td>
+                          <td data-label="Actor" className="mono dim job-actor-col">{job.actor ?? "-"}</td>
+                          <td data-no-label style={{ textAlign: "right" }}>
+                            <button type="button" className="v5-btn ghost" onClick={() => setSelected(job)}>details</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                </>
+              )}
+            </div>
+          </SectionCard>
+        </div>
+      </Reveal>
     </div>
   );
 }

@@ -8449,5 +8449,4 @@ body.terminal-immersive .terminal-page { height: var(--terminal-page-height, 100
   .insights-filter-bar { padding: 8px 0; gap: 4px; }
 }
 
-/* V5 Observatory layer — must stay last */
-@import "./v5.css";
+/* V5 Observatory layer is imported after this file in main.tsx. */

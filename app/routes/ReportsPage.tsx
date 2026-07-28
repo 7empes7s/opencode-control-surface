@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Copy, Download, FileDown, FileText, Play, RefreshCw, Upload } from "lucide-react";
 import { TableControls } from "../components/TableControls";
+import { AnimatedNumber, Reveal, Stat } from "../components/v5/ui";
 import { useApi } from "../hooks/useApi";
 import { useAuthStatus } from "../hooks/useAuthStatus";
 import { useTableControls } from "../hooks/useTableControls";
@@ -67,11 +68,11 @@ function formatPeriod(run: ReportRun): string | null {
   return `${new Date(params.fromTs).toLocaleDateString()} → ${new Date(params.toTs).toLocaleDateString()}`;
 }
 
-function statusClass(status: string): string {
-  if (status === "success") return "green";
-  if (status === "failed") return "red";
-  if (status === "running") return "amber";
-  return "gray";
+function statusTone(status: string): "ok" | "warn" | "err" | "info" {
+  if (status === "success") return "ok";
+  if (status === "failed") return "err";
+  if (status === "running") return "warn";
+  return "info";
 }
 
 function rowsFromOutput(output: unknown): Record<string, unknown>[] {
@@ -351,158 +352,182 @@ export function ReportsPage() {
 
   return (
     <div className="dash-page reports-page">
-      <section className="reports-hero">
-        <div>
-          <div className="dash-section-title">reports</div>
-          <h1>Operational report archive</h1>
-          <p>Generate, inspect, and export saved pipeline, content-health, gateway, and audit reports from Dashboard V4 evidence.</p>
-        </div>
-        <button type="button" className="btn" onClick={refresh}>
-          <RefreshCw size={14} />
-          Refresh
-        </button>
-      </section>
-
-      <section className="content-health-summary reports-summary">
-        <div className="metric-tile">
-          <span>Archived runs</span>
-          <strong>{totals.total}</strong>
-        </div>
-        <div className="metric-tile">
-          <span>Successful</span>
-          <strong>{totals.success}</strong>
-        </div>
-        <div className="metric-tile">
-          <span>Failed</span>
-          <strong>{totals.failed}</strong>
-        </div>
-        <div className="metric-tile">
-          <span>Rows stored</span>
-          <strong>{totals.rows}</strong>
-        </div>
-      </section>
-
-      <section className="reports-generate-panel">
-        <div className="reports-generate-copy">
-          <FileText size={20} />
-          <div>
-            <strong>Generate now</strong>
-            <span>Run a template for the selected lookback window and store it in the archive.</span>
+      <Reveal>
+        <header className="v5-pagehead">
+          <div className="v5-pagehead-row">
+            <div>
+              <div className="v5-pagehead-title">Reports</div>
+              <p className="v5-pagehead-sub">Generate, inspect, and export saved pipeline, content-health, gateway, and audit reports from Dashboard V4 evidence.</p>
+            </div>
+            <button type="button" className="v5-btn" onClick={refresh}>
+              <RefreshCw size={14} />
+              Refresh
+            </button>
           </div>
+        </header>
+      </Reveal>
+
+      <Reveal delay={0.04}>
+        <div className="v5-grid stats">
+          <Stat label="Archived runs" value={<AnimatedNumber value={totals.total} />} />
+          <Stat label="Successful" value={<AnimatedNumber value={totals.success} />} tone="ok" />
+          <Stat label="Failed" value={<AnimatedNumber value={totals.failed} />} tone={totals.failed > 0 ? "err" : "idle"} />
+          <Stat label="Rows stored" value={<AnimatedNumber value={totals.rows} />} gradient />
         </div>
-        <label>
-          Template
-          <select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
-            {templates.map((template) => (
-              <option key={template.id} value={template.id}>{template.name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Range
-          <select value={range} onChange={(event) => setRange(event.target.value as RangePreset)}>
-            <option value="24h">Last 24 hours</option>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-          </select>
-        </label>
-        <button type="button" className="btn btn-primary" onClick={generateReport} disabled={!isAuthenticated || running || templates.length === 0}>
-          <Play size={14} />
-          {running ? "Running" : "Run report"}
-        </button>
-      </section>
+      </Reveal>
 
-      <section className="reports-generate-panel">
-        <div className="reports-generate-copy">
-          <FileText size={20} />
-          <div>
-            <strong>Scheduled summaries</strong>
-            <span>Generate the operator digest, executive, remediation-loop, system-labor, SLA / uptime, or discovery posture report immediately.</span>
+      <Reveal delay={0.08}>
+        <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flex: "1 1 280px", minWidth: 220 }}>
+            <FileText size={20} style={{ color: "var(--accent)", flex: "none" }} />
+            <div>
+              <strong style={{ color: "var(--text-bright)" }}>Generate now</strong>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Run a template for the selected lookback window and store it in the archive.</div>
+            </div>
           </div>
-        </div>
-        <button type="button" className="btn" onClick={() => generateDigest("digest")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "digest" ? "Generating" : "Generate digest"}
-        </button>
-        <button type="button" className="btn btn-primary" onClick={() => generateDigest("executive")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "executive" ? "Generating" : "Generate executive report"}
-        </button>
-        <button type="button" className="btn" onClick={() => generateDigest("remediation")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "remediation" ? "Generating" : "Generate remediation report"}
-        </button>
-        <button type="button" className="btn" onClick={() => generateDigest("system-labor")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "system-labor" ? "Generating" : "Generate system labor report"}
-        </button>
-        <button type="button" className="btn" onClick={() => generateDigest("sla-uptime")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "sla-uptime" ? "Generating" : "Generate SLA / uptime report"}
-        </button>
-        <button type="button" className="btn" onClick={() => generateDigest("discovery-posture")} disabled={!isAuthenticated || generatingDigest !== null}>
-          <Play size={14} />
-          {generatingDigest === "discovery-posture" ? "Generating" : "Generate discovery posture report"}
-        </button>
-      </section>
-
-      {!isAuthenticated && <div className="loading-panel error">Authentication is required to generate reports.</div>}
-      {message && <div className="loading-panel">{message}</div>}
-      {loading && !data && <div className="loading-panel">Loading report archive.</div>}
-      {error && !data && <div className="loading-panel error">Reports did not load: {error} <button type="button" className="btn btn-sm btn-ghost" onClick={refresh}>Retry</button></div>}
-
-      {summary.length > 0 && (
-        <section className="dash-section">
-          <div className="dash-section-title">template activity</div>
-          <div className="reports-template-grid">
-            {summary.slice(0, 6).map((row) => (
-              <div className="content-health-kind-card" key={`${row.templateId}-${row.status}`}>
-                <span>{templateNames.get(row.templateId) ?? row.templateId}</span>
-                <strong>{row.count}</strong>
-                <div className="w-row">
-                  <span className={`pill ${statusClass(row.status)}`}>{row.status}</span>
-                  <span className="dim">{formatDate(row.latestStartedAt)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="dash-section">
-        <h2 className="dash-section-title">Module usage</h2>
-        <div className="insight-group-title">
-          <span className="dim">Which modules earn their keep — measured, not guessed</span>
-          <label>
-            <span className="dim">Period </span>
-            <select className="form-select" value={moduleRange} onChange={(event) => setModuleRange(event.target.value as ModuleRangePreset)}>
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
+          <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+            Template
+            <select value={templateId} onChange={(event) => setTemplateId(event.target.value)} style={{ minHeight: 40 }}>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>{template.name}</option>
+              ))}
             </select>
           </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+            Range
+            <select value={range} onChange={(event) => setRange(event.target.value as RangePreset)} style={{ minHeight: 40 }}>
+              <option value="24h">Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+            </select>
+          </label>
+          <button type="button" className="v5-btn primary" onClick={generateReport} disabled={!isAuthenticated || running || templates.length === 0}>
+            <Play size={14} />
+            {running ? "Running" : "Run report"}
+          </button>
         </div>
+      </Reveal>
 
-        <TableControls
-          {...moduleTable.controlsProps}
-          searchPlaceholder="Search module path..."
-          className="reports-search"
-        />
-
-        {moduleUsageLoading && !moduleUsage && <div className="loading-panel">Loading module usage.</div>}
-        {moduleUsageError && !moduleUsage && <div className="loading-panel error">Module usage did not load: {moduleUsageError}</div>}
-        {!moduleUsageLoading && moduleUsage?.modules.length === 0 && (
-          <div className="empty-state">
-            <FileText size={24} />
-            <strong>No usage recorded yet</strong>
-            <span>No usage recorded yet — usage accrues as the dashboard is used (page visits need the beacon; actions and findings come from the audit history).</span>
+      <Reveal delay={0.12}>
+        <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flex: "1 1 100%", minWidth: 220 }}>
+            <FileText size={20} style={{ color: "var(--accent-2)", flex: "none" }} />
+            <div>
+              <strong style={{ color: "var(--text-bright)" }}>Scheduled summaries</strong>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Generate the operator digest, executive, remediation-loop, system-labor, SLA / uptime, or discovery posture report immediately.</div>
+            </div>
           </div>
-        )}
+          <button type="button" className="v5-btn" onClick={() => generateDigest("digest")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "digest" ? "Generating" : "Digest"}
+          </button>
+          <button type="button" className="v5-btn primary" onClick={() => generateDigest("executive")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "executive" ? "Generating" : "Executive"}
+          </button>
+          <button type="button" className="v5-btn" onClick={() => generateDigest("remediation")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "remediation" ? "Generating" : "Remediation"}
+          </button>
+          <button type="button" className="v5-btn" onClick={() => generateDigest("system-labor")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "system-labor" ? "Generating" : "System labor"}
+          </button>
+          <button type="button" className="v5-btn" onClick={() => generateDigest("sla-uptime")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "sla-uptime" ? "Generating" : "SLA / uptime"}
+          </button>
+          <button type="button" className="v5-btn" onClick={() => generateDigest("discovery-posture")} disabled={!isAuthenticated || generatingDigest !== null}>
+            <Play size={14} />
+            {generatingDigest === "discovery-posture" ? "Generating" : "Discovery posture"}
+          </button>
+        </div>
+      </Reveal>
 
-        {moduleUsage && moduleUsage.modules.length > 0 && (
-          <div className="table-wrap">
-            <div className="table-container">
-              <table className="data-table">
+      {!isAuthenticated && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--amber-warn)" }}>
+          Authentication is required to generate reports.
+        </div>
+      )}
+      {message && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--text-dim)" }}>{message}</div>
+      )}
+      {loading && !data && (
+        <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+          <div className="v5-skeleton" style={{ height: 18, width: "40%" }} />
+          <div className="v5-skeleton" style={{ height: 120 }} />
+        </div>
+      )}
+      {error && !data && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--red)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          Reports did not load: {error}
+          <button type="button" className="v5-btn ghost" onClick={refresh}>Retry</button>
+        </div>
+      )}
+
+      {summary.length > 0 && (
+        <Reveal delay={0.16}>
+          <section className="v5-section">
+            <div className="v5-section-head">
+              <div className="v5-section-title">Template activity</div>
+            </div>
+            <div className="v5-grid cards">
+              {summary.slice(0, 6).map((row) => (
+                <div className="v5-card flat-hover" key={`${row.templateId}-${row.status}`}>
+                  <div className="v5-card-label">{templateNames.get(row.templateId) ?? row.templateId}</div>
+                  <div className="v5-stat-value"><AnimatedNumber value={row.count} /></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                    <span className={`v5-pill ${statusTone(row.status)}`}>{row.status}</span>
+                    <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{formatDate(row.latestStartedAt)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </Reveal>
+      )}
+
+      <Reveal delay={0.2}>
+        <section className="v5-section">
+          <div className="v5-section-head">
+            <div className="v5-section-title">Module usage</div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-muted)" }}>
+              Period
+              <select value={moduleRange} onChange={(event) => setModuleRange(event.target.value as ModuleRangePreset)} style={{ minHeight: 40 }}>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+              </select>
+            </label>
+          </div>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-muted)" }}>Which modules earn their keep — measured, not guessed.</p>
+
+          <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+            <TableControls
+              {...moduleTable.controlsProps}
+              searchPlaceholder="Search module path..."
+              className="reports-search"
+            />
+          </div>
+
+          {moduleUsageLoading && !moduleUsage && (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div className="v5-skeleton" style={{ height: 16, width: "35%" }} />
+              <div className="v5-skeleton" style={{ height: 140 }} />
+            </div>
+          )}
+          {moduleUsageError && !moduleUsage && (
+            <div className="v5-card flat-hover" style={{ fontSize: 13, color: "var(--red)" }}>Module usage did not load: {moduleUsageError}</div>
+          )}
+          {!moduleUsageLoading && moduleUsage?.modules.length === 0 && (
+            <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+              No usage recorded yet — usage accrues as the dashboard is used.
+            </p>
+          )}
+
+          {moduleUsage && moduleUsage.modules.length > 0 && (
+            <div className="v5-table-wrap">
+              <table className="v5-table responsive">
                 <thead>
                   <tr>
                     <th {...moduleTable.sortHeaderProps("path")}>Module <span className="sortable-th-arrow">{moduleTable.sort.key === "path" ? (moduleTable.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
@@ -514,10 +539,10 @@ export function ReportsPage() {
                 <tbody>
                   {moduleTable.rows.map((module) => (
                     <tr key={module.path}>
-                      <td className="mono">{module.path}</td>
-                      <td className="mono">{module.pageviews.toLocaleString()}</td>
-                      <td className="mono">{module.actions.toLocaleString()}</td>
-                      <td className="mono">{module.findingsActedOn.toLocaleString()}</td>
+                      <td data-label="Module" className="mono">{module.path}</td>
+                      <td data-label="Visits" className="mono">{module.pageviews.toLocaleString()}</td>
+                      <td data-label="Actions" className="mono">{module.actions.toLocaleString()}</td>
+                      <td data-label="Findings acted on" className="mono">{module.findingsActedOn.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -531,107 +556,109 @@ export function ReportsPage() {
                 </tfoot>
               </table>
             </div>
+          )}
+
+          {moduleUsage && moduleUsage.modules.length > 0 && moduleTable.filteredCount === 0 && (
+            <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 12 }}>
+              No modules match the current search — adjust the filter to widen the usage view.
+            </p>
+          )}
+        </section>
+      </Reveal>
+
+      <Reveal delay={0.24}>
+        <section className="v5-section">
+          <div className="v5-section-head">
+            <div className="v5-section-title">Archive</div>
+            <span className="v5-pill info">{visibleRuns.filteredCount} / {runs.length}</span>
           </div>
-        )}
 
-        {moduleUsage && moduleUsage.modules.length > 0 && moduleTable.filteredCount === 0 && (
-          <div className="empty-state content-health-filter-empty">
-            <FileText size={24} />
-            <strong>No matching modules.</strong>
-            <span>Adjust the module search to widen the usage view.</span>
+          <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+            <TableControls
+              {...visibleRuns.controlsProps}
+              searchPlaceholder="Search run id, template, status, error..."
+              className="reports-search"
+            />
           </div>
-        )}
-      </section>
 
-      <section className="dash-section">
-        <div className="insight-group-title">
-          <span>Archive</span>
-          <span className="pill gray">{visibleRuns.filteredCount} / {runs.length}</span>
-        </div>
-        <TableControls
-          {...visibleRuns.controlsProps}
-          searchPlaceholder="Search run id, template, status, error..."
-          className="reports-search"
-        />
+          {runs.length === 0 && !loading && (
+            <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+              No report runs yet — generate a daily pipeline or content health report to seed the archive.
+            </p>
+          )}
 
-        {runs.length === 0 && !loading && (
-          <div className="empty-state">
-            <FileText size={24} />
-            <strong>No report runs yet.</strong>
-            <span>Generate a daily pipeline or content health report to seed the archive.</span>
-          </div>
-        )}
-
-        <div className="reports-run-list">
-          {visibleRuns.rows.map((run) => {
-            const templateName = templateNames.get(run.templateId) ?? run.templateId;
-            const canExport = run.status === "success";
-            const period = formatPeriod(run);
-            const exportingThis = exportingDoc?.id === run.id;
-            return (
-              <article className={`reports-run-card reports-run-card-${run.status}`} key={run.id}>
-                <div className="reports-run-main">
-                  <div className="reports-run-icon"><FileText size={16} /></div>
-                  <div className="reports-run-copy">
-                    <div className="reports-run-title">
-                      <strong>{templateName}</strong>
-                      <span className={`pill ${statusClass(run.status)}`}>{run.status}</span>
+          <div style={{ display: "grid", gap: 12 }}>
+            {visibleRuns.rows.map((run) => {
+              const templateName = templateNames.get(run.templateId) ?? run.templateId;
+              const canExport = run.status === "success";
+              const period = formatPeriod(run);
+              const exportingThis = exportingDoc?.id === run.id;
+              return (
+                <article className="v5-card flat-hover" key={run.id} style={{ display: "flex", flexWrap: "wrap", gap: 14, justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", gap: 12, flex: "1 1 320px", minWidth: 0 }}>
+                    <div style={{ flex: "none", width: 34, height: 34, borderRadius: "var(--r-md)", display: "grid", placeItems: "center", background: "var(--grad-accent-soft)", color: "var(--accent)" }}>
+                      <FileText size={16} />
                     </div>
-                    <span className="dim">{formatDate(run.startedAt)} · {run.rowCount} rows · <code>{run.id}</code></span>
-                    {period && <span className="reports-run-period">Period: {period}</span>}
-                    <ReportPreview run={run} />
-                    {exportDocError?.id === run.id && (
-                      <div className="reports-run-error"><AlertTriangle size={14} />{exportDocError.message}</div>
-                    )}
+                    <div style={{ minWidth: 0, display: "grid", gap: 4, alignContent: "start" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <strong style={{ color: "var(--text-bright)" }}>{templateName}</strong>
+                        <span className={`v5-pill ${statusTone(run.status)}`}>{run.status}</span>
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{formatDate(run.startedAt)} · {run.rowCount} rows · <code style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{run.id}</code></span>
+                      {period && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Period: {period}</span>}
+                      <ReportPreview run={run} />
+                      {exportDocError?.id === run.id && (
+                        <div className="reports-run-error"><AlertTriangle size={14} />{exportDocError.message}</div>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="reports-run-actions">
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => copyMarkdown(run)} disabled={!canExport}>
-                    {copiedId === run.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                    {copiedId === run.id ? "Copied" : "Copy md"}
-                  </button>
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => downloadCsv(run)} disabled={!canExport || downloadingId === run.id}>
-                    <Download size={14} />
-                    {downloadingId === run.id ? "Downloading" : "CSV"}
-                  </button>
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => exportToVault(run)} disabled={!canExport || !isAuthenticated || exportingId === run.id}>
-                    <Upload size={14} />
-                    {exportingId === run.id ? "Exporting" : "Vault"}
-                  </button>
-                  <label className="reports-export-control" title="Export a rich, natural-language document">
-                    <FileDown size={14} />
-                    <select
-                      aria-label="Export report as document"
-                      value=""
-                      disabled={!canExport || !isAuthenticated || exportingThis}
-                      onChange={(event) => {
-                        const format = event.target.value as ExportFormat | "";
-                        event.target.value = "";
-                        if (format) downloadDocExport(run, format);
-                      }}
-                    >
-                      <option value="" disabled>
-                        {exportingThis ? `Exporting ${EXPORT_LABELS[exportingDoc!.format]}…` : "Export as…"}
-                      </option>
-                      <option value="pdf">PDF</option>
-                      <option value="pptx">PowerPoint</option>
-                      <option value="docx">Word</option>
-                    </select>
-                  </label>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-
-        {runs.length > 0 && visibleRuns.filteredCount === 0 && (
-          <div className="empty-state content-health-filter-empty">
-            <FileText size={24} />
-            <strong>No matching report runs.</strong>
-            <span>Adjust the search text to widen the archive view.</span>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", alignContent: "flex-start" }}>
+                    <button type="button" className="v5-btn ghost" onClick={() => copyMarkdown(run)} disabled={!canExport}>
+                      {copiedId === run.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                      {copiedId === run.id ? "Copied" : "Copy md"}
+                    </button>
+                    <button type="button" className="v5-btn ghost" onClick={() => downloadCsv(run)} disabled={!canExport || downloadingId === run.id}>
+                      <Download size={14} />
+                      {downloadingId === run.id ? "Downloading" : "CSV"}
+                    </button>
+                    <button type="button" className="v5-btn ghost" onClick={() => exportToVault(run)} disabled={!canExport || !isAuthenticated || exportingId === run.id}>
+                      <Upload size={14} />
+                      {exportingId === run.id ? "Exporting" : "Vault"}
+                    </button>
+                    <label className="v5-btn ghost" style={{ cursor: "pointer" }} title="Export a rich, natural-language document">
+                      <FileDown size={14} />
+                      <select
+                        aria-label="Export report as document"
+                        value=""
+                        disabled={!canExport || !isAuthenticated || exportingThis}
+                        style={{ background: "transparent", border: "none", color: "inherit", font: "inherit", minHeight: 0, cursor: "pointer" }}
+                        onChange={(event) => {
+                          const format = event.target.value as ExportFormat | "";
+                          event.target.value = "";
+                          if (format) downloadDocExport(run, format);
+                        }}
+                      >
+                        <option value="" disabled>
+                          {exportingThis ? `Exporting ${EXPORT_LABELS[exportingDoc!.format]}…` : "Export as…"}
+                        </option>
+                        <option value="pdf">PDF</option>
+                        <option value="pptx">PowerPoint</option>
+                        <option value="docx">Word</option>
+                      </select>
+                    </label>
+                  </div>
+                </article>
+              );
+            })}
           </div>
-        )}
-      </section>
+
+          {runs.length > 0 && visibleRuns.filteredCount === 0 && (
+            <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 12 }}>
+              No report runs match the current search — adjust the filter to widen the archive view.
+            </p>
+          )}
+        </section>
+      </Reveal>
     </div>
   );
 }

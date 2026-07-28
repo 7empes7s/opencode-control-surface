@@ -4,35 +4,74 @@ import { useApi, fmtMs } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import { ConfirmModal } from "../components/ConfirmModal";
 import type { AutopipelineDetail } from "../../server/api/types";
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-} from "recharts";
-import { AnimatedNumber } from "../components/AnimatedCharts";
-import { SectionCard } from "../components/SectionCard";
+import { AnimatedNumber, Reveal, SectionHead, Stat } from "../components/v5/ui";
+import { Activity, Gauge, ListChecks, ListOrdered, Zap } from "lucide-react";
 
-function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+function V5Pill({ children, tone }: { children: React.ReactNode; tone?: "ok" | "warn" | "err" | "info" }) {
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
 }
 
 function StageDurationTable({ durations }: { durations: AutopipelineDetail["stageDurations"] }) {
   const relevant = durations.filter((d) => d.sampleCount > 0);
-  if (relevant.length === 0) return <div className="loading-dim">no timing samples yet</div>;
+  if (relevant.length === 0) {
+    return <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No timing samples yet.</div>;
+  }
   return (
-    <table className="data-table">
-      <thead><tr>
-        <th>stage</th><th>p50</th><th>p95</th><th>samples</th>
-      </tr></thead>
-      <tbody>
-        {relevant.map((d) => (
-          <tr key={d.stage}>
-            <td className="mono">{d.stage}</td>
-            <td className="mono">{fmtMs(d.p50Ms)}</td>
-            <td className="mono">{fmtMs(d.p95Ms)}</td>
-            <td className="dim">{d.sampleCount}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="v5-table-wrap">
+      <table className="v5-table responsive">
+        <thead><tr>
+          <th>Stage</th><th>p50</th><th>p95</th><th>Samples</th>
+        </tr></thead>
+        <tbody>
+          {relevant.map((d) => (
+            <tr key={d.stage}>
+              <td data-label="Stage" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{d.stage}</td>
+              <td data-label="p50" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{fmtMs(d.p50Ms)}</td>
+              <td data-label="p95" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{fmtMs(d.p95Ms)}</td>
+              <td data-label="Samples" style={{ color: "var(--text-dim)" }}>{d.sampleCount}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function StageBars({ breakdown }: { breakdown: Record<string, number> }) {
+  const stageOrder = ["scout", "research", "validate-research", "write", "validate-write", "verify", "publish-prep", "init", "fetch-image", "publish"];
+  const approvalStages = new Set(["publish"]);
+  const rows = stageOrder
+    .filter((s) => breakdown[s] != null)
+    .map((s) => ({ stage: s, count: breakdown[s] }));
+  const max = Math.max(1, ...rows.map((r) => r.count));
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {rows.map((r) => (
+        <div
+          key={r.stage}
+          style={{ display: "grid", gridTemplateColumns: "minmax(96px, 140px) 1fr auto", gap: 10, alignItems: "center" }}
+        >
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.stage}
+          </span>
+          <div style={{ height: 6, borderRadius: 999, background: "var(--bg-sub)", overflow: "hidden" }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.max(4, Math.round((r.count / max) * 100))}%`,
+                borderRadius: 999,
+                background: approvalStages.has(r.stage) ? "var(--amber-warn)" : "var(--grad-accent)",
+                transition: "width 0.9s var(--ease-out, ease)",
+              }}
+            />
+          </div>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-bright)", minWidth: 18, textAlign: "right" }}>
+            {r.count}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -44,6 +83,21 @@ type Modal =
   | { type: "kill"; id: string; slug?: string }
   | { type: "publish"; id: string; slug?: string };
 
+function PageSkeleton() {
+  return (
+    <div className="dash-page">
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-title">Pipeline</div>
+        <div className="v5-pagehead-sub">Editorial queue, stages, throughput.</div>
+      </div>
+      <div className="v5-grid stats">
+        {[0, 1, 2].map((i) => <div key={i} className="v5-skeleton" style={{ height: 92 }} />)}
+      </div>
+      <div className="v5-section"><div className="v5-skeleton" style={{ height: 240 }} /></div>
+    </div>
+  );
+}
+
 export function AutopipelinePage() {
   const { data, loading, error, refresh } = useApi<AutopipelineDetail>("/api/autopipeline", 10_000);
   const [modal, setModal] = useState<Modal | null>(null);
@@ -53,8 +107,18 @@ export function AutopipelinePage() {
   const cmd = useAction("/api/autopipeline/command");
   const [, navigate] = useLocation();
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) return <PageSkeleton />;
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-pagehead">
+          <div className="v5-pagehead-title">Pipeline</div>
+          <div className="v5-pagehead-sub">Editorial queue, stages, throughput.</div>
+        </div>
+        <div className="v5-card" style={{ color: "var(--red)", fontSize: 13 }}>Pipeline data did not load: {error}</div>
+      </div>
+    );
+  }
   if (!data) return null;
 
   const d = data;
@@ -68,36 +132,49 @@ export function AutopipelinePage() {
 
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Autopipeline</div>
-        <div className="stat-row">
-          <div className="stat-item">
-            <div className="stat-val"><AnimatedNumber value={d.stats.queueDepth} /></div>
-            <div className="stat-lbl">queued</div>
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-row">
+          <div>
+            <div className="v5-pagehead-title">Pipeline</div>
+            <div className="v5-pagehead-sub">Editorial queue, stages, throughput.</div>
           </div>
-          <div className="stat-item">
-            <div className="stat-val"><AnimatedNumber value={d.stats.approvalsWaiting} /></div>
-            <div className="stat-lbl">waiting approval</div>
-          </div>
-          <div className="stat-item" style={{ display: "flex", alignItems: "flex-start", flexDirection: "column", gap: 2 }}>
-            <Pill color={d.paused ? "amber" : "green"}>{d.paused ? "paused" : "running"}</Pill>
-            {d.pauseReason && <div className="stat-lbl">{d.pauseReason}</div>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              className={`v5-btn${d.paused ? " primary" : ""}`}
+              onClick={() => setModal(d.paused ? { type: "resume" } : { type: "pause" })}
+            >
+              {d.paused ? "Resume" : "Pause"}
+            </button>
+            <button className="v5-btn ghost" onClick={() => setModal({ type: "inject" })}>
+              + Inject topic
+            </button>
           </div>
         </div>
-        <div className="action-bar" style={{ marginTop: 12 }}>
-          <button
-            className={`btn ${d.paused ? "btn-primary" : "btn-amber"}`}
-            onClick={() => setModal(d.paused ? { type: "resume" } : { type: "pause" })}
-          >
-            {d.paused ? "Resume" : "Pause"}
-          </button>
-          <button className="btn btn-ghost" onClick={() => setModal({ type: "inject" })}>
-            + Inject topic
-          </button>
-          {cmd.success && <span className="action-feedback ok">{cmd.success}</span>}
-          {cmd.error && <span className="action-feedback err">{cmd.error}</span>}
-        </div>
+        {(cmd.success || cmd.error) && (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            {cmd.success && <span className="action-feedback ok">{cmd.success}</span>}
+            {cmd.error && <span className="action-feedback err">{cmd.error}</span>}
+          </div>
+        )}
       </div>
+
+      <Reveal delay={0.02}>
+        <div className="v5-grid stats">
+          <Stat label="queued" value={<AnimatedNumber value={d.stats.queueDepth} />} gradient tone="idle" />
+          <Stat
+            label="waiting approval"
+            value={<AnimatedNumber value={d.stats.approvalsWaiting} />}
+            tone={d.stats.approvalsWaiting > 0 ? "warn" : "ok"}
+            caption={d.stats.approvalsWaiting > 0 ? "needs an operator" : "nothing blocked"}
+          />
+          <Stat
+            label="pipeline"
+            value={d.paused ? "Paused" : "Running"}
+            tone={d.paused ? "warn" : "ok"}
+            caption={d.pauseReason ?? (d.paused ? undefined : "processing stories")}
+          />
+        </div>
+      </Reveal>
 
       {modal && (
         <ConfirmModal
@@ -147,157 +224,148 @@ export function AutopipelinePage() {
 
       {/* Current story */}
       {d.current && (
-        <SectionCard title="current story" id="current" defaultOpen={true}>
-          <div className="section-card-body" style={{ padding: "12px 14px" }}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-bright)", marginBottom: 6 }}>
-              {d.current.slug ?? d.current.id}
+        <Reveal delay={0.06}>
+          <div className="v5-section" id="current">
+            <SectionHead title="Current story" icon={<Zap size={16} />} />
+            <div className="v5-card">
+              <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-bright)", marginBottom: 8, wordBreak: "break-all" }}>
+                {d.current.slug ?? d.current.id}
+              </div>
+              <V5Pill tone="warn">{d.current.stage}</V5Pill>
             </div>
-            <Pill color="amber">{d.current.stage}</Pill>
           </div>
-        </SectionCard>
+        </Reveal>
       )}
 
       {/* Queue */}
-      <SectionCard
-        title="queue"
-        id="queue"
-        defaultOpen={false}
-        right={
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {Object.entries(d.stats.stageBreakdown).map(([stage, count]) => (
-              <Pill key={stage} color="gray">{stage} {count}</Pill>
-            ))}
-          </div>
-        }
-      >
-        <div className="section-card-body table-wrap">
-          {d.queue.length === 0 ? (
-            <div className="loading-dim">queue empty</div>
-          ) : (
-            <table className="data-table">
-              <thead><tr>
-                <th>slug / id</th><th>stage</th><th></th><th className="queue-col-priority">priority</th><th className="queue-col-elapsed">elapsed</th><th className="queue-col-flags">flags</th>
-              </tr></thead>
-              <tbody>
-                {queueRows.map((item) => (
-                  <tr key={item.id}>
-                    <td className="mono trunc">{item.slug ?? item.id}</td>
-                    <td className="mono">{item.stage}</td>
-                    <td><div style={{ display: "flex", gap: 4 }} className="queue-actions">
-                        <button className="btn btn-sm btn-ghost" onClick={() => {
-                          if (!item.dossierDate || !item.dossierSlug) return;
-                          navigate(`/autopipeline/dossier/${item.dossierDate}/${item.dossierSlug}`);
-                        }} disabled={!item.dossierDate || !item.dossierSlug}>inspect</button>
-                        {item.stage === "publish" && item.waitingApproval && (
-                          <button className="btn btn-sm btn-primary" onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>
-                        )}
-                        {!item.running && (
-                          <button className="btn btn-sm btn-ghost" onClick={() => setModal({ type: "rush", id: item.id, slug: item.slug })}>rush</button>
-                        )}
-                        <button className="btn btn-sm btn-danger" onClick={() => setModal({ type: "kill", id: item.id, slug: item.slug })}>kill</button>
-                      </div></td>
-                    <td className="dim queue-col-priority">{item.priority}</td>
-                    <td className="dim queue-col-elapsed">{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
-                    <td className="queue-col-flags">
-                      {item.running && <Pill color="amber">running</Pill>}
-                      {item.waitingApproval && <Pill color="red">approval</Pill>}
-                    </td>
-                  </tr>
+      <Reveal delay={0.1}>
+        <div className="v5-section" id="queue">
+          <SectionHead title="Queue" icon={<ListOrdered size={16} />} />
+          <div className="v5-card flat-hover">
+            {Object.keys(d.stats.stageBreakdown).length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                {Object.entries(d.stats.stageBreakdown).map(([stage, count]) => (
+                  <V5Pill key={stage}>{stage} {count}</V5Pill>
                 ))}
-              </tbody>
-            </table>
-          )}
-          {d.queue.length > MAX_BODY_ROWS && (
-            <div style={{ marginTop: 10 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowFullQueue((v) => !v)}>
-                {showFullQueue ? "Show less" : `Show all (${d.queue.length})`}
-              </button>
-            </div>
-          )}
-        </div>
-      </SectionCard>
-
-      {/* Approvals */}
-      {d.stats.approvalsWaiting > 0 && (
-        <SectionCard title="approvals waiting" id="approvals" defaultOpen={false}>
-          <div className="section-card-body table-wrap">
-            <table className="data-table">
-              <thead><tr><th>slug / id</th><th>stage</th><th>age</th></tr></thead>
-              <tbody>
-                {approvalRows.map((item) => (
-                  <tr key={item.id}>
-                    <td className="mono trunc">{item.slug ?? item.id}</td>
-                    <td className="mono">{item.stage}</td>
-                    <td className="dim">{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {approvals.length > MAX_BODY_ROWS && (
-              <div style={{ marginTop: 10 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setShowFullApprovals((v) => !v)}>
-                  {showFullApprovals ? "Show less" : `Show all (${approvals.length})`}
+              </div>
+            )}
+            {d.queue.length === 0 ? (
+              <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Queue is empty.</div>
+            ) : (
+              <div className="v5-table-wrap">
+                <table className="v5-table responsive">
+                  <thead><tr>
+                    <th>Slug / id</th><th>Stage</th><th>Actions</th><th>Priority</th><th>Elapsed</th><th>Flags</th>
+                  </tr></thead>
+                  <tbody>
+                    {queueRows.map((item) => (
+                      <tr key={item.id}>
+                        <td data-label="Slug / id" style={{ fontFamily: "var(--mono)", fontSize: 12, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.slug ?? item.id}</td>
+                        <td data-label="Stage" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{item.stage}</td>
+                        <td data-label="Actions">
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <button className="v5-btn ghost" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12 }} onClick={() => {
+                              if (!item.dossierDate || !item.dossierSlug) return;
+                              navigate(`/autopipeline/dossier/${item.dossierDate}/${item.dossierSlug}`);
+                            }} disabled={!item.dossierDate || !item.dossierSlug}>inspect</button>
+                            {item.stage === "publish" && item.waitingApproval && (
+                              <button className="v5-btn primary" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12 }} onClick={() => setModal({ type: "publish", id: item.id, slug: item.slug })}>publish</button>
+                            )}
+                            {!item.running && (
+                              <button className="v5-btn ghost" style={{ minHeight: 32, padding: "5px 10px", fontSize: 12 }} onClick={() => setModal({ type: "rush", id: item.id, slug: item.slug })}>rush</button>
+                            )}
+                            <button
+                              className="v5-btn ghost"
+                              style={{ minHeight: 32, padding: "5px 10px", fontSize: 12, color: "var(--red)" }}
+                              onClick={() => setModal({ type: "kill", id: item.id, slug: item.slug })}
+                            >kill</button>
+                          </div>
+                        </td>
+                        <td data-label="Priority" style={{ color: "var(--text-dim)" }}>{item.priority}</td>
+                        <td data-label="Elapsed" style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 12 }}>{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
+                        <td data-label="Flags">
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {item.running && <V5Pill tone="warn">running</V5Pill>}
+                            {item.waitingApproval && <V5Pill tone="err">approval</V5Pill>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {d.queue.length > MAX_BODY_ROWS && (
+              <div style={{ marginTop: 12 }}>
+                <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => setShowFullQueue((v) => !v)}>
+                  {showFullQueue ? "Show less" : `Show all (${d.queue.length})`}
                 </button>
               </div>
             )}
           </div>
-        </SectionCard>
+        </div>
+      </Reveal>
+
+      {/* Approvals */}
+      {d.stats.approvalsWaiting > 0 && (
+        <Reveal delay={0.14}>
+          <div className="v5-section" id="approvals">
+            <SectionHead title="Approvals waiting" icon={<ListChecks size={16} />} />
+            <div className="v5-card flat-hover">
+              <div className="v5-table-wrap">
+                <table className="v5-table responsive">
+                  <thead><tr><th>Slug / id</th><th>Stage</th><th>Age</th></tr></thead>
+                  <tbody>
+                    {approvalRows.map((item) => (
+                      <tr key={item.id}>
+                        <td data-label="Slug / id" style={{ fontFamily: "var(--mono)", fontSize: 12, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.slug ?? item.id}</td>
+                        <td data-label="Stage" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{item.stage}</td>
+                        <td data-label="Age" style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 12 }}>{item.elapsedMs != null ? fmtMs(item.elapsedMs) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {approvals.length > MAX_BODY_ROWS && (
+                <div style={{ marginTop: 12 }}>
+                  <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => setShowFullApprovals((v) => !v)}>
+                    {showFullApprovals ? "Show less" : `Show all (${approvals.length})`}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </Reveal>
       )}
 
-      {/* Stage breakdown chart */}
+      {/* Queue by stage */}
       {Object.keys(d.stats.stageBreakdown).length > 0 && (
-        <SectionCard title="queue by stage" id="stages" defaultOpen={false}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {(() => {
-              const stageOrder = ["scout", "research", "validate-research", "write", "validate-write", "verify", "publish-prep", "init", "fetch-image", "publish"];
-              const data = stageOrder
-                .filter((s) => d.stats.stageBreakdown[s] != null)
-                .map((s) => ({ stage: s, count: d.stats.stageBreakdown[s] }));
-              const APPROVAL_STAGES = new Set(["publish"]);
-              return (
-                <ResponsiveContainer width="100%" height={Math.max(60, data.length * 26)}>
-                  <BarChart layout="vertical" data={data} margin={{ top: 0, right: 36, bottom: 0, left: 0 }}>
-                    <XAxis type="number" hide />
-                    <YAxis
-                      type="category" dataKey="stage" width={140}
-                      tick={{ fontFamily: "var(--mono)", fontSize: 10, fill: "#666" }}
-                      axisLine={false} tickLine={false}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
-                      itemStyle={{ color: "#4ade80" }}
-                      formatter={(v: number) => [v, "stories"]}
-                    />
-                    <Bar dataKey="count" radius={[0, 2, 2, 0]} maxBarSize={16}>
-                      {data.map((entry) => (
-                        <Cell
-                          key={entry.stage}
-                          fill={APPROVAL_STAGES.has(entry.stage) ? "#f59e0b" : "#4ade80"}
-                          opacity={0.7}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              );
-            })()}
+        <Reveal delay={0.18}>
+          <div className="v5-section" id="stages">
+            <SectionHead title="Queue by stage" icon={<Activity size={16} />} />
+            <div className="v5-card flat-hover">
+              <StageBars breakdown={d.stats.stageBreakdown} />
+            </div>
           </div>
-        </SectionCard>
+        </Reveal>
       )}
 
       {/* Stage durations */}
-      <SectionCard title="stage durations" id="throughput" defaultOpen={false}>
-        <div className="section-card-body table-wrap">
-          <StageDurationTable durations={durationRowsVisible} />
-          {durationRows.length > MAX_BODY_ROWS && (
-            <div style={{ marginTop: 10 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowFullDurations((v) => !v)}>
-                {showFullDurations ? "Show less" : `Show all (${durationRows.length})`}
-              </button>
-            </div>
-          )}
+      <Reveal delay={0.22}>
+        <div className="v5-section" id="throughput">
+          <SectionHead title="Stage durations" icon={<Gauge size={16} />} />
+          <div className="v5-card flat-hover">
+            <StageDurationTable durations={durationRowsVisible} />
+            {durationRows.length > MAX_BODY_ROWS && (
+              <div style={{ marginTop: 12 }}>
+                <button className="v5-btn ghost" style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }} onClick={() => setShowFullDurations((v) => !v)}>
+                  {showFullDurations ? "Show less" : `Show all (${durationRows.length})`}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-      </SectionCard>
+      </Reveal>
     </div>
   );
 }

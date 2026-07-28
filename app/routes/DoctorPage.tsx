@@ -2,16 +2,18 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { useApi } from "../hooks/useApi";
 import { useAction } from "../hooks/useAction";
 import type { DoctorDetail } from "../../server/api/types";
-import { SectionCard } from "../components/SectionCard";
 import { TableControls } from "../components/TableControls";
 import { useTableControls, type TableSortValue } from "../hooks/useTableControls";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { authFetch } from "../lib/authFetch";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Bug, ChevronDown, ChevronRight, ListChecks, PieChart as PieChartIcon, Stethoscope } from "lucide-react";
+import { AnimatedNumber, Reveal, SectionHead, Stat } from "../components/v5/ui";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
+
+const V5_TOOLTIP_STYLE = { background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 12 } as const;
 
 // Mirrors server/api/actions.ts DOCTOR_REQUEUE_CLASS_MAX — display only, the
 // real cap is enforced server-side regardless of this value.
@@ -59,7 +61,33 @@ function describeClassFixJob(job: JobPollRow): string {
 }
 
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = color === "green" ? "ok" : color === "amber" ? "warn" : color === "red" ? "err" : color === "blue" ? "info" : "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
+}
+
+function GradientBar({ label, count, max, title }: { label: string; count: number; max: number; title?: string }) {
+  return (
+    <div
+      title={title}
+      style={{ display: "grid", gridTemplateColumns: "minmax(90px, 1fr) 2fr auto", gap: 10, alignItems: "center" }}
+    >
+      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {label}
+      </span>
+      <div style={{ height: 6, borderRadius: 999, background: "var(--bg-sub)", overflow: "hidden" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${Math.max(4, Math.round((count / Math.max(1, max)) * 100))}%`,
+            borderRadius: 999,
+            background: "var(--grad-accent)",
+            transition: "width 0.9s var(--ease-out, ease)",
+          }}
+        />
+      </div>
+      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-bright)", minWidth: 18, textAlign: "right" }}>{count}</span>
+    </div>
+  );
 }
 
 function verdictColor(action: string): string {
@@ -149,7 +177,7 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
   };
 
   return (
-    <div className="section-card-body table-wrap">
+    <div>
       {confirmRow && (
         <ConfirmModal
           title="Requeue doctor for this story?"
@@ -162,7 +190,8 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
         />
       )}
       <TableControls {...controls.controlsProps} searchPlaceholder="Search decision log..." />
-      <table className="data-table">
+      <div className="v5-table-wrap" style={{ marginTop: 10 }}>
+      <table className="v5-table responsive">
         <thead><tr>
           <th className="expander-col" aria-label="detail" />
           <th {...controls.sortHeaderProps("ts")}>time <SortArrow active={controls.sort.key === "ts"} dir={controls.sort.dir} /></th>
@@ -180,22 +209,22 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
             return (
               <Fragment key={key}>
                 <tr className="data-row-clickable" onClick={() => controls.toggleExpanded(key)}>
-                  <td className="expander-col">
+                  <td className="expander-col" data-no-label>
                     <button className="table-expander" type="button" aria-label={`${expanded ? "Hide" : "Show"} doctor decision detail`} onClick={(event) => { event.stopPropagation(); controls.toggleExpanded(key); }}>
                       {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     </button>
                   </td>
-                  <td className="mono dim" style={{ whiteSpace: "nowrap" }}>{entry.ts.slice(0, 19).replace("T", " ")}</td>
-                  <td className="mono trunc" style={{ maxWidth: 160 }} title={entry.slug}>{entry.slug}</td>
-                  <td className="mono">{entry.stage}</td>
-                  <td className="mono dim" style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={entry.errorType}>{entry.errorType}</td>
-                  <td className="mono dim trunc" style={{ maxWidth: 140 }} title={entry.failedModel}>{entry.failedModel}</td>
-                  <td><Pill color={verdictColor(entry.action)}>{entry.action}</Pill></td>
-                  <td className="dim" style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} title={entry.reason}>{entry.reason}</td>
+                  <td data-label="Time" className="mono dim" style={{ whiteSpace: "nowrap" }}>{entry.ts.slice(0, 19).replace("T", " ")}</td>
+                  <td data-label="Slug" className="mono trunc" style={{ maxWidth: 160 }} title={entry.slug}>{entry.slug}</td>
+                  <td data-label="Stage" className="mono">{entry.stage}</td>
+                  <td data-label="Error" className="mono dim" style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={entry.errorType}>{entry.errorType}</td>
+                  <td data-label="Model" className="mono dim trunc" style={{ maxWidth: 140 }} title={entry.failedModel}>{entry.failedModel}</td>
+                  <td data-label="Verdict"><Pill color={verdictColor(entry.action)}>{entry.action}</Pill></td>
+                  <td data-label="Reason" className="dim" style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }} title={entry.reason}>{entry.reason}</td>
                 </tr>
                 {expanded && (
                   <tr className="data-row-detail">
-                    <td colSpan={8}>
+                    <td colSpan={8} data-no-label>
                       <div className="data-row-detail-inner">
                         <div className="data-row-detail-grid">
                           <div><span>time</span><strong className="mono">{entry.ts}</strong></div>
@@ -210,7 +239,8 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
                         {entry.reason && <pre className="audit-pre">{entry.reason}</pre>}
                         <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                           <button
-                            className="btn btn-sm btn-ghost"
+                            className="v5-btn ghost"
+                            style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }}
                             disabled={rowRuns[key]?.loading}
                             title="Re-runs the doctor for this story only if it is still stuck in the autopipeline queue; refuses otherwise."
                             onClick={(event) => { event.stopPropagation(); setConfirmRow({ key, entry }); }}
@@ -230,7 +260,8 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
           })}
         </tbody>
       </table>
-      {controls.filteredCount === 0 && <div className="loading-dim">no matching doctor decisions</div>}
+      </div>
+      {controls.filteredCount === 0 && <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 10 }}>No matching doctor decisions.</div>}
     </div>
   );
 }
@@ -238,31 +269,26 @@ function DecisionLogTable({ entries, onAfterAction }: { entries: DoctorEntry[]; 
 function DoctorLoadingState({ error }: { error?: string | null }) {
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Doctor</div>
-        <div className={`loading-panel${error ? " error" : ""}`} style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600 }}>{error ? "Doctor data did not load" : "Loading doctor data"}</div>
-          <div>{error ? `The API returned: ${error}` : "Waiting for repair stats, charts, and the decision log."}</div>
-        </div>
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-title">Doctor</div>
+        <div className="v5-pagehead-sub">Auto-repair history & error analysis.</div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, marginBottom: 16 }}>
-        {["error classes (24h)", "top failing models", "verdict mix"].map((title) => (
-          <SectionCard key={title} title={title} defaultOpen={true}>
-            <div className="section-card-body" style={{ padding: "12px 16px" }}>
-              <div className="skeleton-line wide" />
-              <div className="skeleton-line" />
-              <div className="skeleton-line short" />
-            </div>
-          </SectionCard>
-        ))}
-      </div>
-      <SectionCard title="decision log" defaultOpen={true}>
-        <div className="section-card-body" style={{ padding: "12px 16px" }}>
-          <div className="skeleton-line wide" />
-          <div className="skeleton-line wide" />
-          <div className="skeleton-line" />
+      {error ? (
+        <div className="v5-card" style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, color: "var(--red)", marginBottom: 4 }}>Doctor data did not load</div>
+          <div style={{ fontSize: 13, color: "var(--text-dim)" }}>The API returned: {error}</div>
         </div>
-      </SectionCard>
+      ) : (
+        <>
+          <div className="v5-grid stats" style={{ marginBottom: 14 }}>
+            {[0, 1, 2].map((i) => <div key={i} className="v5-skeleton" style={{ height: 92 }} />)}
+          </div>
+          <div className="v5-grid cards" style={{ marginBottom: 14 }}>
+            {[0, 1, 2].map((i) => <div key={i} className="v5-skeleton" style={{ height: 150 }} />)}
+          </div>
+          <div className="v5-skeleton" style={{ height: 260 }} />
+        </>
+      )}
     </div>
   );
 }
@@ -341,49 +367,62 @@ export function DoctorPage() {
 
   return (
     <div className="dash-page">
-      <div className="page-header">
-        <div className="page-title">Doctor</div>
-        <div className="stat-row">
-          <div className="stat-item">
-            <div className="stat-val">{d.stats.total}</div>
-            <div className="stat-lbl">repairs 24h</div>
+      <div className="v5-pagehead">
+        <div className="v5-pagehead-row">
+          <div>
+            <div className="v5-pagehead-title">Doctor</div>
+            <div className="v5-pagehead-sub">Auto-repair history & error analysis.</div>
           </div>
-          {successPct !== null && (
-            <div className="stat-item">
-              <div className="stat-val">{successPct}%</div>
-              <div className="stat-lbl">success rate</div>
-            </div>
-          )}
-          {d.lastDecision && (
-            <div className="stat-item">
-              <div className="stat-lbl">last decision</div>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-                {d.lastDecision.slug} · <Pill color={verdictColor(d.lastDecision.action)}>{d.lastDecision.action}</Pill>
-              </div>
-            </div>
-          )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              className="v5-btn"
+              disabled={scan.loading}
+              onClick={async () => {
+                const ok = await scan.run();
+                if (ok) refresh();
+              }}
+            >
+              <Stethoscope size={15} />
+              {scan.loading ? "Running scan..." : "Run doctor scan"}
+            </button>
+          </div>
         </div>
-        <div className="action-bar" style={{ marginTop: 12 }}>
-          <button
-            className="btn btn-ghost"
-            disabled={scan.loading}
-            onClick={async () => {
-              const ok = await scan.run();
-              if (ok) refresh();
-            }}
-          >
-            {scan.loading ? "Running scan..." : "Run doctor scan"}
-          </button>
-          {scan.success && <span className="action-feedback ok">{scan.success}</span>}
-          {scan.error && <span className="action-feedback err">{scan.error}</span>}
-        </div>
+        {(scan.success || scan.error) && (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            {scan.success && <span className="action-feedback ok">{scan.success}</span>}
+            {scan.error && <span className="action-feedback err">{scan.error}</span>}
+          </div>
+        )}
       </div>
 
+      <Reveal delay={0.02}>
+        <div className="v5-grid stats">
+          <Stat label="repairs 24h" value={<AnimatedNumber value={d.stats.total} />} gradient />
+          {successPct !== null && (
+            <Stat
+              label="success rate"
+              value={<AnimatedNumber value={successPct} suffix="%" />}
+              tone={successPct >= 80 ? "ok" : successPct >= 50 ? "warn" : "err"}
+            />
+          )}
+          {d.lastDecision && (
+            <div className="v5-card flat-hover v5-stat">
+              <div className="v5-card-label">last decision</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)", wordBreak: "break-all" }}>
+                {d.lastDecision.slug}
+              </div>
+              <div style={{ marginTop: 4 }}><Pill color={verdictColor(d.lastDecision.action)}>{d.lastDecision.action}</Pill></div>
+            </div>
+          )}
+        </div>
+      </Reveal>
+
       {/* Stats charts */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, marginBottom: 16 }}>
-        <SectionCard title="error classes (24h)" id="errors" defaultOpen={true}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.errorClasses.length === 0 ? <div className="loading-dim">none</div> : (
+      <Reveal delay={0.06}>
+        <div className="v5-grid cards" style={{ marginTop: 18 }}>
+          <div className="v5-card flat-hover" id="errors">
+            <div className="v5-card-label"><Bug size={13} /> error classes (24h)</div>
+            {d.stats.errorClasses.length === 0 ? <div style={{ color: "var(--text-muted)", fontSize: 13 }}>None.</div> : (
               <ResponsiveContainer width="100%" height={Math.max(60, d.stats.errorClasses.length * 22)}>
                 <BarChart
                   layout="vertical"
@@ -393,67 +432,68 @@ export function DoctorPage() {
                   <XAxis type="number" hide />
                   <YAxis
                     type="category" dataKey="type" width={130}
-                    tick={{ fontFamily: "var(--mono)", fontSize: 10, fill: "#666" }}
+                    tick={{ fontFamily: "var(--mono)", fontSize: 10, fill: "var(--text-muted)" }}
                     axisLine={false} tickLine={false}
                   />
                   <Tooltip
-                    contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
-                    itemStyle={{ color: "#f87171" }}
+                    contentStyle={V5_TOOLTIP_STYLE}
+                    itemStyle={{ color: "var(--red)" }}
                     formatter={(v: number) => [v, "events"]}
                   />
-                  <Bar dataKey="count" fill="#f87171" opacity={0.7} radius={[0, 2, 2, 0]} />
+                  <Bar dataKey="count" fill="var(--red)" opacity={0.75} radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </div>
-        </SectionCard>
 
-        <SectionCard title="top failing models" id="models" defaultOpen={false}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.topFailingModels.length === 0 ? <div className="loading-dim">none</div> : (
-              d.stats.topFailingModels.map((m) => (
-                <div key={m.model} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>{m.model}</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)" }}>{m.count}</span>
-                </div>
-              ))
+          <div className="v5-card flat-hover" id="models">
+            <div className="v5-card-label">top failing models</div>
+            {d.stats.topFailingModels.length === 0 ? <div style={{ color: "var(--text-muted)", fontSize: 13 }}>None.</div> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {d.stats.topFailingModels.map((m) => (
+                  <GradientBar
+                    key={m.model}
+                    label={m.model}
+                    title={m.model}
+                    count={m.count}
+                    max={Math.max(...d.stats.topFailingModels.map((x) => x.count))}
+                  />
+                ))}
+              </div>
             )}
           </div>
-        </SectionCard>
 
-        <SectionCard title="verdict mix" id="verdicts" defaultOpen={false}>
-          <div className="section-card-body" style={{ padding: "10px 14px" }}>
-            {d.stats.verdictMix.length === 0 ? <div className="loading-dim">none</div> : (() => {
+          <div className="v5-card flat-hover" id="verdicts">
+            <div className="v5-card-label"><PieChartIcon size={13} /> verdict mix</div>
+            {d.stats.verdictMix.length === 0 ? <div style={{ color: "var(--text-muted)", fontSize: 13 }}>None.</div> : (() => {
               const COLORS: Record<string, string> = {
-                retry: "#4ade80", requeued: "#4ade80",
-                "dead-content": "#f87171", kill: "#f87171",
-                cooldown: "#f59e0b", no_action: "#555",
+                retry: "var(--green)", requeued: "var(--green)",
+                "dead-content": "var(--red)", kill: "var(--red)",
+                cooldown: "var(--amber-warn)", no_action: "var(--text-muted)",
               };
               return (
-                <ResponsiveContainer width="100%" height={120}>
+                <ResponsiveContainer width="100%" height={140}>
                   <PieChart>
                     <Pie
                       data={d.stats.verdictMix} dataKey="count" nameKey="action"
-                      cx="50%" cy="50%" outerRadius={48} innerRadius={24}
+                      cx="50%" cy="50%" outerRadius={52} innerRadius={26}
                     >
                       {d.stats.verdictMix.map((v) => (
-                        <Cell key={v.action} fill={COLORS[v.action] ?? "#555"} opacity={0.8} />
+                        <Cell key={v.action} fill={COLORS[v.action] ?? "var(--text-muted)"} opacity={0.85} />
                       ))}
                     </Pie>
-                    <Tooltip
-                      contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 11 }}
-                    />
+                    <Tooltip contentStyle={V5_TOOLTIP_STYLE} />
                     <Legend
                       iconType="circle" iconSize={7}
-                      formatter={(value: string) => <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#888" }}>{value}</span>}
+                      formatter={(value: string) => <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{value}</span>}
                     />
                   </PieChart>
                 </ResponsiveContainer>
               );
             })()}
           </div>
-        </SectionCard>
-      </div>
+        </div>
+      </Reveal>
 
       {/* Full log */}
       {classFixTarget && (
@@ -467,12 +507,17 @@ export function DoctorPage() {
           onConfirm={() => { void runClassFix(classFixTarget); }}
         />
       )}
-      <SectionCard
-        title="decision log"
-        defaultOpen={false}
-        right={<span className="dim" style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{d.entries.length} entries</span>}
-      >
-        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <Reveal delay={0.1}>
+        <div className="v5-section">
+          <SectionHead
+            title="Decision log"
+            icon={<ListChecks size={16} />}
+          />
+          <div className="v5-card flat-hover">
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-muted)" }}>{d.entries.length} entries</span>
+            </div>
+            <div style={{ paddingBottom: 12, marginBottom: 12, borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)}
             style={{ fontFamily: "var(--mono)", fontSize: 11, background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text)", padding: "3px 8px", borderRadius: 3 }}>
             <option value="">all stages</option>
@@ -496,7 +541,8 @@ export function DoctorPage() {
           )}
           {filterError && (
             <button
-              className="btn btn-sm btn-ghost"
+              className="v5-btn ghost"
+              style={{ minHeight: 34, padding: "6px 12px", fontSize: 12 }}
               disabled={classFixRun.loading}
               title={`Re-dispatch up to ${DOCTOR_REQUEUE_CLASS_DISPLAY_MAX} stuck "${filterError}" stories to the doctor.`}
               onClick={() => setClassFixTarget(filterError)}
@@ -506,9 +552,11 @@ export function DoctorPage() {
           )}
           {classFixRun.status === "success" && <span className="action-feedback ok">{classFixRun.message}</span>}
           {classFixRun.status === "failed" && <span className="action-feedback err">{classFixRun.message}</span>}
-        </div>
+            </div>
         <DecisionLogTable entries={filtered} onAfterAction={refresh} />
-      </SectionCard>
+          </div>
+        </div>
+      </Reveal>
     </div>
   );
 }

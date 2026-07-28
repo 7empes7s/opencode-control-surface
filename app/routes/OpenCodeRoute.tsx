@@ -8,10 +8,17 @@ export function OpenCodeRoute() {
 
   if (!ready) {
     return (
-      <div className="oc-connecting">
-        <span className="oc-connecting-text">
-          {error ? `OpenCode unavailable: ${error}` : "Connecting to OpenCode…"}
-        </span>
+      <div className="oc-connecting" style={{ flexDirection: "column", gap: 14 }}>
+        {error ? (
+          <span className="oc-connecting-text" style={{ color: "var(--red)" }}>
+            {`OpenCode unavailable: ${error}`}
+          </span>
+        ) : (
+          <>
+            <div className="v5-skeleton" style={{ width: 220, height: 14 }} />
+            <span className="oc-connecting-text">Connecting to OpenCode…</span>
+          </>
+        )}
       </div>
     );
   }

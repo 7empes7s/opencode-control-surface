@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useAuthenticatedApi } from "../hooks/useAuthenticatedApi";
 import { SectionCard } from "../components/SectionCard";
+import { AnimatedNumber, Reveal, Stat } from "../components/v5/ui";
 import { useTableControls } from "../hooks/useTableControls";
 import { TableControls } from "../components/TableControls";
 import type { ActionAuditRow } from "../../server/db/writer";
@@ -19,8 +20,11 @@ interface EventsData {
   reason?: string;
 }
 
+const V5_TONE: Record<string, string> = { green: "ok", amber: "warn", red: "err", blue: "info", gray: "" };
+
 function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: string }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+  const tone = V5_TONE[color] ?? "";
+  return <span className={`v5-pill${tone ? ` ${tone}` : ""}`}>{children}</span>;
 }
 
 function statusColor(status: string | null): string {
@@ -60,8 +64,8 @@ function ChainStatusBadge() {
   const { data, refresh } = useAuthenticatedApi<ChainStatus>("/api/audit/chain-status", 60_000);
   if (!data) return null;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", borderRadius: 8, background: data.ok ? "color-mix(in oklch, green 15%, transparent)" : "color-mix(in oklch, red 15%, transparent)", border: `1px solid ${data.ok ? "green" : "red"}`, fontSize: 12, marginBottom: 16 }}>
-      <span style={{ fontWeight: 700, color: data.ok ? "green" : "red" }}>
+    <div className="v5-card flat-hover" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12, marginBottom: 16 }}>
+      <span className={`v5-pill ${data.ok ? "ok" : "err"}`}>
         {data.ok ? "✓ Chain OK" : "✗ Chain BROKEN"}
       </span>
       <span style={{ color: "var(--text-dim)" }}>
@@ -69,11 +73,11 @@ function ChainStatusBadge() {
         {data.firstBadId ? ` · first bad row: #${data.firstBadId}` : ""}
       </span>
       {data.headHash && (
-        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }} title={data.headHash}>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-muted)" }} title={data.headHash}>
           head: {data.headHash.slice(0, 12)}…
         </span>
       )}
-      <button onClick={refresh} style={{ marginLeft: "auto", fontSize: 10, padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", cursor: "pointer", color: "var(--text-dim)" }}>Verify</button>
+      <button type="button" className="v5-btn ghost" onClick={refresh} style={{ marginLeft: "auto", minHeight: 40 }}>Verify</button>
     </div>
   );
 }
@@ -170,8 +174,24 @@ export function AuditPage() {
     },
   });
 
-  if (loading && !data) return <div className="loading-dim">loading...</div>;
-  if (error && !data) return <div className="loading-dim error">error: {error}</div>;
+  if (loading && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-skeleton" style={{ height: 30, width: 180, marginBottom: 16 }} />
+        <div className="v5-grid stats" style={{ marginBottom: 14 }}>
+          {[0, 1, 2, 3].map((i) => <div key={i} className="v5-skeleton" style={{ height: 96 }} />)}
+        </div>
+        <div className="v5-skeleton" style={{ height: 300 }} />
+      </div>
+    );
+  }
+  if (error && !data) {
+    return (
+      <div className="dash-page">
+        <div className="v5-card flat-hover" style={{ fontSize: 13, color: "var(--red)" }}>Audit log did not load: {error}</div>
+      </div>
+    );
+  }
 
   const combinedLoading = loading || eventsLoading;
   const combinedError = error || eventsError;
@@ -248,144 +268,178 @@ export function AuditPage() {
         <EventDrawer event={selectedEvent} onClose={() => setSelectedEvent(null)} />
       )}
 
-      <div className="page-header">
-        <div className="page-title">Audit</div>
-        <button className="btn btn-sm btn-ghost" onClick={activeTab === "actions" ? refresh : refreshEvents} disabled={combinedLoading}>
-          <RefreshCw size={14} /> refresh
-        </button>
-      </div>
-
-      <div className="audit-tabs" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button
-          className={`btn btn-sm ${activeTab === "actions" ? "btn-primary" : "btn-ghost"}`}
-          onClick={() => setActiveTab("actions")}
-        >
-          Operator Actions
-        </button>
-        <button
-          className={`btn btn-sm ${activeTab === "events" ? "btn-primary" : "btn-ghost"}`}
-          onClick={() => setActiveTab("events")}
-        >
-          System Events
-        </button>
-      </div>
-
-      <ChainStatusBadge />
-
-      <div className="stat-row">
-        <div className="stat-item"><div className="stat-val">{rows.length}</div><div className="stat-lbl">loaded</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.success}</div><div className="stat-lbl">success</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.failed}</div><div className="stat-lbl">failed</div></div>
-        <div className="stat-item"><div className="stat-val">{counts.highRisk}</div><div className="stat-lbl">high risk</div></div>
-      </div>
-
-      {data?.degraded && <div className="loading-dim error">degraded: {data.reason}</div>}
-
-      <div className="action-bar audit-filter-bar">
-        <select className="audit-select" value={resultStatus} onChange={(event) => setResultStatus(event.target.value)}>
-          <option value="">all results</option>
-          <option value="success">success</option>
-          <option value="failed">failed</option>
-        </select>
-        <select className="audit-select" value={targetType} onChange={(event) => setTargetType(event.target.value)}>
-          <option value="">all targets</option>
-          {targetTypes.map((value) => <option key={value} value={value}>{value}</option>)}
-        </select>
-        <select className="audit-select" value={actionKind} onChange={(event) => setActionKind(event.target.value)}>
-          <option value="">all actions</option>
-          {actionKinds.map((value) => <option key={value} value={value}>{value}</option>)}
-        </select>
-      </div>
-
-      <SectionCard
-        title="recent audit"
-        defaultOpen={true}
-        right={<span className="mono dim">{rows.length} rows</span>}
-      >
-        <div className="section-card-body table-wrap">
-          <TableControls {...auditCtrl.controlsProps} searchPlaceholder="Filter by action, target, actor…" />
-          {rows.length === 0 ? (
-            <div className="empty-state" style={{ padding: "18px 14px", lineHeight: 1.6 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>No operator actions in this period</div>
-              <div className="dim">
-                This log records <strong>manual operator actions</strong> (apply/approve button clicks), and is hash-chained for tamper-evidence.
-                The platform has been running autonomously, so there are none recently — this is expected, not an error.
-                Live, ongoing system activity is in the <strong>System Events</strong> tab above.
-              </div>
+      <Reveal>
+        <header className="v5-pagehead">
+          <div className="v5-pagehead-row">
+            <div>
+              <div className="v5-pagehead-title">Audit</div>
+              <p className="v5-pagehead-sub">Hash-chained operator action log and live system events — every mutation, verified and attributable.</p>
             </div>
-          ) : (
-            <table className="data-table audit-entries-table">
-              <thead>
-                <tr>
-                  <th {...auditCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{auditCtrl.sort.key === "ts" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th {...auditCtrl.sortHeaderProps("resultStatus")}>result <span className="sortable-th-arrow">{auditCtrl.sort.key === "resultStatus" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th {...auditCtrl.sortHeaderProps("risk")}>risk <span className="sortable-th-arrow">{auditCtrl.sort.key === "risk" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th {...auditCtrl.sortHeaderProps("actionKind")}>action <span className="sortable-th-arrow">{auditCtrl.sort.key === "actionKind" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th>target</th>
-                  <th {...auditCtrl.sortHeaderProps("actor")} className="audit-actor-col">actor <span className="sortable-th-arrow">{auditCtrl.sort.key === "actor" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditCtrl.rows.map((row) => (
-                  <tr key={row.id}>
-                    <td className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
-                    <td><Pill color={statusColor(row.resultStatus)}>{row.resultStatus ?? "-"}</Pill></td>
-                    <td><Pill color={riskColor(row.risk)}>{row.risk ?? "-"}</Pill></td>
-                    <td className="mono">{row.actionKind}</td>
-                    <td className="mono trunc">{row.targetId ?? row.target ?? row.targetType ?? "-"}</td>
-                    <td className="mono dim audit-actor-col">{row.actor ?? "-"}</td>
-                    <td style={{ textAlign: "right" }}>
-                      <button className="btn btn-sm btn-ghost" onClick={() => setSelected(row)}>details</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+            <button type="button" className="v5-btn" onClick={activeTab === "actions" ? refresh : refreshEvents} disabled={combinedLoading}>
+              <RefreshCw size={14} /> Refresh
+            </button>
+          </div>
+        </header>
+      </Reveal>
+
+      <Reveal delay={0.04}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className={`v5-btn${activeTab === "actions" ? " primary" : ""}`}
+            onClick={() => setActiveTab("actions")}
+          >
+            Operator Actions
+          </button>
+          <button
+            type="button"
+            className={`v5-btn${activeTab === "events" ? " primary" : ""}`}
+            onClick={() => setActiveTab("events")}
+          >
+            System Events
+          </button>
         </div>
-      </SectionCard>
+      </Reveal>
+
+      <Reveal delay={0.08}>
+        <ChainStatusBadge />
+      </Reveal>
+
+      <Reveal delay={0.12}>
+        <div className="v5-grid stats">
+          <Stat label="Loaded" value={<AnimatedNumber value={rows.length} />} />
+          <Stat label="Success" value={<AnimatedNumber value={counts.success} />} tone="ok" />
+          <Stat label="Failed" value={<AnimatedNumber value={counts.failed} />} tone={counts.failed > 0 ? "err" : "idle"} />
+          <Stat label="High risk" value={<AnimatedNumber value={counts.highRisk} />} tone={counts.highRisk > 0 ? "warn" : "idle"} />
+        </div>
+      </Reveal>
+
+      {data?.degraded && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--amber-warn)" }}>degraded: {data.reason}</div>
+      )}
+      {combinedError && !data?.degraded && (
+        <div className="v5-card flat-hover" style={{ marginTop: 14, fontSize: 13, color: "var(--red)" }}>error: {combinedError}</div>
+      )}
+
+      <Reveal delay={0.16}>
+        <div className="v5-card flat-hover" style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <span className="v5-card-label" style={{ marginRight: 2 }}>Filters</span>
+          <select className="audit-select" value={resultStatus} onChange={(event) => setResultStatus(event.target.value)} style={{ minHeight: 40 }}>
+            <option value="">all results</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+          </select>
+          <select className="audit-select" value={targetType} onChange={(event) => setTargetType(event.target.value)} style={{ minHeight: 40 }}>
+            <option value="">all targets</option>
+            {targetTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select className="audit-select" value={actionKind} onChange={(event) => setActionKind(event.target.value)} style={{ minHeight: 40 }}>
+            <option value="">all actions</option>
+            {actionKinds.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
+      </Reveal>
+
+      <Reveal delay={0.2}>
+        <div className="v5-section">
+          <SectionCard
+            title="recent audit"
+            defaultOpen={true}
+            right={<span className="mono dim">{rows.length} rows</span>}
+          >
+            <div className="section-card-body">
+              <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+                <TableControls {...auditCtrl.controlsProps} searchPlaceholder="Filter by action, target, actor…" />
+              </div>
+              {rows.length === 0 ? (
+                <p style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6 }}>
+                  No operator actions in this period — the platform has been running autonomously, which is expected; live activity is in the System Events tab.
+                </p>
+              ) : (
+                <div className="v5-table-wrap">
+                  <table className="v5-table responsive audit-entries-table">
+                    <thead>
+                      <tr>
+                        <th {...auditCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{auditCtrl.sort.key === "ts" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...auditCtrl.sortHeaderProps("resultStatus")}>result <span className="sortable-th-arrow">{auditCtrl.sort.key === "resultStatus" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...auditCtrl.sortHeaderProps("risk")}>risk <span className="sortable-th-arrow">{auditCtrl.sort.key === "risk" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th {...auditCtrl.sortHeaderProps("actionKind")}>action <span className="sortable-th-arrow">{auditCtrl.sort.key === "actionKind" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th>target</th>
+                        <th {...auditCtrl.sortHeaderProps("actor")} className="audit-actor-col">actor <span className="sortable-th-arrow">{auditCtrl.sort.key === "actor" ? (auditCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditCtrl.rows.map((row) => (
+                        <tr key={row.id}>
+                          <td data-label="When" className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
+                          <td data-label="Result"><Pill color={statusColor(row.resultStatus)}>{row.resultStatus ?? "-"}</Pill></td>
+                          <td data-label="Risk"><Pill color={riskColor(row.risk)}>{row.risk ?? "-"}</Pill></td>
+                          <td data-label="Action" className="mono">{row.actionKind}</td>
+                          <td data-label="Target" className="mono trunc">{row.targetId ?? row.target ?? row.targetType ?? "-"}</td>
+                          <td data-label="Actor" className="mono dim audit-actor-col">{row.actor ?? "-"}</td>
+                          <td data-no-label style={{ textAlign: "right" }}>
+                            <button type="button" className="v5-btn ghost" onClick={() => setSelected(row)}>details</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+        </div>
+      </Reveal>
 
       {activeTab === "events" && (
-        <SectionCard
-          title="system events"
-          defaultOpen={true}
-          right={<span className="mono dim">{events.length} rows</span>}
-        >
-          <div className="section-card-body table-wrap">
-            <TableControls {...eventsCtrl.controlsProps} searchPlaceholder="Filter by kind, entity, summary…" />
-            {events.length === 0 ? (
-              <div className="loading-dim">no system events</div>
-            ) : (
-              <table className="data-table audit-entries-table">
-                <thead>
-                  <tr>
-                    <th {...eventsCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{eventsCtrl.sort.key === "ts" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                    <th {...eventsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{eventsCtrl.sort.key === "kind" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                    <th {...eventsCtrl.sortHeaderProps("severity")}>severity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "severity" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                    <th {...eventsCtrl.sortHeaderProps("entityType")}>entity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "entityType" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
-                    <th>summary</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {eventsCtrl.rows.map((row) => (
-                    <tr key={row.id} onClick={() => setSelectedEvent(row)} style={{ cursor: "pointer" }}>
-                      <td className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
-                      <td className="mono">{row.kind}</td>
-                      <td><Pill color={severityColor(row.severity)}>{row.severity}</Pill></td>
-                      <td className="mono trunc">{row.entityType ?? "-"}{row.entityId ? ` · #{row.entityId}` : ""}</td>
-                      <td className="trunc" style={{ maxWidth: 400 }}>{row.summary}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button className="btn btn-sm btn-ghost" onClick={(event) => { event.stopPropagation(); setSelectedEvent(row); }}>details</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+        <Reveal delay={0.24}>
+          <div className="v5-section">
+            <SectionCard
+              title="system events"
+              defaultOpen={true}
+              right={<span className="mono dim">{events.length} rows</span>}
+            >
+              <div className="section-card-body">
+                <div className="v5-card flat-hover" style={{ padding: "8px 12px", marginBottom: 12 }}>
+                  <TableControls {...eventsCtrl.controlsProps} searchPlaceholder="Filter by kind, entity, summary…" />
+                </div>
+                {events.length === 0 ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: 13 }}>No system events recorded yet.</p>
+                ) : (
+                  <div className="v5-table-wrap">
+                    <table className="v5-table responsive audit-entries-table">
+                      <thead>
+                        <tr>
+                          <th {...eventsCtrl.sortHeaderProps("ts")} className="audit-when-col">when <span className="sortable-th-arrow">{eventsCtrl.sort.key === "ts" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...eventsCtrl.sortHeaderProps("kind")}>kind <span className="sortable-th-arrow">{eventsCtrl.sort.key === "kind" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...eventsCtrl.sortHeaderProps("severity")}>severity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "severity" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th {...eventsCtrl.sortHeaderProps("entityType")}>entity <span className="sortable-th-arrow">{eventsCtrl.sort.key === "entityType" ? (eventsCtrl.sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span></th>
+                          <th>summary</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {eventsCtrl.rows.map((row) => (
+                          <tr key={row.id} onClick={() => setSelectedEvent(row)} style={{ cursor: "pointer" }}>
+                            <td data-label="When" className="mono dim audit-when-col">{fmtTs(row.ts)}</td>
+                            <td data-label="Kind" className="mono">{row.kind}</td>
+                            <td data-label="Severity"><Pill color={severityColor(row.severity)}>{row.severity}</Pill></td>
+                            <td data-label="Entity" className="mono trunc">{row.entityType ?? "-"}{row.entityId ? ` · #${row.entityId}` : ""}</td>
+                            <td data-label="Summary" className="trunc" style={{ maxWidth: 400 }}>{row.summary}</td>
+                            <td data-no-label style={{ textAlign: "right" }}>
+                              <button type="button" className="v5-btn ghost" onClick={(event) => { event.stopPropagation(); setSelectedEvent(row); }}>details</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </SectionCard>
           </div>
-        </SectionCard>
+        </Reveal>
       )}
     </div>
   );

@@ -239,10 +239,25 @@ export function AgentComposer({
     : (placeholder ?? "Message");
 
   return (
-    <div className="oc-composer">
+    <div
+      className="oc-composer"
+      style={{
+        background: "var(--glass)",
+        backdropFilter: "blur(16px) saturate(1.25)",
+        WebkitBackdropFilter: "blur(16px) saturate(1.25)",
+        borderTop: "1px solid var(--border)",
+      }}
+    >
       {aboveRow}
       {slash && (
-        <div className="slash-picker">
+        <div
+          className="slash-picker"
+          style={{
+            borderRadius: "var(--r-md)",
+            background: "var(--bg-panel)",
+            border: "1px solid var(--border)",
+          }}
+        >
           {catalogError ? (
             <div className="slash-picker-empty">catalog unavailable</div>
           ) : matches.length > 0 ? (
@@ -273,12 +288,20 @@ export function AgentComposer({
           )}
         </div>
       )}
-      <div className="oc-composer-row">
+      <div
+        className="oc-composer-row"
+        style={{
+          background: "var(--bg-raised)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-md)",
+        }}
+      >
         {leftButtons}
         {voice.supported && (
           <button
             type="button"
             className={`oc-icon-btn${voice.listening ? " active" : ""}`}
+            style={{ borderRadius: "var(--r-md)", width: 44, height: 44 }}
             aria-label={voice.listening ? "Stop voice" : "Start voice"}
             onClick={() => (voice.listening ? voice.stop() : voice.start())}
           >
@@ -292,6 +315,7 @@ export function AgentComposer({
         <textarea
           ref={textareaRef}
           className="oc-textarea"
+          style={{ minHeight: 44, borderRadius: "var(--r-md)" }}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -302,7 +326,16 @@ export function AgentComposer({
         {running && onStop ? (
           <button
             type="button"
-            className="oc-send-btn stop"
+            className="v5-btn"
+            style={{
+              width: 44,
+              height: 44,
+              padding: 0,
+              justifyContent: "center",
+              flexShrink: 0,
+              color: "var(--amber-warn)",
+              borderColor: "color-mix(in oklch, var(--amber-warn) 35%, transparent)",
+            }}
             aria-label="Stop"
             onClick={onStop}
           >
@@ -311,7 +344,8 @@ export function AgentComposer({
         ) : !running ? (
           <button
             type="button"
-            className="oc-send-btn"
+            className="v5-btn primary"
+            style={{ width: 44, height: 44, padding: 0, justifyContent: "center", flexShrink: 0 }}
             aria-label="Send"
             onClick={onSubmit}
             disabled={!allowSend}

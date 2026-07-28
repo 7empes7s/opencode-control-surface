@@ -16,7 +16,7 @@ function renderText(text: string) {
       if (cbMatch[1]) segments.push(<span key={key++}>{cbMatch[1]}</span>);
       const lang = cbMatch[2] || "text";
       segments.push(
-        <pre key={key++}>
+        <pre key={key++} style={{ borderRadius: "var(--r-md)", border: "1px solid var(--border)" }}>
           <div className="code-header">
             <span>{lang}</span>
           </div>
@@ -82,16 +82,21 @@ function ToolPartView({ part, defaultOpen = false }: { part: Extract<Part, { typ
     : JSON.stringify((state as { input: Record<string, unknown> }).input, null, 2);
   const body = [inputStr, output, error].filter(Boolean).join("\n\n");
   const preview = (output || error || inputStr || "").replace(/\s+/g, " ").trim();
+  const badgeClass =
+    state.status === "completed" ? "v5-pill ok"
+    : state.status === "error" ? "v5-pill err"
+    : state.status === "running" ? "v5-pill warn"
+    : "v5-pill";
 
   return (
-    <div className={`part-tool status-${state.status}`}>
+    <div className={`part-tool status-${state.status}`} style={{ borderRadius: "var(--r-md)" }}>
       <button className="part-tool-header" onClick={() => setOpen((v) => !v)}>
         <ToolIcon tool={part.tool} />
         <span className="tool-name-text">
           {part.tool}
           {title && <span className="tool-title"> {title}</span>}
         </span>
-        <span className={`tool-badge ${state.status}`}>{statusLabel}</span>
+        <span className={badgeClass} style={{ fontSize: 10, padding: "2px 8px" }}>{statusLabel}</span>
         {open ? <ChevronDown size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} /> : <ChevronRight size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} />}
       </button>
       {!open && preview && (
@@ -129,14 +134,14 @@ function PatchPartView({ part, defaultOpen = false }: { part: Extract<Part, { ty
     if (defaultOpen) setOpen(true);
   }, [defaultOpen]);
   return (
-    <div className="part-tool">
+    <div className="part-tool" style={{ borderRadius: "var(--r-md)" }}>
       <button className="part-tool-header" onClick={() => setOpen((v) => !v)}>
         <FileEdit size={12} style={{ color: "var(--blue)" }} />
         <span className="tool-name-text">
           patch
           <span className="tool-title"> {part.files.length} file{part.files.length !== 1 ? "s" : ""}</span>
         </span>
-        <span className="tool-badge completed">applied</span>
+        <span className="v5-pill ok" style={{ fontSize: 10, padding: "2px 8px" }}>applied</span>
         {open ? <ChevronDown size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} /> : <ChevronRight size={11} style={{ color: "var(--text-dim)", marginLeft: 2 }} />}
       </button>
       {open && (
