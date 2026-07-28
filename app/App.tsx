@@ -84,13 +84,14 @@ function UsageBeacon() {
 }
 
 function DashLayout({ children }: { children: React.ReactNode }) {
+  const [location] = useLocation();
   return (
     <div className="dash-shell">
       <DashSidebar />
       <main className="dash-main">
         <div className="dash-content">
           <DashHeader />
-          {children}
+          <div className="v5-page" key={location}>{children}</div>
         </div>
       </main>
     </div>

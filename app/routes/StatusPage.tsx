@@ -200,12 +200,12 @@ const pageStyle: React.CSSProperties = {
   width: "100%",
   maxWidth: "100vw",
   overflowX: "hidden",
-  background: "var(--bg)",
   color: "var(--text)",
   fontFamily: "var(--sans, system-ui, sans-serif)",
   display: "flex",
   flexDirection: "column",
   alignItems: "center",
+  justifyContent: "center",
   padding: "32px 20px",
   boxSizing: "border-box",
 };
@@ -213,29 +213,33 @@ const pageStyle: React.CSSProperties = {
 const cardStyle: React.CSSProperties = {
   width: "100%",
   maxWidth: 560,
-  background: "var(--bg-panel)",
+  background: "linear-gradient(180deg, var(--bg-raised), var(--bg-card-end))",
   border: "1px solid var(--border)",
-  borderRadius: 12,
-  padding: "24px 20px",
+  borderRadius: 18,
+  padding: "26px 22px",
   boxSizing: "border-box",
   marginBottom: 16,
   minWidth: 0,
+  boxShadow: "var(--shadow-1)",
+  animation: "v5-fade-up 0.5s var(--ease-out) both",
 };
 
 const h1Style: React.CSSProperties = {
-  fontSize: 22,
-  fontWeight: 600,
+  fontSize: 24,
+  fontWeight: 700,
+  fontFamily: "var(--display, var(--sans, system-ui, sans-serif))",
+  letterSpacing: "-0.01em",
   color: "var(--text-bright)",
-  lineHeight: 1.3,
+  lineHeight: 1.25,
   wordBreak: "break-word",
 };
 
 const h2Style: React.CSSProperties = {
-  fontSize: 14,
+  fontSize: 11,
   fontWeight: 600,
-  color: "var(--text-dim)",
+  color: "var(--text-muted)",
   textTransform: "uppercase",
-  letterSpacing: 0.5,
+  letterSpacing: "0.13em",
   margin: "0 0 12px 0",
 };
 

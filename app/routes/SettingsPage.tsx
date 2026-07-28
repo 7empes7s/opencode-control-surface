@@ -125,7 +125,6 @@ interface NotificationRule {
 }
 
 type ThemePref = "dark" | "light";
-type VariantPref = "terminal" | "compact";
 
 function WCard({ children, className = "", style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return <div className={`w-card ${className}`} style={style}>{children}</div>;
@@ -167,10 +166,6 @@ function storedTheme(): ThemePref {
   return localStorage.getItem("tib-theme") === "light" ? "light" : "dark";
 }
 
-function storedVariant(): VariantPref {
-  return localStorage.getItem("tib-variant") === "compact" ? "compact" : "terminal";
-}
-
 function storedPollInterval(): number {
   const parsed = Number(localStorage.getItem(DEFAULT_POLL_KEY));
   return DEFAULT_POLL_OPTIONS.includes(parsed) ? parsed : 30_000;
@@ -193,7 +188,6 @@ export function SettingsPage() {
   const [inviteForm, setInviteForm] = useState({ email: "", name: "", password: "", role: "viewer" as AccessRole });
   const [activeTab, setActiveTab] = useState<TabId>("preferences");
   const [themePref, setThemePref] = useState<ThemePref>(storedTheme);
-  const [variantPref, setVariantPref] = useState<VariantPref>(storedVariant);
   const [pollIntervalMs, setPollIntervalMs] = useState<number>(storedPollInterval);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -279,12 +273,6 @@ export function SettingsPage() {
     setThemePref(nextTheme);
     localStorage.setItem("tib-theme", nextTheme);
     document.documentElement.setAttribute("data-theme", nextTheme);
-  };
-
-  const applyVariantPreference = (nextVariant: VariantPref) => {
-    setVariantPref(nextVariant);
-    localStorage.setItem("tib-variant", nextVariant);
-    document.documentElement.setAttribute("data-variant", nextVariant);
   };
 
   const applyPollInterval = (nextInterval: number) => {
@@ -471,16 +459,6 @@ export function SettingsPage() {
               <div className="settings-segmented">
                 <button className={`btn btn-sm ${themePref === "dark" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyThemePreference("dark")}>Dark</button>
                 <button className={`btn btn-sm ${themePref === "light" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyThemePreference("light")}>Light</button>
-              </div>
-            </div>
-            <div className="settings-control-row">
-              <div>
-                <div className="w-label">Variant</div>
-                <div className="w-caption">Matches the compact/terminal switch in the top navigation.</div>
-              </div>
-              <div className="settings-segmented">
-                <button className={`btn btn-sm ${variantPref === "terminal" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyVariantPreference("terminal")}>Terminal</button>
-                <button className={`btn btn-sm ${variantPref === "compact" ? "btn-primary" : "btn-ghost"}`} onClick={() => applyVariantPreference("compact")}>Compact</button>
               </div>
             </div>
           </WCard>

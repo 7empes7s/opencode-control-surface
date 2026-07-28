@@ -1,176 +1,314 @@
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { useApi, fmtAge, fmtMs } from "../hooks/useApi";
+import { useApi, fmtAge } from "../hooks/useApi";
 import { useStream } from "../hooks/useStream";
 import type { HomeData } from "../../server/api/types";
-import { BarChart, Bar, ResponsiveContainer, Tooltip, Cell } from "recharts";
-import { AnimatedNumber, AreaSparkline, Gauge, LiveTick, PipelineFlowBar } from "../components/AnimatedCharts";
+import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { authFetch } from "../lib/authFetch";
-import { AlertTriangle, ArrowUpRight, ChevronDown, ChevronUp, Eye, EyeOff, Settings2, Sparkles } from "lucide-react";
+import { AnimatedNumber, Dot, PostureRing, Reveal, Sparkline, Stat } from "../components/v5/ui";
+import {
+  AlertTriangle, ArrowUpRight, Cpu, GaugeCircle, Newspaper,
+  Server, Sparkles, Stethoscope, Workflow, Zap,
+} from "lucide-react";
+
+const Scene3D = lazy(() => import("../components/v5/Scene3D"));
+
+/* ─────────────────────────── data shapes ─────────────────────────── */
 
 interface MissionControlData {
-  nowCard: {
-    posture: "ok" | "warn" | "critical";
-    summary: string;
-    sources: string[];
-  };
+  nowCard: { posture: "ok" | "warn" | "critical"; summary: string; sources: string[] };
   decisionQueue: Array<{
-    id: string;
-    severity: "info" | "warn" | "critical";
-    title: string;
-    description: string;
-    ageMs: number;
-    action?: string;
-    actionId?: string;
-    sourceRoute?: string;
+    id: string; severity: "info" | "warn" | "critical"; title: string;
+    description: string; ageMs: number; actionId?: string; sourceRoute?: string;
   }>;
   changeSinceLastVisit: {
-    lastVisitTs: number | null;
-    newArticles: number;
-    queueDelta: number;
-    newIncidents: number;
-    modelsChanged: number;
-    vastRunwayDeltaHours: number | null;
+    lastVisitTs: number | null; newArticles: number; queueDelta: number;
+    newIncidents: number; modelsChanged: number; vastRunwayDeltaHours: number | null;
   } | null;
-  nextBestActions: Array<{
-    id: string;
-    label: string;
-    description: string;
-    risk: "low" | "medium" | "high";
-    targetRoute?: string;
-  }>;
-  riskStrip: Array<{
-    kind: "runway" | "stale_telemetry" | "failed_check" | "incident" | "disk" | "queue";
-    label: string;
-    severity: "ok" | "warn" | "critical";
-    value?: string;
-  }>;
+  nextBestActions: Array<{ id: string; label: string; description: string; risk: "low" | "medium" | "high"; targetRoute?: string }>;
+  riskStrip: Array<{ kind: string; label: string; severity: "ok" | "warn" | "critical"; value?: string }>;
 }
 
-function MissionControlDeck() {
-  const { data, loading, error } = useApi<MissionControlData>("/api/mission-control", 60_000);
+type AdminHealth = { score: number; openCritical: number; openHigh: number; openMedium: number };
+type FindingPreview = { id: string; title: string; severity: string; sourceKey: string | null };
 
-  if (loading && !data) return <div className="loading-dim">loading…</div>;
-  if (error && !data) return <div className="loading-dim error">…</div>;
-  if (!data) return null;
+/* ─────────────────────────── hero ────────────────────────────────── */
 
-  const d = data;
-
-  const postureColor = d.nowCard.posture === "ok" ? "var(--green)" : d.nowCard.posture === "warn" ? "var(--amber)" : "var(--red)";
+function Hero({ d, mc }: { d: HomeData; mc: MissionControlData | null }) {
+  const posture = mc?.nowCard.posture ?? "ok";
+  const services = d.services ?? [];
+  const up = services.filter((s) => s.status === "active").length;
+  const pct = services.length > 0 ? Math.round((up / services.length) * 100) : 0;
+  const tone = posture === "critical" ? "err" : posture === "warn" ? "warn" : "ok";
 
   return (
-    <div className="dash-section">
-      {/* Now Card */}
-      <div style={{ padding: "12px 16px", background: `${postureColor}15`, borderLeft: `4px solid ${postureColor}`, marginBottom: 12, borderRadius: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: postureColor }} />
-          <span className="w-label">Now</span>
-        </div>
-        <div style={{ marginTop: 8, fontSize: 14 }}>{d.nowCard.summary}</div>
-        {d.decisionQueue[0]?.sourceRoute && (
-          <Link href={d.decisionQueue[0].sourceRoute} className="btn btn-ghost" style={{ marginTop: 8, padding: "4px 8px", fontSize: 11 }}>
-            → Go
-          </Link>
-        )}
+    <div className="v5-hero">
+      <div className="v5-hero-canvas">
+        <Suspense fallback={null}>
+          <Scene3D />
+        </Suspense>
       </div>
-
-      {/* Decision Queue */}
-      {d.decisionQueue.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div className="w-label" style={{ marginBottom: 6 }}>Decision queue</div>
-          {d.decisionQueue.slice(0, 5).map((item) => (
-            <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, padding: "4px 8px", background: "var(--bg-sub)", borderRadius: 3 }}>
-              <span className={`pill ${item.severity === "critical" ? "red" : item.severity === "warn" ? "amber" : "gray"}`} style={{ fontSize: 9 }}>
-                {item.severity}
-              </span>
-              <span style={{ flex: 1, fontSize: 12 }}>{item.title}</span>
-              {item.sourceRoute && (
-                <Link href={item.sourceRoute} style={{ fontSize: 10, color: "var(--accent)" }}>→ Go</Link>
-              )}
-            </div>
-          ))}
-          {d.decisionQueue.length > 5 && (
-            <div className="w-caption">+ {d.decisionQueue.length - 5} more</div>
-          )}
+      <div className="v5-hero-inner">
+        <div className="v5-hero-eyebrow">
+          <Zap size={12} /> Mission control · live
         </div>
-      )}
-
-      {/* Next Best Actions */}
-      {d.nextBestActions.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <div className="w-label" style={{ marginBottom: 6 }}>Next actions</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {d.nextBestActions.map((action) => (
-              action.targetRoute ? (
-                <Link key={action.id} href={action.targetRoute} className="pill green" style={{ fontSize: 11, cursor: "pointer" }}>
-                  {action.label}
-                </Link>
-              ) : (
-                <span key={action.id} className="pill gray" style={{ fontSize: 11 }}>{action.label}</span>
-              )
+        <h1 className="v5-hero-title">
+          Everything at a <span className="grad">glance</span>
+        </h1>
+        <p className="v5-hero-sub">
+          {mc?.nowCard.summary ?? "Live telemetry across the whole TIB stack — services, pipeline, models, GPU and content."}
+        </p>
+        {mc && mc.riskStrip.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+            {mc.riskStrip.map((r) => (
+              <span key={r.kind} className={`v5-pill ${r.severity === "critical" ? "err" : r.severity === "warn" ? "warn" : "ok"}`}>
+                <Dot tone={r.severity === "critical" ? "err" : r.severity === "warn" ? "warn" : "ok"} />
+                {r.label}{r.value ? ` · ${r.value}` : ""}
+              </span>
             ))}
           </div>
+        )}
+        {mc && mc.nextBestActions.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+            {mc.nextBestActions.slice(0, 3).map((a) =>
+              a.targetRoute ? (
+                <Link key={a.id} href={a.targetRoute} className="v5-btn primary" style={{ minHeight: 34, padding: "6px 14px", fontSize: 12 }}>
+                  {a.label} <ArrowUpRight size={13} />
+                </Link>
+              ) : (
+                <span key={a.id} className="v5-pill info">{a.label}</span>
+              )
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", padding: "24px clamp(18px,3vw,36px)" }}>
+        <PostureRing pct={pct} tone={tone} label={`${pct}%`} sub={`${up}/${services.length} up`} />
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── decision queue ──────────────────────── */
+
+function DecisionQueue({ mc }: { mc: MissionControlData }) {
+  if (mc.decisionQueue.length === 0) return null;
+  return (
+    <div className="v5-section">
+      <Reveal>
+        <div className="v5-section-head">
+          <div className="v5-section-title"><AlertTriangle size={15} style={{ color: "var(--amber-warn)" }} /> Decision queue</div>
+        </div>
+        <div className="v5-card flat-hover" style={{ padding: 8 }}>
+          {mc.decisionQueue.slice(0, 5).map((item) => (
+            <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 10 }}>
+              <span className={`v5-pill ${item.severity === "critical" ? "err" : item.severity === "warn" ? "warn" : "info"}`}>{item.severity}</span>
+              <span style={{ flex: 1, fontSize: 13 }}>{item.title}</span>
+              {item.sourceRoute && <Link href={item.sourceRoute} className="v5-section-link">open →</Link>}
+            </div>
+          ))}
+          {mc.decisionQueue.length > 5 && (
+            <div style={{ padding: "4px 12px 8px", fontSize: 12, color: "var(--text-muted)" }}>+ {mc.decisionQueue.length - 5} more</div>
+          )}
+        </div>
+      </Reveal>
+    </div>
+  );
+}
+
+/* ─────────────────────────── stat row ────────────────────────────── */
+
+function StatRow({ d }: { d: HomeData }) {
+  const services = d.services ?? [];
+  const up = services.filter((s) => s.status === "active").length;
+  const failed = services.filter((s) => s.status === "failed").length;
+  const doctorRate = d.doctor.last24h.total > 0
+    ? Math.round((d.doctor.last24h.success / d.doctor.last24h.total) * 100) : null;
+
+  return (
+    <div className="v5-section v5-grid stats">
+      <Reveal delay={0.02}><Stat label="services up" value={<><AnimatedNumber value={up} /><span style={{ fontSize: 16, color: "var(--text-muted)" }}>/{services.length}</span></>} tone={failed > 0 ? "err" : "ok"} caption={failed > 0 ? `${failed} failed` : "all systems normal"} /></Reveal>
+      <Reveal delay={0.06}><Stat label="pipeline queue" value={<AnimatedNumber value={d.autopipeline.queueDepth} />} tone={d.autopipeline.paused ? "warn" : "ok"} caption={d.autopipeline.paused ? "paused" : d.autopipeline.approvalsWaiting > 0 ? `${d.autopipeline.approvalsWaiting} awaiting approval` : "flowing"} /></Reveal>
+      <Reveal delay={0.10}><Stat label="articles today" gradient value={<AnimatedNumber value={d.newsbites.publishedToday} />} caption={`${d.newsbites.totalPublished.toLocaleString()} all-time`} /></Reveal>
+      <Reveal delay={0.14}><Stat label="gpu" value={d.gpu.gpuUtil !== null ? <AnimatedNumber value={d.gpu.gpuUtil} suffix="%" /> : "—"} tone={d.gpu.status === "up" ? "ok" : d.gpu.status === "down" ? "err" : "idle"} caption={d.gpu.status === "off" ? "operator off" : d.gpu.loadedModels.length > 0 ? `${d.gpu.loadedModels.length} models loaded` : d.gpu.status} /></Reveal>
+      <Reveal delay={0.18}><Stat label="doctor 24h" value={doctorRate !== null ? <AnimatedNumber value={doctorRate} suffix="%" /> : "—"} tone={doctorRate === null ? "idle" : doctorRate >= 90 ? "ok" : doctorRate >= 70 ? "warn" : "err"} caption={`${d.doctor.last24h.total} interventions`} /></Reveal>
+      <Reveal delay={0.22}><Stat label="incidents" value={<AnimatedNumber value={d.incidents.activeCount} />} tone={d.incidents.activeCount > 0 ? "err" : "ok"} caption={d.incidents.activeCount > 0 ? "active now" : "none active"} /></Reveal>
+    </div>
+  );
+}
+
+/* ─────────────────────────── service mesh ────────────────────────── */
+
+function ServiceMesh({ d }: { d: HomeData }) {
+  const services = d.services ?? [];
+  return (
+    <div className="v5-section">
+      <Reveal>
+        <div className="v5-section-head">
+          <div className="v5-section-title"><Server size={15} style={{ color: "var(--accent)" }} /> Service mesh</div>
+          <Link href="/infra" className="v5-section-link">infra →</Link>
+        </div>
+        <div className="v5-card flat-hover">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            {services.map((s) => {
+              const tone = s.status === "active" ? "ok" : s.status === "failed" ? "err" : s.status === "inactive" ? "idle" : "warn";
+              return (
+                <span key={s.name} className={`v5-pill ${tone === "idle" ? "" : tone}`} style={{ fontSize: 12, padding: "6px 13px" }}>
+                  <Dot tone={tone} />
+                  {s.name}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </Reveal>
+    </div>
+  );
+}
+
+/* ─────────────────────────── editorial pulse ─────────────────────── */
+
+function EditorialPulse({ d }: { d: HomeData }) {
+  const nb = d.newsbites;
+  const chart = nb.publishedLast7d.map((v, i) => ({ i, v }));
+  return (
+    <div className="v5-card flat-hover">
+      <div className="v5-section-head" style={{ marginBottom: 12 }}>
+        <div className="v5-section-title"><Newspaper size={15} style={{ color: "var(--accent)" }} /> Editorial pulse</div>
+        <Link href="/newsbites" className="v5-section-link">newsbites →</Link>
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
+        <span className="v5-stat-value gradient"><AnimatedNumber value={nb.publishedLast7d.reduce((a, b) => a + b, 0)} /></span>
+        <span className="v5-stat-cap">articles in the last 7 days · site {nb.siteReachable ? "reachable" : "unreachable"}</span>
+      </div>
+      <div style={{ height: 120, margin: "0 -6px" }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chart} margin={{ top: 6, right: 8, bottom: 0, left: 8 }}>
+            <defs>
+              <linearGradient id="ed7d" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="oklch(82% 0.14 200)" stopOpacity={0.45} />
+                <stop offset="100%" stopColor="oklch(70% 0.20 292)" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <XAxis dataKey="i" hide />
+            <Tooltip
+              cursor={{ stroke: "var(--border-bright)" }}
+              contentStyle={{ background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 12 }}
+              labelStyle={{ display: "none" }}
+              formatter={(v) => [`${v} articles`, ""]}
+            />
+            <Area type="monotone" dataKey="v" stroke="var(--accent)" strokeWidth={2} fill="url(#ed7d)" animationDuration={900} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      {nb.topVerticals.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          {nb.topVerticals.slice(0, 5).map((v) => (
+            <span key={v.vertical} className="v5-pill">{v.vertical} · {v.count}</span>
+          ))}
         </div>
       )}
-
-      {/* Risk Strip */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          {d.riskStrip.map((item) => {
-            const dotColor = item.severity === "ok" ? "var(--green)" : item.severity === "warn" ? "var(--amber)" : "var(--red)";
-            return (
-              <span key={item.kind} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor }} />
-                <span>{item.label}</span>
-                {item.value && <span className="dim">{item.value}</span>}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Change Since Last Visit */}
-      {d.changeSinceLastVisit && d.changeSinceLastVisit.lastVisitTs !== null && (
-        <div className="w-caption" style={{ color: "var(--text-dim)", fontSize: 11 }}>
-          Since last visit: {d.changeSinceLastVisit.newArticles > 0 ? `+${d.changeSinceLastVisit.newArticles} articles` : `${d.changeSinceLastVisit.newArticles} articles`}
-          {d.changeSinceLastVisit.queueDelta !== 0 && `, ${d.changeSinceLastVisit.queueDelta > 0 ? "+" : ""}${d.changeSinceLastVisit.queueDelta} queue`}
-          {d.changeSinceLastVisit.newIncidents > 0 && `, ${d.changeSinceLastVisit.newIncidents} incidents`}
+      {nb.latestArticles.length > 0 && (
+        <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          {nb.latestArticles.slice(0, 3).map((a) => (
+            <div key={a.slug} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 0", fontSize: 12.5 }}>
+              <span style={{ color: "var(--text-muted)", fontFamily: "var(--mono)", fontSize: 10.5, flex: "none" }}>{a.date}</span>
+              <span style={{ color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.title}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function StatusDot({ status }: { status: string }) {
-  const cls = status === "active" ? "active" : status === "failed" ? "failed" : status === "inactive" ? "inactive" : "unknown";
-  return <span className={`svc-pill ${cls}`}><span className="dot" />{status === "active" ? "" : ""}</span>;
+/* ─────────────────────────── stack vitals ────────────────────────── */
+
+function VitalBar({ label, pct, display }: { label: string; pct: number; display: string }) {
+  const tone = pct >= 90 ? "var(--red)" : pct >= 70 ? "var(--amber-warn)" : "var(--green)";
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 5 }}>
+        <span style={{ color: "var(--text-dim)" }}>{label}</span>
+        <span style={{ fontFamily: "var(--mono)", color: "var(--text-bright)" }}>{display}</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: "var(--bg-sub)", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, pct)}%`, borderRadius: 3, background: tone, transition: "width 0.9s var(--ease-out)" }} />
+      </div>
+    </div>
+  );
 }
 
-function Pill({ children, color = "gray" }: { children: React.ReactNode; color?: "green" | "red" | "amber" | "gray" | "blue" }) {
-  return <span className={`pill ${color}`}>{children}</span>;
+function StackVitals({ d }: { d: HomeData }) {
+  return (
+    <div className="v5-card flat-hover">
+      <div className="v5-section-head" style={{ marginBottom: 14 }}>
+        <div className="v5-section-title"><GaugeCircle size={15} style={{ color: "var(--accent-2)" }} /> Stack vitals</div>
+        <Link href="/infra" className="v5-section-link">infra →</Link>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <VitalBar label="memory" pct={d.hetzner.memUsedPct} display={`${Math.round(d.hetzner.memUsedPct)}%`} />
+        <VitalBar label="disk" pct={d.hetzner.diskUsedPct} display={`${Math.round(d.hetzner.diskUsedPct)}%`} />
+        <VitalBar label="load (1m)" pct={Math.min(100, d.hetzner.load1 * 25)} display={d.hetzner.load1.toFixed(2)} />
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 2 }}>
+          <span className="v5-pill info">
+            <Cpu size={11} />
+            {d.vast.gpu ?? "gpu"}{d.vast.runwayHours !== null ? ` · ${Math.round(d.vast.runwayHours)}h runway` : ""}
+          </span>
+          {d.vast.hourlyRate !== null && <span className="v5-pill">${d.vast.hourlyRate.toFixed(3)}/h</span>}
+          {d.gpu.loadedModels.slice(0, 2).map((m) => (
+            <span key={m} className="v5-pill">{m}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
-type HealthDriver = { label: string; impact: number; link: string };
-type AdminHealth = {
-  score: number;
-  openCritical: number;
-  openHigh: number;
-  openMedium: number;
-  productHealthFails: number;
-  drivers: HealthDriver[];
-};
-type FindingPreview = { id: string; title: string; severity: string; sourceKey: string | null };
+/* ─────────────────────────── pipeline flow ───────────────────────── */
 
-function GovernanceCluster() {
+function PipelineFlow({ d }: { d: HomeData }) {
+  const stages = Object.entries(d.autopipeline.stageBreakdown ?? {}).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...stages.map(([, v]) => v));
+  return (
+    <div className="v5-card flat-hover">
+      <div className="v5-section-head" style={{ marginBottom: 14 }}>
+        <div className="v5-section-title"><Workflow size={15} style={{ color: "var(--accent)" }} /> Pipeline stages</div>
+        <Link href="/autopipeline" className="v5-section-link">pipeline →</Link>
+      </div>
+      {d.autopipeline.currentStory && (
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+          now: <span style={{ color: "var(--accent)", fontFamily: "var(--mono)" }}>{d.autopipeline.currentStory.stage}</span>
+          {d.autopipeline.currentStory.slug ? ` · ${d.autopipeline.currentStory.slug}` : ""}
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        {stages.slice(0, 6).map(([stage, count]) => (
+          <div key={stage} style={{ display: "grid", gridTemplateColumns: "110px 1fr 28px", alignItems: "center", gap: 10, fontSize: 12 }}>
+            <span style={{ color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stage}</span>
+            <div style={{ height: 6, borderRadius: 3, background: "var(--bg-sub)", overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${(count / max) * 100}%`, background: "var(--grad-accent)", borderRadius: 3, transition: "width 0.9s var(--ease-out)" }} />
+            </div>
+            <span style={{ fontFamily: "var(--mono)", textAlign: "right", color: "var(--text-bright)" }}>{count}</span>
+          </div>
+        ))}
+        {stages.length === 0 && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>queue is empty</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── governance ──────────────────────────── */
+
+function Governance() {
   const { data: health } = useApi<AdminHealth>("/api/admin/health", 60_000);
   const { data: insightsData } = useApi<{ insights: FindingPreview[]; openCount: number }>("/api/insights?status=open", 30_000);
-  const { data: autoFixData } = useApi<{ feed: Array<{ ts: number; resultStatus: string | null }> }>("/api/admin/autofixes", 60_000);
   const [briefing, setBriefing] = useState<string | null>(null);
-  const briefingFetched = useRef(false);
+  const fetched = useRef(false);
 
   useEffect(() => {
-    if (briefingFetched.current) return;
-    briefingFetched.current = true;
+    if (fetched.current) return;
+    fetched.current = true;
     authFetch("/api/admin/briefing")
       .then((r) => r.json() as Promise<{ data?: { briefing?: { text: string } | null } }>)
       .then((d) => { if (d.data?.briefing?.text) setBriefing(d.data.briefing.text); })
@@ -178,897 +316,133 @@ function GovernanceCluster() {
   }, []);
 
   const score = health?.score ?? null;
-  const scoreColor = score === null ? "gray" : score >= 80 ? "green" : score >= 55 ? "amber" : "red";
-  const critCount = health?.openCritical ?? 0;
-  const topFindings = (insightsData?.insights ?? []).slice(0, 3);
-
-  const dayAgo = Date.now() - 86_400_000;
-  const autoFixesToday = (autoFixData?.feed ?? []).filter((r) => r.ts > dayAgo && r.resultStatus === "success").length;
+  const crit = health?.openCritical ?? 0;
+  const findings = (insightsData?.insights ?? []).slice(0, 3);
 
   return (
-    <div className="dash-section">
-      <div className="dash-section-title">admin center</div>
-      <div className="gov-cluster">
-        {/* Score + link to admin */}
-        <Link href="/admin" className="gov-score-card">
-          <div className="w-label">health score</div>
-          <div className="gov-score-num" style={{ color: score !== null ? (score >= 80 ? "var(--green)" : score >= 55 ? "var(--amber)" : "var(--red)") : "var(--dim)" }}>
-            {score !== null ? score : "—"}
-            {score !== null && <span className="gov-score-denom">/100</span>}
-          </div>
-          <span className={`pill ${scoreColor}`}>{score !== null ? (score >= 80 ? "Healthy" : score >= 55 ? "Degraded" : "Critical") : "Checking…"}</span>
-        </Link>
-
-        {/* Critical alert count */}
-        <Link href="/insights?status=open&severity=critical" className="gov-stat-card">
-          <div className="w-label"><AlertTriangle size={12} /> open critical</div>
-          <div className="gov-stat-num" style={{ color: critCount > 0 ? "var(--red)" : "var(--green)" }}>
-            {critCount}
-          </div>
-          <span className={`pill ${critCount > 0 ? "red" : "green"}`}>{critCount > 0 ? "needs attention" : "all clear"}</span>
-        </Link>
-
-        {/* Auto-fixes today */}
-        <Link href="/admin" className="gov-stat-card">
-          <div className="w-label">auto-fixes 24h</div>
-          <div className="gov-stat-num">{autoFixesToday}</div>
-          <span className="pill green">applied</span>
-        </Link>
-      </div>
-
-      {/* AI briefing */}
-      {briefing && (
-        <div className="gov-briefing">
-          <Sparkles size={13} />
-          <span>{briefing}</span>
-          <Link href="/admin" className="gov-briefing-link">
-            <ArrowUpRight size={12} />
+    <div className="v5-section">
+      <Reveal>
+        <div className="v5-section-head">
+          <div className="v5-section-title"><Stethoscope size={15} style={{ color: "var(--accent-2)" }} /> Admin center</div>
+          <Link href="/admin" className="v5-section-link">open →</Link>
+        </div>
+        <div className="v5-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+          <Link href="/admin" className="v5-card v5-stat" style={{ textDecoration: "none" }}>
+            <div className="v5-card-label">health score</div>
+            <div className="v5-stat-value" style={{ color: score === null ? "var(--text-muted)" : score >= 80 ? "var(--green)" : score >= 55 ? "var(--amber-warn)" : "var(--red)" }}>
+              {score ?? "—"}<span style={{ fontSize: 15, color: "var(--text-muted)" }}>/100</span>
+            </div>
+            <div className="v5-stat-cap">{score === null ? "checking…" : score >= 80 ? "healthy" : score >= 55 ? "degraded" : "critical"}</div>
+          </Link>
+          <Link href="/insights?status=open&severity=critical" className="v5-card v5-stat" style={{ textDecoration: "none" }}>
+            <div className="v5-card-label"><Dot tone={crit > 0 ? "err" : "ok"} /> open critical</div>
+            <div className="v5-stat-value" style={{ color: crit > 0 ? "var(--red)" : "var(--green)" }}><AnimatedNumber value={crit} /></div>
+            <div className="v5-stat-cap">{crit > 0 ? "needs attention" : "all clear"}</div>
+          </Link>
+          <Link href="/insights" className="v5-card v5-stat" style={{ textDecoration: "none" }}>
+            <div className="v5-card-label">open detections</div>
+            <div className="v5-stat-value"><AnimatedNumber value={insightsData?.openCount ?? 0} /></div>
+            <div className="v5-stat-cap">across all severities</div>
           </Link>
         </div>
-      )}
 
-      {/* Top findings */}
-      {topFindings.length > 0 && (
-        <div className="gov-findings">
-          {topFindings.map((f) => (
-            <Link
-              key={f.id}
-              href={f.sourceKey ? `/insights?focus=${encodeURIComponent(f.sourceKey)}` : "/insights"}
-              className="gov-finding-row"
-            >
-              <span className={`pill ${f.severity === "critical" || f.severity === "high" ? "red" : f.severity === "medium" ? "amber" : "blue"}`}>{f.severity}</span>
-              <span className="gov-finding-title">{f.title}</span>
-              <ArrowUpRight size={12} className="dim" />
-            </Link>
-          ))}
-          {(insightsData?.openCount ?? 0) > 3 && (
-            <Link href="/insights" className="gov-finding-row dim">
-              +{(insightsData?.openCount ?? 0) - 3} more → View all
-            </Link>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+        {briefing && (
+          <div className="v5-card glass flat-hover" style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "flex-start", borderColor: "var(--border-glow)" }}>
+            <Sparkles size={15} style={{ color: "var(--accent)", flex: "none", marginTop: 2 }} />
+            <span style={{ fontSize: 13, lineHeight: 1.6, flex: 1 }}>{briefing}</span>
+            <Link href="/admin" className="v5-section-link" style={{ flex: "none" }}><ArrowUpRight size={13} /></Link>
+          </div>
+        )}
 
-function WCard({ href, children, className = "" }: { href?: string; children: React.ReactNode; className?: string }) {
-  if (href) {
-    return <Link href={href} className={`w-card ${className}`}>{children}</Link>;
-  }
-  return <div className={`w-card ${className}`}>{children}</div>;
-}
-
-function SparkBars({ values }: { values: number[] }) {
-  return (
-    <AreaSparkline values={values} height={40} gradientId="sparkline-home" />
-  );
-}
-
-interface ReasonerJob {
-  id: string;
-  status: string;
-  createdAt: number;
-  finishedAt?: number;
-}
-
-function ReasonerStatusStrip() {
-  const { data: jobs } = useApi<ReasonerJob[]>("/api/reasoner/jobs", 30_000);
-  const { data: diagnoses } = useApi<unknown[]>("/api/reasoner/diagnoses", 30_000);
-  const { data: incidents } = useApi<unknown[]>("/api/reasoner/incidents", 30_000);
-
-  const pendingJobs = (jobs ?? []).filter((j) => j.status === "pending").length;
-  const diagnosesCount = (diagnoses ?? []).length;
-  const openIncidents = (incidents ?? []).length;
-
-  const lastFinished = (jobs ?? []).find((j) => j.finishedAt != null)?.finishedAt;
-  const lastRanLabel = lastFinished
-    ? (() => {
-        const mins = Math.round((Date.now() - lastFinished) / 60000);
-        return mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
-      })()
-    : "never";
-
-  if (!jobs && !diagnoses && !incidents) return null;
-
-  return (
-    <div style={{
-      fontFamily: "var(--mono)",
-      fontSize: 11,
-      color: "var(--text-dim)",
-      padding: "6px 12px",
-      background: "var(--bg-sub)",
-      borderRadius: 4,
-      marginBottom: 12,
-      display: "flex",
-      flexWrap: "wrap",
-      gap: "4px 12px",
-      alignItems: "center",
-    }}>
-      <span style={{ color: "var(--text)", fontWeight: 600 }}>Reasoner</span>
-      <span>{pendingJobs} jobs pending</span>
-      <span>·</span>
-      <span>{diagnosesCount} diagnoses</span>
-      <span>·</span>
-      <span>{openIncidents} open incidents</span>
-      <span>·</span>
-      <span>last ran {lastRanLabel}</span>
-    </div>
-  );
-}
-
-function OrchestratorStatusStrip() {
-  const { data: instances } = useApi<{ instances: Array<{ status: string; currentStepIndex: number }> }>("/api/orchestrator/instances", 30_000);
-  const { data: lanes } = useApi<{ lanes: Array<{ laneName: string; maxConcurrency: number; activeCount: number }> }>("/api/orchestrator/lanes", 30_000);
-
-  const activeCount = (instances?.instances ?? []).filter((i) => i.status === "running").length;
-  const totalCount = (instances?.instances ?? []).length;
-  const laneData = lanes?.lanes ?? [];
-  const totalActive = laneData.reduce((s, l) => s + l.activeCount, 0);
-  const totalMax = laneData.reduce((s, l) => s + l.maxConcurrency, 0);
-
-  if (!instances && !lanes) return null;
-
-  return (
-    <div style={{
-      fontFamily: "var(--mono)",
-      fontSize: 11,
-      color: "var(--text-dim)",
-      padding: "6px 12px",
-      background: "var(--bg-sub)",
-      borderRadius: 4,
-      marginBottom: 12,
-      display: "flex",
-      flexWrap: "wrap",
-      gap: "4px 12px",
-      alignItems: "center",
-    }}>
-      <span style={{ color: "var(--text)", fontWeight: 600 }}>Orchestrator</span>
-      <span>{activeCount}/{totalCount} active</span>
-      <span>·</span>
-      <span>lanes: {totalActive}/{totalMax} busy</span>
-    </div>
-  );
-}
-
-function HomeLoadingState({ error }: { error?: string | null }) {
-  const sections: Array<{ title: string; cards: string[] }> = [
-    { title: "stack health", cards: ["services", "gpu", "vast balance", "hetzner"] },
-    { title: "newsbites", cards: ["total published", "7d publish rate", "top verticals", "latest published"] },
-    { title: "doctor", cards: ["repairs 24h", "top error classes", "top failing models", "verdict mix"] },
-  ];
-
-  return (
-    <div className="dash-page">
-      <div className="dash-section">
-        <div className="dash-section-title">mission control</div>
-        <div className={`loading-panel${error ? " error" : ""}`}>
-          <div style={{ fontWeight: 600 }}>{error ? "Home data did not load" : "Loading home data"}</div>
-          <div>{error ? `The API returned: ${error}` : "Waiting for the stream or polling fallback. The dashboard will fill in automatically."}</div>
-        </div>
-      </div>
-      {sections.map(({ title, cards }) => (
-        <div className="dash-section" key={title}>
-          <div className="dash-section-title">{title}</div>
-          <div className="widget-grid">
-            {cards.map((label) => (
-              <WCard key={label}>
-                <div className="w-label">{label}</div>
-                <div className="skeleton-line wide" />
-                <div className="skeleton-line" />
-              </WCard>
+        {findings.length > 0 && (
+          <div className="v5-card flat-hover" style={{ marginTop: 14, padding: 8 }}>
+            {findings.map((f) => (
+              <Link key={f.id} href={f.sourceKey ? `/insights?focus=${encodeURIComponent(f.sourceKey)}` : "/insights"}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", textDecoration: "none", color: "inherit", borderRadius: 10 }}>
+                <span className={`v5-pill ${f.severity === "critical" || f.severity === "high" ? "err" : f.severity === "medium" ? "warn" : "info"}`}>{f.severity}</span>
+                <span style={{ flex: 1, fontSize: 13 }}>{f.title}</span>
+                <ArrowUpRight size={13} style={{ color: "var(--text-muted)" }} />
+              </Link>
             ))}
           </div>
-        </div>
-      ))}
+        )}
+      </Reveal>
     </div>
   );
 }
 
-type HealthFinding = { id: string; name: string; status: string; severity: string; detail: string };
-function ProductHealthTile() {
-  const { data } = useApi<{ score: number | null; fails: number; warns: number; checkedAtISO: string | null; findings: HealthFinding[] }>("/api/product-health", 30_000);
-  if (!data) return null;
-  const score = data.score;
-  const color = score == null ? "blue" : score >= 90 ? "green" : score >= 70 ? "amber" : "red";
-  const fails = (data.findings ?? []).filter((f) => f.status === "fail");
+/* ─────────────────────────── loading ─────────────────────────────── */
+
+function HomeLoading({ error }: { error?: string }) {
   return (
-    <div className="dash-section">
-      <div className="dash-section-title">product health · sentinel</div>
-      <WCard href="/insights" className="full">
-        <div className="w-label">live product self-check (every 30 min)</div>
-        <div className="w-headline sm">Health {score == null ? "—" : `${score}/100`}</div>
-        <div className="w-row">
-          <Pill color={color}>{data.fails} fail</Pill>
-          <Pill color={data.warns > 0 ? "amber" : "green"}>{data.warns} warn</Pill>
-          {data.checkedAtISO && <span className="w-caption">checked {data.checkedAtISO.replace("T", " ").replace("Z", " UTC")}</span>}
-        </div>
-        {fails.slice(0, 5).map((f) => (
-          <div key={f.id} className="w-caption" style={{ color: "var(--danger, #e5564b)" }}>⚠ {f.name}: {f.detail}</div>
-        ))}
-        {fails.length === 0 && <div className="w-caption">All live checks passing.</div>}
-      </WCard>
-    </div>
-  );
-}
-
-function ShowcaseTile() {
-  const { data: rawData, loading } = useApi<{ data: { headline: any } }>("/api/metrics/showcase", 60_000);
-  const data = rawData?.data;
-
-  if (loading && !data) return null;
-  const h = data?.headline || {};
-
-  return (
-    <div className="dash-section">
-      <div className="dash-section-title">showcase metrics</div>
-      <WCard href="/agent-team" className="full">
-        <div className="w-label">platform reliability & self-correction</div>
-        <div className="w-headline sm" style={{ marginBottom: 12 }}>
-          {h.headlineSentence || "—"}
-        </div>
-        <div className="w-row" style={{ flexWrap: "wrap", gap: 8 }}>
-          <Pill color="gray">{h.buildsAudited ?? "—"} builds audited</Pill>
-          <Pill color="green">{h.buildsShipped ?? "—"} shipped</Pill>
-          <Pill color="amber">{h.buildsRolledBack ?? "—"} safely rolled back</Pill>
-          <Pill color="blue">{h.freeModelsAvailable ?? "—"} free models available</Pill>
-          <Pill color="green">{h.platformHealth ?? "—"} health score</Pill>
-          <Pill color="gray">{h.uptimeDays ?? "—"} uptime days</Pill>
-        </div>
-      </WCard>
-    </div>
-  );
-}
-
-// ── Home widget layout (hide/reorder, persisted in localStorage) ──────────
-const HOME_WIDGETS: Array<{ id: string; label: string }> = [
-  { id: "governance", label: "Governance" },
-  { id: "product-health", label: "Product health" },
-  { id: "showcase", label: "Showcase metrics" },
-  { id: "mission-control", label: "Mission control" },
-  { id: "stack-health", label: "Stack health" },
-  { id: "newsbites", label: "NewsBites" },
-  { id: "autopipeline", label: "Autopipeline" },
-  { id: "reasoner", label: "Reasoner status" },
-  { id: "orchestrator", label: "Orchestrator status" },
-  { id: "doctor", label: "Doctor" },
-  { id: "models", label: "Models" },
-  { id: "opencode-incidents", label: "OpenCode & incidents" },
-];
-const HOME_WIDGET_LABELS = Object.fromEntries(HOME_WIDGETS.map((w) => [w.id, w.label]));
-const HOME_LAYOUT_KEY = "cs.home.layout.v1";
-
-type HomeLayout = { order: string[]; hidden: string[] };
-
-function loadHomeLayout(): HomeLayout {
-  try {
-    const raw = localStorage.getItem(HOME_LAYOUT_KEY);
-    if (!raw) return { order: [], hidden: [] };
-    const parsed = JSON.parse(raw) as Partial<HomeLayout>;
-    return {
-      order: Array.isArray(parsed.order) ? parsed.order.filter((x): x is string => typeof x === "string") : [],
-      hidden: Array.isArray(parsed.hidden) ? parsed.hidden.filter((x): x is string => typeof x === "string") : [],
-    };
-  } catch {
-    return { order: [], hidden: [] };
-  }
-}
-
-function useHomeLayout() {
-  const [layout, setLayout] = useState<HomeLayout>(loadHomeLayout);
-  const [editMode, setEditMode] = useState(false);
-
-  function update(next: HomeLayout) {
-    setLayout(next);
-    try {
-      localStorage.setItem(HOME_LAYOUT_KEY, JSON.stringify(next));
-    } catch {
-      // localStorage unavailable (private mode) — layout still applies for this visit
-    }
-  }
-
-  const knownIds = HOME_WIDGETS.map((w) => w.id);
-  const orderedIds = [
-    ...layout.order.filter((id) => knownIds.includes(id)),
-    ...knownIds.filter((id) => !layout.order.includes(id)),
-  ];
-  const hidden = layout.hidden.filter((id) => knownIds.includes(id));
-
-  function move(id: string, delta: number) {
-    const idx = orderedIds.indexOf(id);
-    if (idx === -1) return;
-    let swapWith = idx + delta;
-    while (swapWith >= 0 && swapWith < orderedIds.length && hidden.includes(orderedIds[swapWith])) {
-      swapWith += delta;
-    }
-    if (swapWith < 0 || swapWith >= orderedIds.length) return;
-    const next = [...orderedIds];
-    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
-    update({ order: next, hidden });
-  }
-
-  function hide(id: string) {
-    update({ order: orderedIds, hidden: [...hidden, id] });
-  }
-
-  function show(id: string) {
-    update({ order: orderedIds, hidden: hidden.filter((h) => h !== id) });
-  }
-
-  return { orderedIds, hidden, editMode, setEditMode, move, hide, show };
-}
-
-function HomeWidget({
-  id, order, index, lastIndex, editMode, isHidden, onMove, onHide, children,
-}: {
-  id: string;
-  order: number;
-  index: number;
-  lastIndex: number;
-  editMode: boolean;
-  isHidden: boolean;
-  onMove: (id: string, delta: number) => void;
-  onHide: (id: string) => void;
-  children: React.ReactNode;
-}) {
-  if (isHidden) return null;
-  const label = HOME_WIDGET_LABELS[id] ?? id;
-  return (
-    <div className="home-widget" style={{ order }}>
-      {editMode && (
-        <div className="home-widget-controls">
-          <span className="home-widget-controls-label">{label}</span>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onMove(id, -1)} disabled={index === 0} aria-label={`Move ${label} up`}>
-            <ChevronUp size={14} />
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onMove(id, 1)} disabled={index === lastIndex} aria-label={`Move ${label} down`}>
-            <ChevronDown size={14} />
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onHide(id)} aria-label={`Hide ${label}`}>
-            <EyeOff size={14} /> hide
-          </button>
-        </div>
-      )}
-      {children}
-    </div>
-  );
-}
-
-// ── First-run setup banner ─────────────────────────────────────────────────
-// Shown on the home route only while GET /api/setup/state reports
-// needsSetup: true (a genuinely never-touched install — see
-// server/api/setup.ts for the exact conditions). "Later" dismisses for this
-// page load only and writes nothing server-side, so the banner returns next
-// session until the operator actually finishes setup.
-function FirstRunSetupBanner() {
-  const { data } = useApi<{ needsSetup: boolean }>("/api/setup/state", 0);
-  const [dismissed, setDismissed] = useState(false);
-  const [tenantName, setTenantName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  if (!data?.needsSetup || dismissed) return null;
-
-  async function finishSetup() {
-    const name = tenantName.trim();
-    if (!name) {
-      setError("Enter a name for this installation first.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await authFetch("/api/setup/complete", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ tenantName: name }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string }));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      setDismissed(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div
-      className="dash-section"
-      style={{ background: "var(--bg-sub)", borderLeft: "4px solid var(--accent)", borderRadius: 4, padding: "12px 16px", marginBottom: 12 }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <div className="w-label">first-run setup</div>
-          <div style={{ marginTop: 4, fontSize: 13 }}>Welcome — name this installation to finish setup.</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            className="modal-input"
-            style={{ width: 200 }}
-            placeholder="e.g. Acme Corp"
-            value={tenantName}
-            onChange={(e) => setTenantName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") finishSetup(); }}
-            disabled={saving}
-            aria-label="Installation name"
-          />
-          <button type="button" className="btn btn-primary btn-sm" onClick={finishSetup} disabled={saving}>
-            {saving ? "…" : "Finish setup"}
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissed(true)} disabled={saving}>
-            Later
-          </button>
-        </div>
+    <div>
+      <div className="v5-skeleton" style={{ height: 240, borderRadius: 26 }} />
+      <div className="v5-section v5-grid stats">
+        {Array.from({ length: 6 }).map((_, i) => <div key={i} className="v5-skeleton" style={{ height: 110 }} />)}
       </div>
-      {error && <div className="modal-error" style={{ marginTop: 8 }}>{error}</div>}
+      {error && <div style={{ marginTop: 16, fontSize: 12, color: "var(--text-muted)" }}>{error}</div>}
     </div>
   );
 }
+
+/* ─────────────────────────── page ────────────────────────────────── */
 
 export function DashHome() {
-  const { data: streamData, connected } = useStream<HomeData>("/api/stream");
-  // Fallback poll for initial load if SSE hasn't fired yet
+  const { data: streamData } = useStream<HomeData>("/api/stream");
   const { data: pollData, loading, error } = useApi<HomeData>("/api/home", 60_000);
-  const { data: insightsData } = useApi<{ insights: unknown[]; openCount: number }>("/api/insights?status=open", 10_000);
-  const homeLayout = useHomeLayout();
+  const { data: mc } = useApi<MissionControlData>("/api/mission-control", 60_000);
   const data = streamData ?? pollData;
 
-  if (loading && !data) return <HomeLoadingState />;
-  if (error && !data) return <HomeLoadingState error={error} />;
-  if (!data) return <HomeLoadingState error="No home data is available yet." />;
+  if (loading && !data) return <HomeLoading />;
+  if (error && !data) return <HomeLoading error={String(error)} />;
+  if (!data) return <HomeLoading error="No home data is available yet." />;
 
   const d = data;
 
-  // GPU pill color — "off" is an operator choice, not a failure
-  const gpuColor = d.gpu.status === "up" ? "green" : d.gpu.status === "down" ? "red" : d.gpu.status === "off" ? "gray" : "amber";
-
-  // Autopipeline color
-  const pipeColor = d.autopipeline.paused ? "amber" : "green";
-
-  // Doctor success rate
-  const doctorRate = d.doctor.last24h.total > 0
-    ? Math.round((d.doctor.last24h.success / d.doctor.last24h.total) * 100)
-    : null;
-
-  // Model quality summary
-  const qualityProblems = d.models.qualitySummary.blocked + d.models.qualitySummary.degraded + d.models.qualitySummary.probation;
-
-  const visibleIds = homeLayout.orderedIds.filter((id) => !homeLayout.hidden.includes(id));
-  const widgetProps = (id: string) => ({
-    id,
-    order: homeLayout.orderedIds.indexOf(id),
-    index: visibleIds.indexOf(id),
-    lastIndex: visibleIds.length - 1,
-    editMode: homeLayout.editMode,
-    isHidden: homeLayout.hidden.includes(id),
-    onMove: homeLayout.move,
-    onHide: homeLayout.hide,
-  });
-
   return (
-    <div className="dash-page home-customizable">
-
-      <FirstRunSetupBanner />
-
-      <div className="home-customize-bar">
-        {!homeLayout.editMode && homeLayout.hidden.length > 0 && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.setEditMode(true)}>
-            <Eye size={14} /> {homeLayout.hidden.length} hidden
-          </button>
-        )}
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.setEditMode(!homeLayout.editMode)}>
-          <Settings2 size={14} /> {homeLayout.editMode ? "done" : "customize"}
-        </button>
+    <div>
+      <Hero d={d} mc={mc ?? null} />
+      {mc && <DecisionQueue mc={mc} />}
+      <StatRow d={d} />
+      <ServiceMesh d={d} />
+      <div className="v5-section v5-grid split">
+        <Reveal delay={0.04}><EditorialPulse d={d} /></Reveal>
+        <Reveal delay={0.08}><StackVitals d={d} /></Reveal>
       </div>
-
-      {/* ── Admin Center governance cluster ───────────── */}
-      <HomeWidget {...widgetProps("governance")}>
-        <GovernanceCluster />
-      </HomeWidget>
-
-      {/* ── Product health (sentinel scorecard) ─────────── */}
-      <HomeWidget {...widgetProps("product-health")}>
-        <ProductHealthTile />
-      </HomeWidget>
-
-      {/* ── Showcase metrics (self-correction story) ────── */}
-      <HomeWidget {...widgetProps("showcase")}>
-        <ShowcaseTile />
-      </HomeWidget>
-
-      {/* ── Mission Control deck ────────────────────────── */}
-      <HomeWidget {...widgetProps("mission-control")}>
-        <MissionControlDeck />
-      </HomeWidget>
-
-      {/* ── Stack health ─────────────────────────────── */}
-      <HomeWidget {...widgetProps("stack-health")}>
-      <div className="dash-section">
-        <div className="dash-section-title">stack health</div>
-        <WCard href="/infra" className="full">
-          <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            services
-            <span className={`sse-dot${connected ? "" : " disconnected"}`} title={connected ? "live" : "polling"} />
+      <div className="v5-section v5-grid split">
+        <Reveal delay={0.04}><PipelineFlow d={d} /></Reveal>
+        <Reveal delay={0.08}>
+          <div className="v5-card flat-hover" style={{ height: "100%" }}>
+            <div className="v5-section-head" style={{ marginBottom: 12 }}>
+              <div className="v5-section-title"><Cpu size={15} style={{ color: "var(--accent)" }} /> Models</div>
+              <Link href="/models" className="v5-section-link">models →</Link>
+            </div>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+              <div>
+                <div className="v5-stat-value" style={{ fontSize: 26 }}><AnimatedNumber value={d.models.availableByCapability.heavy + d.models.availableByCapability.medium + d.models.availableByCapability.light} /></div>
+                <div className="v5-stat-cap">available</div>
+              </div>
+              <div>
+                <div className="v5-stat-value" style={{ fontSize: 26, color: d.models.qualitySummary.blocked > 0 ? "var(--red)" : undefined }}><AnimatedNumber value={d.models.qualitySummary.blocked} /></div>
+                <div className="v5-stat-cap">blocked</div>
+              </div>
+              <div>
+                <div className="v5-stat-value" style={{ fontSize: 26 }}><AnimatedNumber value={d.models.newModelsAdded.length} /></div>
+                <div className="v5-stat-cap">new this check</div>
+              </div>
+            </div>
+            {d.models.bestLocal && (
+              <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-dim)" }}>
+                best local: <span style={{ fontFamily: "var(--mono)", color: "var(--accent)" }}>{d.models.bestLocal}</span>
+              </div>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <Sparkline points={d.newsbites.publishedLast7d} width={220} height={36} stroke="var(--accent-2)" />
+            </div>
           </div>
-          <div className="service-strip">
-            {d.services.map((s) => (
-              <span key={s.name} className={`svc-pill ${s.status}`}>
-                <span className="dot" />
-                {s.name}
-              </span>
-            ))}
-          </div>
-        </WCard>
-
-        <div className="widget-grid" style={{ marginTop: 8 }}>
-          <WCard href="/infra#gpu">
-            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              gpu <Pill color={gpuColor}>{d.gpu.status}</Pill>
-            </div>
-            {d.gpu.gpuUtil !== null ? (
-              <Gauge pct={d.gpu.gpuUtil} label="utilization" />
-            ) : (
-              <div className="w-caption" style={{ marginTop: 6 }}>{d.gpu.note ?? "util not available"}</div>
-            )}
-            {d.gpu.loadedModels.length > 0 && (
-              <div className="w-caption" style={{ marginTop: 4 }}>
-                {d.gpu.loadedModels.join(", ")}
-              </div>
-            )}
-            {d.gpu.status !== "off" && <div className="w-caption">{fmtAge(d.gpu.checkedAgo)}</div>}
-          </WCard>
-
-          <WCard href="/infra#vast">
-            <div className="w-label">vast balance</div>
-            <div className="w-headline sm">
-              {d.vast.balance !== null ? `$${((d.vast.balance ?? 0) + (d.vast.credit ?? 0)).toFixed(2)}` : "—"}
-            </div>
-            {d.vast.runwayHours !== null && (
-              <div className="w-caption">{d.vast.runwayHours}h runway · ${d.vast.hourlyRate}/hr</div>
-            )}
-            {d.vast.instanceStatus && (
-              <div className="w-row" style={{ marginTop: 6 }}>
-                <Pill color={d.vast.instanceStatus === "running" ? "green" : "amber"}>{d.vast.instanceStatus}</Pill>
-                {d.vast.gpu && <span className="w-caption">{d.vast.gpu}</span>}
-              </div>
-            )}
-          </WCard>
-
-          <WCard href="/infra#hetzner">
-            <div className="w-label">hetzner</div>
-            <div className="w-row">
-              <span className="w-caption">RAM {d.hetzner.memUsedPct}%</span>
-              <span className="w-caption">Disk {d.hetzner.diskUsedPct}%</span>
-            </div>
-            <div className="w-caption">load {d.hetzner.load1.toFixed(2)} / {d.hetzner.load5.toFixed(2)} / {d.hetzner.load15.toFixed(2)}</div>
-          </WCard>
-        </div>
+        </Reveal>
       </div>
-      </HomeWidget>
-
-      {/* ── NewsBites ─────────────────────────────────── */}
-      <HomeWidget {...widgetProps("newsbites")}>
-      <div className="dash-section">
-        <div className="dash-section-title">newsbites</div>
-        <div className="widget-grid">
-          <WCard href="/newsbites">
-            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              total published <LiveTick live={connected ?? false} />
-            </div>
-            <div className="w-headline"><AnimatedNumber value={d.newsbites.totalPublished} /></div>
-            <div className="w-caption">+{d.newsbites.publishedToday} today</div>
-          </WCard>
-
-          <WCard href="/newsbites#publish-rate">
-            <div className="w-label">7d publish rate</div>
-            <SparkBars values={d.newsbites.publishedLast7d} />
-            <div className="w-caption">{d.newsbites.publishedLast7d.reduce((a, b) => a + b, 0)} this week</div>
-          </WCard>
-
-          <WCard href="/newsbites#by-vertical">
-            <div className="w-label">top verticals</div>
-            {d.newsbites.topVerticals.slice(0, 4).map((v) => (
-              <div key={v.vertical} className="w-row" style={{ marginBottom: 2 }}>
-                <span className="w-caption" style={{ flex: 1 }}>{v.vertical}</span>
-                <span className="w-caption">{v.count}</span>
-              </div>
-            ))}
-          </WCard>
-
-          <WCard href="/newsbites">
-            <div className="w-label">latest published</div>
-            {d.newsbites.latestArticles.map((a) => (
-              <div key={a.slug} style={{ marginBottom: 5 }}>
-                <div style={{ fontSize: 11, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.title}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)" }}>{a.vertical} · {a.date}</div>
-              </div>
-            ))}
-            <div className="w-row">
-              <Pill color={d.newsbites.siteReachable ? "green" : "red"}>{d.newsbites.siteReachable ? "site up" : "site down"}</Pill>
-            </div>
-          </WCard>
-        </div>
-      </div>
-      </HomeWidget>
-
-      {/* ── Autopipeline ──────────────────────────────── */}
-      <HomeWidget {...widgetProps("autopipeline")}>
-      <div className="dash-section">
-        <div className="dash-section-title">autopipeline</div>
-        <div className="widget-grid">
-          <WCard href="/autopipeline#queue">
-            <div className="w-label">queue depth</div>
-            <div className="w-headline"><AnimatedNumber value={d.autopipeline.queueDepth} /></div>
-            <PipelineFlowBar stages={[
-              { name: "scout",    count: d.autopipeline.stageBreakdown["scout"]    ?? 0 },
-              { name: "research", count: d.autopipeline.stageBreakdown["research"] ?? 0, hot: (d.autopipeline.stageBreakdown["research"] ?? 0) > 0 },
-              { name: "write",    count: d.autopipeline.stageBreakdown["write"]    ?? 0, hot: (d.autopipeline.stageBreakdown["write"]    ?? 0) > 0 },
-              { name: "verify",   count: d.autopipeline.stageBreakdown["verify"]   ?? 0 },
-              { name: "publish",  count: d.autopipeline.stageBreakdown["publish"]  ?? 0, warn: (d.autopipeline.stageBreakdown["publish"]  ?? 0) > 0 },
-            ]} />
-          </WCard>
-
-          <WCard href="/autopipeline#current">
-            <div className="w-label">current story</div>
-            {d.autopipeline.currentStory ? (
-              <>
-                <div className="w-headline xs" style={{ marginBottom: 4 }}>
-                  {d.autopipeline.currentStory.slug ?? d.autopipeline.currentStory.id}
-                </div>
-                <Pill color="amber">{d.autopipeline.currentStory.stage}</Pill>
-              </>
-            ) : (
-              <div className="w-caption">idle</div>
-            )}
-          </WCard>
-
-          <WCard href="/autopipeline#approvals">
-            <div className="w-label">approvals waiting</div>
-            <div className="w-headline">{d.autopipeline.approvalsWaiting}</div>
-            {d.autopipeline.oldestApprovalAgeMs && (
-              <div className="w-caption">oldest {fmtMs(d.autopipeline.oldestApprovalAgeMs)}</div>
-            )}
-          </WCard>
-
-          <WCard href="/autopipeline">
-            <div className="w-label">pause state</div>
-            <div className="w-row">
-              <Pill color={pipeColor}>{d.autopipeline.paused ? "paused" : "running"}</Pill>
-            </div>
-            {d.autopipeline.pauseReason && (
-              <div className="w-caption">{d.autopipeline.pauseReason}</div>
-            )}
-          </WCard>
-        </div>
-      </div>
-      </HomeWidget>
-
-      {/* ── Reasoner status ───────────────────────────── */}
-      <HomeWidget {...widgetProps("reasoner")}>
-        <ReasonerStatusStrip />
-      </HomeWidget>
-
-      {/* ── Orchestrator status ───────────────────────── */}
-      <HomeWidget {...widgetProps("orchestrator")}>
-        <OrchestratorStatusStrip />
-      </HomeWidget>
-
-      {/* ── Doctor ────────────────────────────────────── */}
-      <HomeWidget {...widgetProps("doctor")}>
-      <div className="dash-section">
-        <div className="dash-section-title">doctor</div>
-        <div className="widget-grid">
-          <WCard href="/doctor">
-            <div className="w-label">repairs 24h</div>
-            <div className="w-headline">{d.doctor.last24h.total}</div>
-            {doctorRate !== null && (
-              <div className="w-caption">{doctorRate}% success</div>
-            )}
-          </WCard>
-
-          <WCard href="/doctor#errors">
-            <div className="w-label">top error classes</div>
-            {d.doctor.last24h.errorClasses.slice(0, 3).map((e) => (
-              <div key={e.type} className="w-row" style={{ marginBottom: 2 }}>
-                <span className="w-caption" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.type}</span>
-                <span className="w-caption">{e.count}</span>
-              </div>
-            ))}
-            {d.doctor.last24h.errorClasses.length === 0 && <div className="w-caption">none</div>}
-          </WCard>
-
-          <WCard href="/doctor#models">
-            <div className="w-label">top failing models</div>
-            {d.doctor.last24h.topFailingModels.slice(0, 3).map((m) => (
-              <div key={m.model} className="w-row" style={{ marginBottom: 2 }}>
-                <span className="w-caption" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.model}</span>
-                <span className="w-caption">{m.count}</span>
-              </div>
-            ))}
-            {d.doctor.last24h.topFailingModels.length === 0 && <div className="w-caption">none</div>}
-          </WCard>
-
-          <WCard href="/doctor#verdicts">
-            <div className="w-label">verdict mix</div>
-            {d.doctor.last24h.verdictMix.slice(0, 4).map((v) => (
-              <div key={v.action} className="w-row" style={{ marginBottom: 2 }}>
-                <span className="w-caption" style={{ flex: 1 }}>{v.action}</span>
-                <span className="w-caption">{v.count}</span>
-              </div>
-            ))}
-            {d.doctor.last24h.verdictMix.length === 0 && <div className="w-caption">none</div>}
-          </WCard>
-        </div>
-      </div>
-      </HomeWidget>
-
-      {/* ── Models ────────────────────────────────────── */}
-      <HomeWidget {...widgetProps("models")}>
-      <div className="dash-section">
-        <div className="dash-section-title">models</div>
-        <div className="widget-grid">
-          <WCard href="/models#current">
-            <div className="w-label">best right now</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
-              {d.models.bestCloudHeavy && (
-                <div className="w-row">
-                  <span className="pill gray" style={{ fontSize: 9 }}>heavy</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)" }}>{d.models.bestCloudHeavy}</span>
-                </div>
-              )}
-              {d.models.bestCloudFast && (
-                <div className="w-row">
-                  <span className="pill gray" style={{ fontSize: 9 }}>fast</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)" }}>{d.models.bestCloudFast}</span>
-                </div>
-              )}
-              {d.models.bestLocal && (
-                <div className="w-row">
-                  <span className="pill gray" style={{ fontSize: 9 }}>local</span>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)" }}>{d.models.bestLocal}</span>
-                </div>
-              )}
-            </div>
-          </WCard>
-
-          <WCard href="/models#by-capability">
-            <div className="w-label">available models</div>
-            <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
-              <div>
-                <div className="w-headline sm">{d.models.availableByCapability.heavy}</div>
-                <div className="w-caption">heavy</div>
-              </div>
-              <div>
-                <div className="w-headline sm">{d.models.availableByCapability.medium}</div>
-                <div className="w-caption">medium</div>
-              </div>
-              <div>
-                <div className="w-headline sm">{d.models.availableByCapability.light}</div>
-                <div className="w-caption">light</div>
-              </div>
-            </div>
-          </WCard>
-
-          <WCard href="/models#quality">
-            <div className="w-label">quality flags</div>
-            <div className="w-row" style={{ flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-              {d.models.qualitySummary.blocked > 0 && <Pill color="red">blocked {d.models.qualitySummary.blocked}</Pill>}
-              {d.models.qualitySummary.degraded > 0 && <Pill color="amber">degraded {d.models.qualitySummary.degraded}</Pill>}
-              {d.models.qualitySummary.probation > 0 && <Pill color="amber">probation {d.models.qualitySummary.probation}</Pill>}
-              {qualityProblems === 0 && <Pill color="green">all clear</Pill>}
-            </div>
-          </WCard>
-
-          <WCard href="/models#new">
-            <div className="w-label">discovery</div>
-            {d.models.newModelsAdded.length > 0 ? (
-              <>
-                <div className="w-headline sm">{d.models.newModelsAdded.length}</div>
-                <div className="w-caption">new in last check</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>
-                  {d.models.newModelsAdded.slice(0, 2).join(", ")}
-                  {d.models.newModelsAdded.length > 2 && ` +${d.models.newModelsAdded.length - 2}`}
-                </div>
-              </>
-            ) : (
-              <div className="w-caption">no new models in last check</div>
-            )}
-            <div className="w-caption">
-              {d.models.lastFullCheckAgo > 0 ? `full check ${fmtAge(d.models.lastFullCheckAgo)}` : ""}
-            </div>
-          </WCard>
-
-          {d.models.cooldownsActive > 0 && (
-            <WCard href="/models#cooldowns">
-              <div className="w-label">cooldowns active</div>
-              <div className="w-headline sm">{d.models.cooldownsActive}</div>
-              {d.models.soonestCooldownExpiresMs && (
-                <div className="w-caption">soonest expires {fmtMs(d.models.soonestCooldownExpiresMs - Date.now())}</div>
-              )}
-            </WCard>
-          )}
-        </div>
-      </div>
-      </HomeWidget>
-
-      {/* ── OpenCode + Incidents ─────────────────────── */}
-      <HomeWidget {...widgetProps("opencode-incidents")}>
-      <div className="dash-section">
-        <div className="dash-section-title">opencode · incidents</div>
-        <div className="widget-grid">
-          <WCard href="/opencode">
-            <div className="w-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              opencode sessions
-              <Pill color={d.opencode.reachable ? "green" : "red"}>{d.opencode.reachable ? "reachable" : "unreachable"}</Pill>
-            </div>
-            {d.opencode.reachable && d.opencode.sessionCount !== null ? (
-              <>
-                <div className="w-headline"><AnimatedNumber value={d.opencode.sessionCount} /></div>
-                <div className="w-caption">
-                  {d.opencode.active24h ?? 0} active in 24h
-                  {d.opencode.latestUpdatedAt !== null && ` · latest ${fmtAge(Math.round((Date.now() - d.opencode.latestUpdatedAt) / 1000))}`}
-                </div>
-              </>
-            ) : (
-              <div className="w-caption" style={{ marginTop: 6 }}>OpenCode server did not respond — session count unavailable.</div>
-            )}
-            <div className="w-row" style={{ marginTop: 6 }}>
-              <Pill color="blue">open chat →</Pill>
-            </div>
-          </WCard>
-
-          <WCard href="/incidents">
-            <div className="w-label">active incidents</div>
-            <div className="w-headline sm">{d.incidents.activeCount}</div>
-            {d.incidents.recentAlerts.length > 0 && (
-              <div style={{ marginTop: 6 }}>
-                {d.incidents.recentAlerts.slice(0, 3).map((a) => (
-                  <div key={a.key} style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginBottom: 2 }}>
-                    {a.key}
-                  </div>
-                ))}
-              </div>
-            )}
-          </WCard>
-        </div>
-      </div>
-      </HomeWidget>
-
-      {homeLayout.editMode && homeLayout.hidden.length > 0 && (
-        <div className="home-hidden-tray" style={{ order: 999 }}>
-          <span className="w-label">hidden widgets</span>
-          {homeLayout.hidden.map((id) => (
-            <button key={id} type="button" className="btn btn-ghost btn-sm" onClick={() => homeLayout.show(id)}>
-              <Eye size={13} /> {HOME_WIDGET_LABELS[id] ?? id}
-            </button>
-          ))}
-        </div>
-      )}
-
+      <Governance />
     </div>
   );
 }
