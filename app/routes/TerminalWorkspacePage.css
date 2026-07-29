@@ -305,6 +305,14 @@
   font-size: 12.5px;
 }
 
+/* Mobile: lift the dock above the bottom tab bar (matches .dash-main bottom
+   clearance in v5.css) so the two fixed bars never overlap. */
+@media (max-width: 900px) {
+  .terminal-dock {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 .terminal-dock-toggle {
   display: flex;
   align-items: center;
