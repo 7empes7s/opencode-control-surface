@@ -46,6 +46,10 @@ type WsData = { upstream: WebSocket; pending: (string | ArrayBuffer)[] };
 const server = Bun.serve<WsData>({
   port: PORT,
   hostname: "127.0.0.1",
+  // Upstream API calls can legitimately take >10s under DB contention (report
+  // exports, home sampler). Bun's default 10s idle timeout was guillotining
+  // those responses → empty replies → Caddy surfaced them as 502s.
+  idleTimeout: 120,
   async fetch(req, srv) {
     const url = new URL(req.url);
 
@@ -53,7 +57,24 @@ const server = Bun.serve<WsData>({
       // WebSocket upgrade (terminal sessions)
       if ((req.headers.get("upgrade") || "").toLowerCase() === "websocket") {
         const upstreamUrl = UPSTREAM_WS + url.pathname + url.search;
-        const upstream = new WebSocket(upstreamUrl);
+        // Forward auth + client identity headers — without the session cookie
+        // the upstream terminal upgrade rejects with 401 and the client loops
+        // "connecting → authorizing → reconnecting" forever. Origin is pinned
+        // to the upstream host so the server's same-origin check passes.
+        const upstreamOrigin = new URL(UPSTREAM).origin;
+        const clientIp =
+          req.headers.get("x-forwarded-for") || srv.requestIP(req)?.address || "";
+        const wsHeaders: Record<string, string> = {
+          "x-forwarded-for": clientIp,
+          "x-real-ip": clientIp,
+          origin: upstreamOrigin,
+        };
+        const cookie = req.headers.get("cookie");
+        if (cookie) wsHeaders.cookie = cookie;
+        const authorization = req.headers.get("authorization");
+        if (authorization) wsHeaders.authorization = authorization;
+        // @ts-expect-error bun WebSocket client accepts a headers options bag
+        const upstream = new WebSocket(upstreamUrl, { headers: wsHeaders });
         const data: WsData = { upstream, pending: [] };
         upstream.addEventListener("open", () => {
           for (const m of data.pending.splice(0)) upstream.send(m);
