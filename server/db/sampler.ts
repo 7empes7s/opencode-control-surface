@@ -1909,13 +1909,31 @@ export function pruneOldMetricSamples(retentionDays = metricRetentionDays()): nu
   if (!db) return 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   const placeholders = METRIC_RETENTION_EXEMPT_SOURCES.map(() => "?").join(",");
+  // Chunk the delete: one mega-transaction over millions of rows pins the WAL
+  // write lock and stalls every request on this single-threaded server. Small
+  // per-statement transactions keep p99 request latency flat while still
+  // draining the backlog fully within a few prune cycles.
+  const CHUNK = 25_000;
+  const MAX_CHUNKS_PER_RUN = 200; // 5M rows/run hard cap — prevents pathological loops
+  let total = 0;
   try {
-    const res = db
-      .query(`DELETE FROM metric_samples WHERE ts < ? AND source NOT IN (${placeholders})`)
-      .run(cutoff, ...METRIC_RETENTION_EXEMPT_SOURCES);
-    return res.changes ?? 0;
+    for (let chunk = 0; chunk < MAX_CHUNKS_PER_RUN; chunk += 1) {
+      const res = db
+        .query(
+          `DELETE FROM metric_samples WHERE rowid IN (
+             SELECT rowid FROM metric_samples
+             WHERE ts < ? AND source NOT IN (${placeholders})
+             LIMIT ${CHUNK}
+           )`,
+        )
+        .run(cutoff, ...METRIC_RETENTION_EXEMPT_SOURCES);
+      const deleted = Number(res.changes ?? 0);
+      total += deleted;
+      if (deleted < CHUNK) break;
+    }
+    return total;
   } catch (err) {
     console.error("[sampler] metric_samples prune failed", err);
-    return 0;
+    return total;
   }
 }

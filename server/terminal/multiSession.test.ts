@@ -80,14 +80,29 @@ describe("managed terminal namespace", () => {
     }
   });
 
-  test("refuses to stop the legacy attach-only terminal without invoking tmux", () => {
+  test("kills the legacy attach-only terminal's tmux session without archiving it", () => {
     const legacy = ensureLegacyRootTerminalRegistered(owner.userId, owner);
     expect(legacy).not.toBeNull();
-    const spawn = spyOn(Bun, "spawnSync");
+    const spawn = spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 0 } as ReturnType<typeof Bun.spawnSync>);
     try {
       const result = stopTerminalSession({ identity: owner, actor: owner.userId, terminalId: legacy!.id });
-      expect(result).toEqual({ ok: false, error: "legacy root terminal is attach-only", status: 409 });
-      expect(spawn).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: true, stopped: true });
+      // Default socket (no -L cs-term), targeting the configured legacy session name.
+      expect(spawn).toHaveBeenCalledWith(["/usr/bin/tmux", "kill-session", "-t", "tib-root"], expect.anything());
+      // The singleton registry entry survives — the next attach respawns the shell.
+      expect(listAgentSessions(owner, "terminal").some((item) => item.id === legacy!.id)).toBe(true);
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  test("legacy stop stays successful when the tmux session is already dead", () => {
+    const legacy = ensureLegacyRootTerminalRegistered(owner.userId, owner);
+    expect(legacy).not.toBeNull();
+    const spawn = spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 1 } as ReturnType<typeof Bun.spawnSync>);
+    try {
+      const result = stopTerminalSession({ identity: owner, actor: owner.userId, terminalId: legacy!.id });
+      expect(result).toEqual({ ok: true, stopped: true });
     } finally {
       spawn.mockRestore();
     }

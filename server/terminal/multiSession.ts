@@ -150,6 +150,25 @@ export function listManagedTerminals(identity: AgentIdentity): ManagedTerminal[]
   }));
 }
 
+/**
+ * Kills the legacy root terminal's tmux session on the DEFAULT socket (no -L).
+ * The registry entry stays (it is a re-registered singleton): the next attach
+ * transparently recreates the shell (session.ts `has-session || new-session`).
+ * Returns true when a live session was actually killed; false when it was
+ * already gone — both are a successful "reset" from the operator's view.
+ */
+function killLegacyRootTmux(): boolean {
+  try {
+    return Bun.spawnSync([TMUX_BIN, "kill-session", "-t", terminalSessionName()], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
 export function stopTerminalSession(input: {
   identity: AgentIdentity;
   actor: string;
@@ -161,7 +180,24 @@ export function stopTerminalSession(input: {
     return { ok: false, error: "terminal session cannot be mutated", status: 403 };
   }
   if (session.effectiveConfig.legacy === true && session.effectiveConfig.attachOnly === true) {
-    return { ok: false, error: "legacy root terminal is attach-only", status: 409 };
+    const killed = killLegacyRootTmux();
+    appendAgentEvent({
+      session,
+      kind: "terminal.legacy_reset",
+      payload: { tmuxName: terminalSessionName(), socket: "default", killed },
+    });
+    writeActionAudit({
+      userId: input.identity.userId,
+      actor: input.actor,
+      actionKind: "terminal.session.stop",
+      targetType: "terminal-session",
+      targetId: session.id,
+      risk: "high",
+      request: { legacy: true, tmuxName: terminalSessionName() },
+      result: killed ? "legacy root terminal killed; next attach respawns it" : "legacy root terminal was already dead",
+      resultStatus: "success",
+    });
+    return { ok: true, stopped: true };
   }
 
   const tmuxName = tmuxSessionNameFor(session.id);

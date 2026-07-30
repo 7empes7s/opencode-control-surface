@@ -293,15 +293,52 @@ function relayExited(relay: Relay, exitCode: number | null, signalCode: number |
   }
 }
 
-function createRelay(data: ManagedTerminalSocketData): Relay | null {
-  if (!relayNameIsValid(data.terminalId, data.tmuxName)) return null;
+/**
+ * The registry is the source of truth for a managed terminal; tmux is ephemeral.
+ * A missing tmux session (service/host restart, tmux server death, OOM kill) must
+ * not brick the terminal — respawn it with the same derived name and its recorded
+ * cwd, then attach. Returns false when the respawn itself fails (e.g. tmux gone).
+ */
+export function respawnManagedSession(data: ManagedTerminalSocketData): boolean {
+  const session = resolveManagedTerminalSession(data.identity, data.terminalId);
+  if (!session) return false;
+  const recordedCwd = session.effectiveConfig.cwd;
+  const cwd = typeof recordedCwd === "string" && recordedCwd.length > 0 ? recordedCwd : "/root";
   try {
-    const liveness = Bun.spawnSync(tmuxArgs("has-session", "-t", data.tmuxName), {
+    const spawned = Bun.spawnSync(tmuxArgs("new-session", "-d", "-s", data.tmuxName, "-c", cwd), {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
     });
-    if (liveness.exitCode !== 0) return null;
+    if (spawned.exitCode !== 0) return false;
+  } catch {
+    return false;
+  }
+  appendAgentEvent({
+    session,
+    kind: "terminal.respawned",
+    payload: { tmuxName: data.tmuxName, cwd, reason: "tmux session missing at attach" },
+  });
+  return true;
+}
+
+function createRelay(data: ManagedTerminalSocketData): Relay | null {
+  if (!relayNameIsValid(data.terminalId, data.tmuxName)) return null;
+  try {
+    let liveness = Bun.spawnSync(tmuxArgs("has-session", "-t", data.tmuxName), {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    if (liveness.exitCode !== 0) {
+      if (!respawnManagedSession(data)) return null;
+      liveness = Bun.spawnSync(tmuxArgs("has-session", "-t", data.tmuxName), {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      if (liveness.exitCode !== 0) return null;
+    }
 
     const capture = Bun.spawnSync(tmuxArgs("capture-pane", "-p", "-e", "-J", "-S", "-2000", "-t", data.tmuxName), {
       stdin: "ignore",

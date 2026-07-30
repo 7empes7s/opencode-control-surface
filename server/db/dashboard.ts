@@ -70,7 +70,10 @@ export function initDashboardDb(options: InitDashboardDbOptions = {}): Database 
     db = new Database(dbPath);
     if (!isInMemory) chmodSync(dbPath, 0o600);
     db.exec("PRAGMA journal_mode = WAL;");
-    db.exec("PRAGMA busy_timeout = 5000;");
+    // 15s: every HTTP request on this single-threaded server can issue a write
+    // (home sampler, audits), and ingestor/prune batches serialize writers —
+    // 5s was producing visible "database is locked" stalls and dropped actions.
+    db.exec("PRAGMA busy_timeout = 15000;");
     if (!isInMemory) {
       for (const sqlitePath of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
         if (existsSync(sqlitePath)) chmodSync(sqlitePath, 0o600);

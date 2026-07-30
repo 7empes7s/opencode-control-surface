@@ -22,6 +22,7 @@ import {
   MAX_SCROLLBACK_BYTES,
   managedTerminalUpgradeHandler,
   parseManagedTerminalClientMessage,
+  respawnManagedSession,
   terminalMultiplexedWebSocketHandlers,
   type ManagedTerminalSocketData,
   type TerminalWebSocketData,
@@ -198,6 +199,62 @@ describe("bounded managed transport primitives", () => {
       expect(open).toHaveBeenCalledTimes(1);
     } finally {
       open.mockRestore();
+    }
+  });
+});
+
+describe("managed terminal respawn", () => {
+  function socketDataFor(terminalId: string): ManagedTerminalSocketData {
+    return {
+      kind: "managed-terminal",
+      connectionId: "respawn-connection",
+      terminalId,
+      sessionId: terminalId,
+      tmuxName: tmuxSessionNameFor(terminalId),
+      user: { userId: owner.userId, tenantId: owner.tenantId, bootstrapOwner: true } as ManagedTerminalSocketData["user"],
+      identity: owner,
+      clientIp: "local",
+      openedAt: Date.now(),
+      attachedAt: Date.now(),
+      cols: 100,
+      rows: 30,
+      mode: "writer",
+      fenceEpoch: 1,
+      closing: false,
+    };
+  }
+
+  test("recreates a missing tmux session with the derived name and recorded cwd", () => {
+    const terminal = registerTerminal("respawn-terminal");
+    const calls: string[][] = [];
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation((...args: unknown[]) => {
+      calls.push(args[0] as string[]);
+      return { exitCode: 0 } as ReturnType<typeof Bun.spawnSync>;
+    });
+    try {
+      expect(respawnManagedSession(socketDataFor(terminal.id))).toBe(true);
+      expect(calls).toEqual([
+        ["/usr/bin/tmux", "-L", TERMINAL_SOCKET, "new-session", "-d", "-s", tmuxSessionNameFor(terminal.id), "-c", root],
+      ]);
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  test("fails closed when tmux cannot recreate the session and never spawns for unknown terminals", () => {
+    const terminal = registerTerminal("respawn-failing");
+    const failing = spyOn(Bun, "spawnSync").mockReturnValue({ exitCode: 1 } as ReturnType<typeof Bun.spawnSync>);
+    try {
+      expect(respawnManagedSession(socketDataFor(terminal.id))).toBe(false);
+    } finally {
+      failing.mockRestore();
+    }
+    const spawn = spyOn(Bun, "spawnSync");
+    try {
+      expect(respawnManagedSession(socketDataFor("not-registered"))).toBe(false);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      spawn.mockRestore();
     }
   });
 });
